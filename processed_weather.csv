@@ -1,0 +1,2 @@
+_id,source,category,collected_at,data.city,data.temperature,data.weather,data.humidity
+69860b3e255f38a31554ec6f,openweathermap,weather,2026-02-06 15:39:42.849,Tokyo,0.0,overcast clouds,43
