@@ -1,19 +1,69 @@
+# collectors/weather_collector.py
+
 import requests
 import os
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 import json
+import time
 from database.mongo import insert
-from bson import ObjectId  # <-- handle Mongo ObjectId
+from bson import ObjectId
 
-# Load API key from .env
+# Load API key
 load_dotenv()
 API_KEY = os.getenv("WEATHER_API_KEY")
 
-def fetch_weather(city="Tokyo"):
-    """
-    Fetch current weather for a city and return standardized record.
-    """
+# ----------------------------
+# Top 100 Global Cities
+# Optimized for global coverage
+# ----------------------------
+TOP_100_CITIES = [
+    # North America
+    "New York", "Los Angeles", "Chicago", "Houston", "Toronto",
+    "Vancouver", "Mexico City", "Montreal", "Miami", "San Francisco",
+
+    # South America
+    "São Paulo", "Rio de Janeiro", "Buenos Aires", "Lima", "Bogotá",
+    "Santiago", "Caracas", "Quito", "La Paz", "Montevideo",
+
+    # Europe
+    "London", "Paris", "Berlin", "Madrid", "Rome",
+    "Amsterdam", "Brussels", "Vienna", "Prague", "Warsaw",
+    "Budapest", "Stockholm", "Oslo", "Copenhagen", "Helsinki",
+    "Athens", "Lisbon", "Dublin", "Zurich", "Moscow",
+
+    # Africa
+    "Cairo", "Lagos", "Johannesburg", "Cape Town", "Nairobi",
+    "Addis Ababa", "Accra", "Casablanca", "Algiers", "Tunis",
+
+    # Middle East
+    "Dubai", "Abu Dhabi", "Doha", "Riyadh", "Jeddah",
+    "Kuwait City", "Manama", "Muscat", "Tehran", "Jerusalem",
+
+    # South Asia
+    "Delhi", "Mumbai", "Bangalore", "Chennai", "Kolkata",
+    "Karachi", "Lahore", "Dhaka", "Colombo", "Kathmandu",
+
+    # East Asia
+    "Tokyo", "Osaka", "Seoul", "Beijing", "Shanghai",
+    "Hong Kong", "Taipei",
+
+    # Southeast Asia
+    "Bangkok", "Singapore", "Kuala Lumpur", "Jakarta", "Manila",
+    "Hanoi", "Ho Chi Minh City", "Phnom Penh", "Yangon",
+
+    # Oceania
+    "Sydney", "Melbourne", "Brisbane", "Perth", "Auckland",
+    "Wellington"
+]
+
+# (Total ≈ 100 cities)
+
+
+# ----------------------------
+# Fetch weather for a city
+# ----------------------------
+def fetch_weather(city):
     collected_at = datetime.now(timezone.utc).isoformat()
 
     url = "https://api.openweathermap.org/data/2.5/weather"
@@ -23,30 +73,46 @@ def fetch_weather(city="Tokyo"):
         "units": "metric"
     }
 
-    response = requests.get(url, params=params)
-    if response.status_code != 200:
-        print("HTTP Error:", response.status_code)
-        return []
+    try:
+        response = requests.get(url, params=params, timeout=10)
 
-    data = response.json()
+        if response.status_code == 429:
+            print(f"Rate limit hit while fetching {city}")
+            return None
 
-    standardized = {
-        "source": "openweathermap",
-        "category": "weather",
-        "collected_at": collected_at,
-        "data": {
-            "city": data.get("name"),
-            "temperature": data.get("main", {}).get("temp"),
-            "weather": data.get("weather", [{}])[0].get("description"),
-            "humidity": data.get("main", {}).get("humidity")
+        if response.status_code != 200:
+            print(f"Error {response.status_code} for city: {city}")
+            return None
+
+        data = response.json()
+
+        standardized = {
+            "source": "openweathermap",
+            "category": "weather",
+            "collected_at": collected_at,
+            "data": {
+                "city": data.get("name"),
+                "country": data.get("sys", {}).get("country"),
+                "temperature": data.get("main", {}).get("temp"),
+                "feels_like": data.get("main", {}).get("feels_like"),
+                "humidity": data.get("main", {}).get("humidity"),
+                "pressure": data.get("main", {}).get("pressure"),
+                "weather": data.get("weather", [{}])[0].get("description"),
+                "wind_speed": data.get("wind", {}).get("speed")
+            }
         }
-    }
 
-    return standardized
+        return standardized
+
+    except Exception as e:
+        print(f"Exception for {city}: {e}")
+        return None
 
 
+# ----------------------------
+# JSON safe conversion
+# ----------------------------
 def convert_for_json(obj):
-    """Recursively convert datetime and ObjectId for JSON serialization"""
     if isinstance(obj, dict):
         return {k: convert_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -59,9 +125,28 @@ def convert_for_json(obj):
         return obj
 
 
-if __name__ == "__main__":
-    data = fetch_weather("Tokyo")
-    insert("weather", data)
+# ----------------------------
+# Main collector
+# ----------------------------
+def main():
+    print("Starting global weather collection...")
 
-    safe_data = convert_for_json(data)
-    print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+    success = 0
+
+    for city in TOP_100_CITIES:
+        data = fetch_weather(city)
+
+        if data:
+            insert("weather", data)
+            safe_data = convert_for_json(data)
+            print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+            success += 1
+
+        # Delay to avoid rate limits (Free plan safe)
+        time.sleep(1)
+
+    print(f"\nWeather collection complete. {success} cities collected.")
+
+
+if __name__ == "__main__":
+    main()

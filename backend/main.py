@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from pymongo import MongoClient
+from processing.ai_summary import generate_summary
+from processing.global_risk import compute_global_risk
 
 app = FastAPI(title="World Pulse API")
 db = MongoClient("mongodb://localhost:27017/")["world_pulse"]
@@ -75,3 +77,13 @@ def get_stocks():
 @app.get("/worldbank")
 def get_worldbank():
     return list(db.worldbank.find({}, {"_id": 0}).limit(10))
+
+@app.get("/risk_score")
+def risk_score():
+    score = compute_global_risk()
+    return {"risk_score": score}
+
+@app.get("/summary")
+def summary():
+    summary_text = generate_summary()
+    return {"summary": summary_text}
