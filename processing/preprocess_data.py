@@ -207,7 +207,7 @@ def preprocess_text(collection_name, text_keys):
 
             if isinstance(val, str) and val.strip():
                 cleaned = clean_text(val)
-                updated_fields[key.replace(".", ".")] = cleaned
+                updated_fields[key] = cleaned
 
         if updated_fields:
             update_doc = {"$set": {}}
@@ -276,7 +276,7 @@ def main():
     export_collection_to_csv("stocks", "processed_stocks.csv")
     export_collection_to_csv("weather", "processed_weather.csv")
 
-    print("\n World Pulse preprocessing pipeline complete.\n")
+    print("\n✅ World Pulse preprocessing pipeline complete.\n")
 
 
 # --------------------------
