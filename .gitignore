@@ -1,13 +1,42 @@
-# Python cache
+# -------------------------
+# Python
+# -------------------------
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
 
+# -------------------------
 # Logs
+# -------------------------
 *.log
 
-# Zip backups
-*.zip
+# -------------------------
+# Data science / ML
+# (keep if you DO want CSVs in repo)
+# -------------------------
+# If someday files get too large, you can ignore:
+# data/
+# *.csv
 
-# OS
+# -------------------------
+# Archives / backups
+# -------------------------
+*.zip
+*.tar
+*.gz
+
+# -------------------------
+# OS files
+# -------------------------
 .DS_Store
 Thumbs.db
+
+# -------------------------
+# Jupyter
+# -------------------------
+.ipynb_checkpoints/
