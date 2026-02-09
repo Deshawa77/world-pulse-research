@@ -19,7 +19,7 @@ from datetime import datetime
 
 from processing import preprocess_data, nlp_analysis, topic_modeling_with_nlp
 from processing.global_crisis_detector import detect_crisis
-from processing.daily_feature_builder import build_daily_features
+from processing.daily_feature_builder import build_hourly_features
 from monitoring.email_alert import send_email_alert
 from processing.crisis_by_country import crisis_heatmap
 from processing.crisis_forecast import forecast_sentiment
@@ -148,7 +148,7 @@ def run_pipeline():
 
     try:
         print("\nBuilding daily features...")
-        build_daily_features()
+        build_hourly_features()
     except Exception as e:
         logging.error(f"build_daily_features error: {e}")
         traceback.print_exc()

@@ -1,0 +1,2 @@
+timestamp,news_sentiment,news_sentiment_std,gdelt_sentiment,gdelt_sentiment_std,crypto_return,crypto_volatility,stock_return,stock_volatility,weather_anomaly,global_risk_score,top_topics
+2026-02-09 15:00,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,50.0,no data
