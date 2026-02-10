@@ -1,19 +1,8 @@
 _id,source,category,collected_at,data.article,data.date,data.views
-69860a68d5da49992bd19c0e,wikipedia,public_attention,2026-02-06 15:36:08.089,Earthquake,20260201,1456
-69860a68d5da49992bd19c0f,wikipedia,public_attention,2026-02-06 15:36:08.089,Earthquake,20260202,2636
-69860a68d5da49992bd19c10,wikipedia,public_attention,2026-02-06 15:36:08.089,Earthquake,20260203,2611
-69860a68d5da49992bd19c11,wikipedia,public_attention,2026-02-06 15:36:08.089,Earthquake,20260204,2266
-69860a68d5da49992bd19c12,wikipedia,public_attention,2026-02-06 15:36:08.089,Earthquake,20260205,3055
-69860afd1ebc593535d59ac8,wikipedia,public_attention,2026-02-06 15:38:37.763,Earthquake,20260201,1456
-69860afd1ebc593535d59ac9,wikipedia,public_attention,2026-02-06 15:38:37.763,Earthquake,20260202,2636
-69860afd1ebc593535d59aca,wikipedia,public_attention,2026-02-06 15:38:37.763,Earthquake,20260203,2611
-69860afd1ebc593535d59acb,wikipedia,public_attention,2026-02-06 15:38:37.763,Earthquake,20260204,2266
-69860afd1ebc593535d59acc,wikipedia,public_attention,2026-02-06 15:38:37.763,Earthquake,20260205,3055
-698626e3809a30b10e4cbd70,wikipedia,public_attention,2026-02-06 17:37:39.602,Earthquake,20260201,1456
-698626e3809a30b10e4cbd71,wikipedia,public_attention,2026-02-06 17:37:39.602,Earthquake,20260202,2636
-698626e3809a30b10e4cbd72,wikipedia,public_attention,2026-02-06 17:37:39.602,Earthquake,20260203,2611
-698626e3809a30b10e4cbd73,wikipedia,public_attention,2026-02-06 17:37:39.602,Earthquake,20260204,2266
-698626e3809a30b10e4cbd74,wikipedia,public_attention,2026-02-06 17:37:39.602,Earthquake,20260205,3055
-6986c5379e65fbf31aef160f,wikipedia,public_attention,2026-02-07 04:53:11.551,Earthquake,20260206,2097
-69881f8ff594ab54e7475924,wikipedia,public_attention,2026-02-08 05:30:55.797,Earthquake,20260207,1771
-698a97698aa2943e12b16b8f,wikipedia,public_attention,2026-02-10 02:26:49.026,Earthquake,20260209,2191
+6986c8e761fb9c0b2b64dbd3,wikipedia,public_attention,2026-02-07 05:08:55.947,Earthquake,20260202,2636
+6986c8e861fb9c0b2b64dbd4,wikipedia,public_attention,2026-02-07 05:08:56.020,Earthquake,20260203,2611
+6986c8e861fb9c0b2b64dbd5,wikipedia,public_attention,2026-02-07 05:08:56.032,Earthquake,20260204,2266
+6986c8e861fb9c0b2b64dbd6,wikipedia,public_attention,2026-02-07 05:08:56.034,Earthquake,20260205,3055
+6986c8e861fb9c0b2b64dbd7,wikipedia,public_attention,2026-02-07 05:08:56.035,Earthquake,20260206,2097
+698871580cf7d9fd882ddc0d,wikipedia,public_attention,2026-02-08 11:19:52.936,Earthquake,20260207,1771
+698ac7f28005882b6b9473b7,wikipedia,public_attention,2026-02-10 05:53:54.592,Earthquake,20260209,2191

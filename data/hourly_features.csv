@@ -7,3 +7,5 @@ timestamp,news_sentiment,news_sentiment_std,gdelt_sentiment,gdelt_sentiment_std,
 2026-02-10 03:00,-0.9876915678284452,0.0,-0.12534637402829,0.5930083253882188,0.0,0.0,0.0,0.0,0.0,57.88,"kbrs, afet, afmer, utara, maghribi, lemah, earthquake, magnitude, feb, epstein, confidential, andrew, test_topic_10"
 2026-02-10 06:00,-0.9876915678284452,0.0,-0.12534637402829,0.5930083253882188,0.0,0.0,0.0,0.0,0.0,57.06,"kbrs, afet, afmer, utara, maghribi, lemah, test_topic_10, test_topic_6, test_topic_1"
 2026-02-10 09:00,-0.9876915678284452,0.0,-0.12534637402829,0.5930083253882188,0.0,0.0,0.0,0.0,0.0,57.04,"kbrs, afet, afmer, utara, maghribi, lemah, test_topic_6, test_topic_1, test_topic_10"
+2026-02-10 10:00,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,50.0,no data
+2026-02-10 11:00,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,50.0,no data
