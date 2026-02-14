@@ -1,35 +1,39 @@
 # realtime_crisis_engine.py
-
-import pandas as pd
-import joblib
-import time
-from datetime import datetime, timezone
 import os
+import sys
+import time
+import traceback
+from datetime import datetime, timezone
+
+# Add project root to Python path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import joblib
 import numpy as np
 import smtplib
 from email.mime.text import MIMEText
+import pandas as pd
+
+# ============================
+# MONGO IMPORT
+# ============================
+from database.mongo import (
+    write_global_features_v2,
+    write_country_features_v2,
+    db
+)
 
 # ============================
 # CONFIG
 # ============================
-
 MODEL_PATH = "../models/gb_model.pkl"
-FEATURES_PATH = "../data/hourly_features.csv"
-COUNTRY_FEATURES_PATH = "../data/country_features.csv"
 LOG_DIR = "../logs"
 
 ALERT_THRESHOLD_HIGH = 0.75
 ALERT_THRESHOLD_MED = 0.40
 CHECK_INTERVAL = 3600  # 1 hour
 
-# ---- EMAIL CONFIG ----
-EMAIL_ALERT = False   # turn True when SMTP ready
-EMAIL_TO = "you@example.com"
-EMAIL_FROM = "worldpulse.ai@example.com"
-SMTP_SERVER = "smtp.example.com"
-SMTP_PORT = 587
-SMTP_USER = "smtp_user"
-SMTP_PASS = "smtp_password"
+EMAIL_ALERT = False
 
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "crisis_predictions.log")
@@ -49,7 +53,6 @@ COUNTRIES = ["US", "UK", "DE", "IN", "JP", "CN", "BR"]
 # ============================
 # UTILITIES
 # ============================
-
 def log_event(message):
     ts = datetime.now(timezone.utc).isoformat()
     with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -57,33 +60,72 @@ def log_event(message):
     print(message)
 
 # ============================
-# AUTO COUNTRY DATA GENERATOR (OPTION 2)
+# SAFE WRITE WRAPPERS
 # ============================
-
-def generate_fake_country_data():
-    print("⚠️ country_features.csv not found — generating fake country data...")
-    rows = []
-    for c in COUNTRIES:
-        rows.append({
-            "country": c,
-            "news_sentiment": np.random.uniform(-1, 1),
-            "gdelt_sentiment": np.random.uniform(-1, 1),
-            "crypto_return": np.random.uniform(-0.05, 0.05),
-            "crypto_volatility": np.random.uniform(0, 0.2),
-            "stock_return": np.random.uniform(-0.05, 0.05),
-            "stock_volatility": np.random.uniform(0, 0.2),
-            "weather_anomaly": np.random.uniform(0, 1),
+def safe_write_global(features, mode="online"):
+    try:
+        write_global_features_v2(features, mode)
+    except Exception as e:
+        db.pipeline_errors.insert_one({
+            "type": "global_feature_write_error",
+            "error": str(e),
+            "timestamp": datetime.utcnow(),
+            "traceback": traceback.format_exc()
         })
+        log_event("❌ Global feature write failed")
 
-    df = pd.DataFrame(rows)
-    os.makedirs(os.path.dirname(COUNTRY_FEATURES_PATH), exist_ok=True)
-    df.to_csv(COUNTRY_FEATURES_PATH, index=False)
-    print("✅ Fake country_features.csv created")
+
+def safe_write_country(country, features, mode="online"):
+    try:
+        write_country_features_v2(country, features, mode)
+    except Exception as e:
+        db.pipeline_errors.insert_one({
+            "type": "country_feature_write_error",
+            "country": country,
+            "error": str(e),
+            "timestamp": datetime.utcnow(),
+            "traceback": traceback.format_exc()
+        })
+        log_event(f"❌ Country feature write failed for {country}")
+
+# ============================
+# FEATURE RETENTION CLEANUP
+# ============================
+def cleanup_old_global_features(mode="online", keep_last=100):
+    cursor = db.global_features.find(
+        {"mode": mode}
+    ).sort("version", -1)
+
+    versions = [doc["version"] for doc in cursor if "version" in doc]
+
+    if len(versions) > keep_last:
+        versions_to_delete = versions[keep_last:]
+        result = db.global_features.delete_many({
+            "mode": mode,
+            "version": {"$in": versions_to_delete}
+        })
+        log_event(f"🧹 Deleted {result.deleted_count} old GLOBAL versions")
+
+
+def cleanup_old_country_features(country, mode="online", keep_last=100):
+    cursor = db.country_features.find(
+        {"country": country, "mode": mode}
+    ).sort("version", -1)
+
+    versions = [doc["version"] for doc in cursor if "version" in doc]
+
+    if len(versions) > keep_last:
+        versions_to_delete = versions[keep_last:]
+        result = db.country_features.delete_many({
+            "country": country,
+            "mode": mode,
+            "version": {"$in": versions_to_delete}
+        })
+        log_event(f"🧹 Deleted {result.deleted_count} old versions for {country}")
 
 # ============================
 # MODEL LOAD
 # ============================
-
 def load_model():
     print("🧠 Loading Global Crisis Model...")
     model = joblib.load(MODEL_PATH)
@@ -93,26 +135,39 @@ def load_model():
 # ============================
 # DATA LOADERS
 # ============================
+def load_latest_global():
+    doc = db.global_features.find({"mode": "online"}).sort("timestamp", -1).limit(1)
+    docs = list(doc)
+    if not docs:
+        return None
+    latest = docs[0]
+    return latest.get("features", latest)
 
-def load_latest_features():
-    if not os.path.exists(FEATURES_PATH):
-        print("❌ No hourly_features.csv found")
-        return None
-    df = pd.read_csv(FEATURES_PATH)
-    if df.empty:
-        print("❌ hourly_features.csv is empty")
-        return None
-    return df.iloc[-1], df
 
 def load_country_features():
-    if not os.path.exists(COUNTRY_FEATURES_PATH):
-        generate_fake_country_data()
-    return pd.read_csv(COUNTRY_FEATURES_PATH)
+    docs = list(db.country_features.find({"mode": "online"}))
+
+    if not docs:
+        for c in COUNTRIES:
+            features = {
+                col: float(np.random.uniform(-1, 1))
+                for col in FEATURE_COLUMNS
+            }
+            safe_write_country(c, features, mode="online")
+
+        docs = list(db.country_features.find({"mode": "online"}))
+
+    extracted = []
+    for d in docs:
+        f = d.get("features", d)
+        f["country"] = d.get("country", "UNKNOWN")
+        extracted.append(f)
+
+    return extracted
 
 # ============================
 # RISK CLASSIFICATION
 # ============================
-
 def classify_risk(prob):
     if prob >= ALERT_THRESHOLD_HIGH:
         return "🔴 CRITICAL", "GLOBAL CRISIS IMMINENT"
@@ -122,29 +177,8 @@ def classify_risk(prob):
         return "🟢 LOW", "STABLE SYSTEM"
 
 # ============================
-# ALERT SYSTEM
-# ============================
-
-def send_email(subject, body):
-    if not EMAIL_ALERT:
-        return
-    try:
-        msg = MIMEText(body)
-        msg["Subject"] = subject
-        msg["From"] = EMAIL_FROM
-        msg["To"] = EMAIL_TO
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.send_message(msg)
-        print("📧 Email alert sent!")
-    except Exception as e:
-        print(f"❌ Email alert failed: {e}")
-
-# ============================
 # FORECAST ENGINE
 # ============================
-
 def compute_forecast(latest, days=7):
     forecasts = []
     base = latest.copy()
@@ -153,23 +187,11 @@ def compute_forecast(latest, days=7):
         for col in FEATURE_COLUMNS:
             row[col] += np.random.normal(0, 0.02)
         forecasts.append(row)
-    return pd.DataFrame(forecasts)
-
-# ============================
-# ANOMALY DETECTION
-# ============================
-
-def detect_anomalies(df):
-    anomalies = {}
-    for col in FEATURE_COLUMNS:
-        z = (df[col] - df[col].mean()) / (df[col].std() + 1e-9)
-        anomalies[col] = df[col][abs(z) > 2].tolist()
-    return anomalies
+    return forecasts
 
 # ============================
 # REALTIME ENGINE LOOP
 # ============================
-
 def realtime_loop():
     print("\n🌍 World Pulse AI Core — Real-Time Crisis Engine Started")
     print("===============================================")
@@ -178,57 +200,84 @@ def realtime_loop():
 
     while True:
         try:
-            latest, history_df = load_latest_features()
-            if latest is None:
+            latest_features = load_latest_global()
+
+            if latest_features is None:
+                log_event("No global features found — inserting initial features")
+                safe_write_global(initial_global_features, mode="online")
+                cleanup_old_global_features()
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            X = pd.DataFrame([latest[FEATURE_COLUMNS].values], columns=FEATURE_COLUMNS)
-            prob = model.predict_proba(X)[0][1]
+            # Save versioned snapshot safely
+            safe_write_global(latest_features, mode="online")
+            cleanup_old_global_features()
+
+            X = pd.DataFrame([{k: latest_features[k] for k in FEATURE_COLUMNS}])
+            prob = float(model.predict_proba(X)[0][1])
             level, message = classify_risk(prob)
 
-            # ---- 7 DAY FORECAST ----
-            forecast_df = compute_forecast(latest, days=7)
-            forecast_probs = []
-            for i in range(len(forecast_df)):
-                Xf = pd.DataFrame([forecast_df.iloc[i][FEATURE_COLUMNS].values], columns=FEATURE_COLUMNS)
-                forecast_probs.append(float(model.predict_proba(Xf)[0][1]))
+            # Forecast
+            forecast_rows = compute_forecast(latest_features, days=7)
+            forecast_probs = [
+                float(model.predict_proba(pd.DataFrame([row]))[0][1])
+                for row in forecast_rows
+            ]
 
-            # ---- COUNTRY RISKS ----
-            country_df = load_country_features()
+            # Country risks
+            country_docs = load_country_features()
             country_risks = {}
-            for _, row in country_df.iterrows():
-                Xc = pd.DataFrame([row[FEATURE_COLUMNS].values], columns=FEATURE_COLUMNS)
+
+            for row in country_docs:
+                safe_write_country(
+                    row["country"],
+                    {k: row[k] for k in FEATURE_COLUMNS},
+                    mode="online"
+                )
+
+                cleanup_old_country_features(row["country"])
+
+                Xc = pd.DataFrame([{k: row[k] for k in FEATURE_COLUMNS}])
                 p = float(model.predict_proba(Xc)[0][1])
                 country_risks[row["country"]] = round(p, 3)
 
-            # ---- ANOMALIES ----
-            anomalies = detect_anomalies(history_df)
-
             ts = datetime.now(timezone.utc).isoformat()
-
             log_event(f"Time: {ts}")
             log_event(f"Crisis Probability: {prob:.4f} | Risk Level: {level}")
             log_event(f"7-Day Forecast: {[round(p,3) for p in forecast_probs]}")
             log_event(f"Country Risks: {country_risks}")
-            log_event(f"Anomalies: {anomalies}")
             log_event(f"System Status: {message}\n")
 
-            # ---- ALERT ----
-            if level == "🔴 CRITICAL":
-                send_email(
-                    "🚨 GLOBAL CRISIS ALERT",
-                    f"Crisis Probability: {prob:.2f}\n\nCountry Risks:\n{country_risks}"
-                )
-
         except Exception as e:
+            db.pipeline_errors.insert_one({
+                "type": "engine_runtime_error",
+                "error": str(e),
+                "timestamp": datetime.utcnow(),
+                "traceback": traceback.format_exc()
+            })
             log_event(f"ENGINE ERROR: {str(e)}")
 
         time.sleep(CHECK_INTERVAL)
 
 # ============================
+# INITIAL GLOBAL FEATURES
+# ============================
+initial_global_features = {
+    "news_sentiment": 0.12,
+    "gdelt_sentiment": -0.05,
+    "crypto_return": 0.03,
+    "crypto_volatility": 0.1,
+    "stock_return": -0.02,
+    "stock_volatility": 0.08,
+    "weather_anomaly": 0.15
+}
+
+# ============================
 # ENTRY POINT
 # ============================
-
 if __name__ == "__main__":
+    if load_latest_global() is None:
+        safe_write_global(initial_global_features, mode="online")
+        cleanup_old_global_features()
+
     realtime_loop()

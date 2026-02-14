@@ -6,3 +6,5 @@ _id,source,category,collected_at,data.article,data.date,data.views
 6986c8e861fb9c0b2b64dbd7,wikipedia,public_attention,2026-02-07 05:08:56.035,Earthquake,20260206,2097
 698871580cf7d9fd882ddc0d,wikipedia,public_attention,2026-02-08 11:19:52.936,Earthquake,20260207,1771
 698ac7f28005882b6b9473b7,wikipedia,public_attention,2026-02-10 05:53:54.592,Earthquake,20260209,2191
+698cab70c828205b65ec52c5,wikipedia,public_attention,2026-02-11 16:16:48.054,Earthquake,20260208,1955
+698cab70c828205b65ec52c6,wikipedia,public_attention,2026-02-11 16:16:48.056,Earthquake,20260210,2640

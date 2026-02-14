@@ -1,0 +1,17 @@
+{
+  "schema": {
+    "timestamp": "object",
+    "news_sentiment": "float64",
+    "news_sentiment_std": "float64",
+    "gdelt_sentiment": "float64",
+    "gdelt_sentiment_std": "float64",
+    "crypto_return": "float64",
+    "crypto_volatility": "float64",
+    "stock_return": "float64",
+    "stock_volatility": "float64",
+    "weather_anomaly": "float64",
+    "global_risk_score": "float64",
+    "top_topics": "object",
+    "fs_timestamp": "object"
+  }
+}

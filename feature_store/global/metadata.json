@@ -1,0 +1,20 @@
+{
+  "name": "global",
+  "updated_at": "2026-02-12T16:27:09.372697",
+  "rows": 17,
+  "columns": [
+    "timestamp",
+    "news_sentiment",
+    "news_sentiment_std",
+    "gdelt_sentiment",
+    "gdelt_sentiment_std",
+    "crypto_return",
+    "crypto_volatility",
+    "stock_return",
+    "stock_volatility",
+    "weather_anomaly",
+    "global_risk_score",
+    "top_topics",
+    "fs_timestamp"
+  ]
+}

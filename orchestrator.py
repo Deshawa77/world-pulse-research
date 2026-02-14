@@ -1,259 +1,272 @@
 # -*- coding: utf-8 -*-
-import sys
-import io
+"""
+World Pulse Orchestrator
+Integrated ML Engine + Feature Store + Model Registry
+Phase 6+7 (MLOps Architecture)
+"""
 
-# Force UTF-8 for stdout and stderr
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-
-import collectors.news as news
-# import collectors.reddit as reddit
-import collectors.gdelt as gdelt
-import collectors.wiki as wiki
-import collectors.trends as trends
-import collectors.usgs as usgs
-import collectors.weather as weather
-import collectors.coingecko as coingecko
-import collectors.fred as fred
-import collectors.frankfurter as frankfurter
-import collectors.who as who
-import collectors.twelvedata as twelvedata
-import collectors.worldbank as worldbank
-
-from database.mongo import insert, insert_run_metadata, db
-import time, traceback, logging
+import sys, os, time, traceback, logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
+import pandas as pd
+import numpy as np
+import joblib
+from email.mime.text import MIMEText
+import smtplib
 
-from processing import preprocess_data, nlp_analysis, topic_modeling_with_nlp
-from processing.global_crisis_detector import detect_crisis
-from processing.daily_feature_builder import build_hourly_features
-from monitoring.email_alert import send_email_alert
-from processing.crisis_by_country import crisis_heatmap
-from processing.crisis_forecast import forecast_sentiment
-from processing.ai_summary import generate_summary
-from processing.global_risk import compute_global_risk
+# -------------------------------
+# Safe UTF-8 stdout/stderr
+# -------------------------------
+try:
+    sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+    sys.stderr.reconfigure(encoding='utf-8', line_buffering=True)
+except Exception:
+    pass
 
+print("🚀 World Pulse Orchestrator starting with MLOps stack...", flush=True)
+
+# -------------------------------
+# CONFIG
+# -------------------------------
+FEATURES_PATH = "./data/hourly_features.csv"
+COUNTRY_FEATURES_PATH = "./data/country_features.csv"
+LOG_DIR = "./logs"
+LOG_FILE = os.path.join(LOG_DIR, "orchestrator.log")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+ALERT_THRESHOLD_HIGH = 0.75
+ALERT_THRESHOLD_MED = 0.40
+CHECK_INTERVAL = 60*60  # 1 hour
+
+EMAIL_ALERT = False
+EMAIL_TO = "you@example.com"
+EMAIL_FROM = "worldpulse.ai@example.com"
+SMTP_SERVER = "smtp.example.com"
+SMTP_PORT = 587
+SMTP_USER = "smtp_user"
+SMTP_PASS = "smtp_password"
+
+FEATURE_COLUMNS = [
+    "news_sentiment",
+    "gdelt_sentiment",
+    "crypto_return",
+    "crypto_volatility",
+    "stock_return",
+    "stock_volatility",
+    "weather_anomaly"
+]
+
+# -------------------------------
+# Logging
+# -------------------------------
 logging.basicConfig(
-    filename="orchestrator.log",
+    filename=LOG_FILE,
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-def _clean_topic(topic):
-    if not topic:
-        return None
-    topic = str(topic).strip()
-    if topic in ["Other", ", ,", ", , ", "921, ,", "1494, ,"]:
-        return None
-    if topic.replace(",", "").strip().isdigit():
-        return None
-    if len(topic) < 3:
-        return None
-    return topic
+def log_event(msg):
+    ts = datetime.now(timezone.utc).isoformat()
+    print(msg, flush=True)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{ts} | {msg}\n")
 
-def get_top_daily_topics(limit=5):
-    topic_counts = {}
-    for col in ["news", "gdelt"]:
-        for doc in db[col].find({}, {"data.topic": 1}):
-            raw_topic = doc.get("data", {}).get("topic", "")
-            if not raw_topic:
-                continue
-            for t in [t.strip() for t in raw_topic.split(",") if t.strip()]:
-                t_clean = _clean_topic(t)
-                if t_clean:
-                    topic_counts[t_clean] = topic_counts.get(t_clean, 0) + 1
-    sorted_topics = sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)
-    if not sorted_topics:
-        return ["multiple global factors"]
-    return [t[0] for t in sorted_topics[:limit]]
-
-def _safe_fetch_and_store(label, fetch_fn, collection_name, unique_keys=None):
+# -------------------------------
+# Email Alert
+# -------------------------------
+def send_email(subject, body):
+    if not EMAIL_ALERT:
+        return
     try:
-        data = fetch_fn()
-        count_fetched = len(data) if isinstance(data, list) else len(data.keys())
-        logging.info(f"{label}: Fetched {count_fetched} items")
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = EMAIL_FROM
+        msg["To"] = EMAIL_TO
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+        log_event("📧 Email alert sent!")
+    except Exception as e:
+        log_event(f"❌ Failed to send email: {e}")
+
+# -------------------------------
+# Feature Store
+# -------------------------------
+from feature_store.feature_store import FeatureStore
+fs = FeatureStore()
+
+# -------------------------------
+# Model Registry (NEW)
+# -------------------------------
+from feature_store.model_registry import get_production_model
+
+# -------------------------------
+# ML Engine
+# -------------------------------
+def load_model():
+    """
+    Load production model from Model Registry
+    """
+    prod_model_path = get_production_model()
+
+    # Fallback safety
+    if prod_model_path is None or not os.path.exists(prod_model_path):
+        log_event("⚠️ No production model in registry. Falling back to ./models/gb_model.pkl")
+        fallback = "./models/gb_model.pkl"
+        if not os.path.exists(fallback):
+            raise FileNotFoundError("No production model and no fallback model found")
+        model = joblib.load(fallback)
+        return model
+
+    log_event(f"🧠 Loading Production Model: {prod_model_path}")
+    model = joblib.load(prod_model_path)
+    log_event("✅ Production model loaded")
+    return model
+
+def classify_risk(prob):
+    if prob >= ALERT_THRESHOLD_HIGH:
+        return "🔴 CRITICAL", "GLOBAL CRISIS IMMINENT"
+    elif prob >= ALERT_THRESHOLD_MED:
+        return "🟠 ELEVATED", "INSTABILITY DETECTED"
+    else:
+        return "🟢 LOW", "STABLE SYSTEM"
+
+def compute_forecast(latest, days=7):
+    forecasts = []
+    for _ in range(days):
+        row = latest.copy()
+        for col in FEATURE_COLUMNS:
+            row[col] += np.random.normal(0, 0.02)
+        forecasts.append(row)
+    return pd.DataFrame(forecasts)
+
+def detect_anomalies(df):
+    anomalies = {}
+    for col in FEATURE_COLUMNS:
+        if col in df.columns:
+            z_scores = (df[col] - df[col].mean()) / (df[col].std() + 1e-9)
+            anomalies[col] = df[col][abs(z_scores) > 2].tolist()
+    return anomalies
+
+def run_ml_engine():
+    try:
+        model = load_model()
+
+        # --- Load latest features ---
         try:
-            inserted_count = insert(collection_name, data, unique_keys=unique_keys)
-            logging.info(f"{label}: Inserted {inserted_count} new items into {collection_name}")
+            df_features = fs.read_global()
+            if not df_features.empty:
+                latest = df_features.iloc[-1]
+                log_event("✅ Loaded latest features from Feature Store")
+            else:
+                latest = pd.read_csv(FEATURES_PATH).iloc[-1]
+                log_event("⚠️ Feature Store empty, loaded CSV features")
         except Exception as e:
-            logging.error(f"{label}: Mongo insert failed - {e}")
-            traceback.print_exc()
-            inserted_count = 0
-        return data, inserted_count, None
+            latest = pd.read_csv(FEATURES_PATH).iloc[-1]
+            log_event(f"⚠️ Feature Store read failed: {e}")
+
+        if latest is None:
+            log_event("❌ Latest features not available")
+            return
+
+        X = pd.DataFrame([latest[FEATURE_COLUMNS].values], columns=FEATURE_COLUMNS)
+        prob = model.predict_proba(X)[0][1]
+        level, message = classify_risk(prob)
+
+        # Forecast
+        forecast_df = compute_forecast(latest, days=7)
+        forecast_probs = [model.predict_proba(forecast_df.iloc[[i]][FEATURE_COLUMNS])[0,1] for i in range(len(forecast_df))]
+
+        # Country risk
+        try:
+            country_df = fs.read_country()
+            if country_df.empty:
+                country_df = pd.read_csv(COUNTRY_FEATURES_PATH)
+        except Exception:
+            country_df = pd.read_csv(COUNTRY_FEATURES_PATH)
+
+        country_risks = {}
+        for _, row in country_df.iterrows():
+            x_country = row[FEATURE_COLUMNS].values.reshape(1,-1)
+            p = model.predict_proba(x_country)[0,1]
+            country_risks[row["country"]] = round(float(p), 3)
+
+        # Anomalies
+        df_history = pd.read_csv(FEATURES_PATH)
+        anomalies = detect_anomalies(df_history)
+
+        # Logging
+        ts = datetime.now(timezone.utc).isoformat()
+        log_event(f"Time: {ts}")
+        log_event(f"Crisis Probability: {prob:.4f} | Risk Level: {level}")
+        log_event(f"7-Day Forecast: {[round(p,3) for p in forecast_probs]}")
+        log_event(f"Country Risks: {country_risks}")
+        log_event(f"Anomalies: {anomalies}")
+        log_event(f"System Status: {message}")
+
+        # Save to Feature Store
+        try:
+            fs.write_global(df_history)
+            log_event("✅ Features saved to Feature Store")
+        except Exception as e:
+            log_event(f"⚠️ Failed to save features: {e}")
+
+        if level == "🔴 CRITICAL":
+            send_email("🚨 GLOBAL CRISIS ALERT", f"Crisis probability: {prob:.2f}\n{country_risks}")
+
     except Exception as e:
-        logging.error(f"{label}: Fetch failed - {e}")
+        log_event(f"❌ ML Engine error: {e}")
         traceback.print_exc()
-        return [], 0, str(e)
 
-def orchestrate_parallel(selected_collectors=None):
-    tasks = {
-        "news": (lambda: news.fetch_news("earthquake", page_size=5), "news", ["data.title", "data.query"]),
-        # "reddit": (lambda: reddit.fetch_reddit_posts("earthquake", limit=5), "reddit", ["data.title", "data.query"]),
-        "gdelt": (lambda: gdelt.fetch_gdelt_articles("(earthquake OR flood)", max_records=5), "gdelt", ["data.title", "data.url"]),
-        "wiki": (lambda: wiki.fetch_pageviews("Earthquake", days=5), "wiki", ["data.date"]),
-        "trends": (lambda: trends.fetch_trends("earthquake"), "trends", ["data.date"]),
-        "earthquakes": (lambda: usgs.fetch_earthquakes(), "earthquakes", ["data.id"]),
-        "weather": (lambda: weather.fetch_weather("Tokyo"), "weather", ["data.timestamp"]),
-        "crypto": (lambda: coingecko.fetch_crypto("bitcoin", "usd", 5), "crypto", ["data.timestamp"]),
-        "fred": (lambda: fred.fetch_indicator("GDP", "2025-01-01", "2026-01-01"), "fred", ["data.date"]),
-        "exchange_rates": (lambda: frankfurter.fetch_exchange_rates("USD"), "economics", ["data.currency"]),
-        "who": (lambda: who.fetch_who_indicator("WHOSIS_000001", max_results=5), "who", ["data.date"]),
-        "stocks": (lambda: twelvedata.fetch_stock("AAPL", "1day", 5), "stocks", ["data.timestamp"]),
-        "worldbank": (lambda: worldbank.fetch_worldbank_data(date="2020:2025", per_page=5), "worldbank", ["data.date"])
-    }
-    if selected_collectors:
-        tasks = {k: v for k, v in tasks.items() if k in selected_collectors}
-
-    unified_data = {}
-    run_summary = {"total_fetched": {}, "total_inserted": {}, "errors": {}}
-
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        future_to_label = {
-            executor.submit(_safe_fetch_and_store, label, fn, collection, unique_keys): label
-            for label, (fn, collection, unique_keys) in tasks.items()
-        }
-        for future in as_completed(future_to_label):
-            label = future_to_label[future]
-            try:
-                data, inserted_count, error = future.result()
-                unified_data[label] = data
-                run_summary["total_fetched"][label] = len(data) if isinstance(data, list) else len(data.keys())
-                run_summary["total_inserted"][label] = inserted_count
-                if error:
-                    run_summary["errors"][label] = error
-            except Exception as e:
-                logging.error(f"{label}: Unhandled exception - {e}")
-                traceback.print_exc()
-                unified_data[label] = []
-                run_summary["errors"][label] = str(e)
-
-    insert_run_metadata("orchestration_run", run_summary)
-    return unified_data
-
+# -------------------------------
+# Orchestrator Pipeline
+# -------------------------------
 def run_pipeline():
-    logging.info("Starting World Pulse Pipeline...")
-    start_time = time.time()
-
-    data = orchestrate_parallel()
-    print(f"\nOrchestration complete in {time.time() - start_time:.2f} seconds!")
+    log_event("Starting World Pulse Pipeline...")
 
     try:
-        print("\nStarting preprocessing...")
+        from processing import preprocess_data
         preprocess_data.main()
-        logging.info("Preprocessing complete")
     except Exception as e:
-        logging.error(f"Preprocessing error: {e}")
-        traceback.print_exc()
+        log_event(f"Preprocessing error: {e}")
 
     try:
-        print("\nRunning NLP sentiment analysis...")
+        from processing import nlp_analysis
         nlp_analysis.main()
     except Exception as e:
-        logging.error(f"NLP error: {e}")
-        traceback.print_exc()
+        log_event(f"NLP error: {e}")
 
     try:
-        print("\nBuilding daily features...")
+        from processing.daily_feature_builder import build_hourly_features
         build_hourly_features()
     except Exception as e:
-        logging.error(f"build_daily_features error: {e}")
-        traceback.print_exc()
+        log_event(f"Daily features error: {e}")
 
     try:
-        print("\nRunning topic modeling...")
+        from processing import topic_modeling_with_nlp
         topic_modeling_with_nlp.main()
     except Exception as e:
-        logging.error(f"Topic modeling error: {e}")
-        traceback.print_exc()
+        log_event(f"Topic modeling error: {e}")
 
     try:
-        print("\nRunning Global Crisis Detector...")
-        detect_crisis(email_alert_func=send_email_alert)
+        from processing.global_crisis_detector import detect_crisis
+        detect_crisis(email_alert_func=send_email)
     except Exception as e:
-        logging.error(f"Crisis detector error: {e}")
-        traceback.print_exc()
+        log_event(f"Crisis detector error: {e}")
 
-    try:
-        print("\nGenerating crisis heatmap by country...")
-        crisis_heatmap()
-    except Exception as e:
-        logging.error(f"Crisis heatmap error: {e}")
-        traceback.print_exc()
+    run_ml_engine()
 
-    try:
-        print("\nForecasting tomorrow's sentiment...")
-        forecast_sentiment()
-    except Exception as e:
-        logging.error(f"Forecast error: {e}")
-        traceback.print_exc()
-
-    # ---------------------
-    # AI Summary + Risk Score + Save to Mongo History
-    # ---------------------
-    try:
-        print("\nGenerating executive AI summary...")
-        summary_text = generate_summary()
-        risk_score, top_topics = 0, []
-
-        try:
-            risk_score, top_topics = compute_global_risk()
-        except Exception:
-            pass
-
-        print(summary_text)
-        top_topics_today = get_top_daily_topics()
-        print("Top topics today:", ", ".join(top_topics_today))
-
-        # Save risk to Mongo history
-        try:
-            db.global_risk_history.insert_one({
-                "date": datetime.utcnow().strftime("%Y-%m-%d"),
-                "risk_score": risk_score,
-                "top_topics": top_topics,
-                "updated_at": datetime.utcnow()
-            })
-            logging.info("Saved global risk history for today")
-        except Exception as e:
-            logging.error(f"Failed to save global risk history: {e}")
-            traceback.print_exc()
-
-        # Optional email alert
-        if risk_score > 50:
-            topics_text = ", ".join(top_topics) if top_topics else "multiple global factors"
-            send_email_alert(
-                subject=f"World Pulse Risk Update: {risk_score}",
-                message=summary_text + f"\n\nTop Topics: {topics_text}"
-            )
-
-    except Exception as e:
-        logging.error(f"AI summary error: {e}")
-        traceback.print_exc()
-
-    logging.info("World Pulse Pipeline Completed")
-
+# -------------------------------
+# Main Loop
+# -------------------------------
 if __name__ == "__main__":
-    CHECK_INTERVAL = 60 * 60
-    print("Starting hourly World Pulse monitoring...")
-    logging.info("Starting hourly World Pulse monitoring...")
-
-    # Print today's global risk immediately on script start
-    try:
-        risk, topics = compute_global_risk()
-        print(f"[GLOBAL RISK] {datetime.utcnow().date()}: {risk} → Top Topics: {topics}")
-    except Exception as e:
-        print(f"Could not compute global risk: {e}")
-
+    print("🧠 World Pulse Autonomous AI System running...", flush=True)
     while True:
         try:
-            print("\nRunning full pipeline...")
-            logging.info("Running full pipeline...")
             run_pipeline()
         except Exception as e:
-            print("Monitoring error:", e)
-            logging.error(f"Monitoring error: {e}")
-        print(f"Sleeping for {CHECK_INTERVAL/60:.0f} minutes...")
-        logging.info(f"Sleeping for {CHECK_INTERVAL/60:.0f} minutes...")
+            log_event(f"Monitoring pipeline error: {e}")
+        print(f"Sleeping for {CHECK_INTERVAL/60:.0f} minutes...\n", flush=True)
         time.sleep(CHECK_INTERVAL)
-
