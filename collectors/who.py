@@ -2,7 +2,8 @@ import requests
 from datetime import datetime, timezone
 import json
 from database.mongo import insert
-from bson import ObjectId  # needed to detect Mongo ObjectId
+from backend.kafka_client import send_to_kafka  # Kafka producer
+from bson import ObjectId  # Handle MongoDB ObjectId
 
 WHO_BASE_URL = "https://ghoapi.azureedge.net/api"
 
@@ -23,7 +24,7 @@ def fetch_who_indicator(indicator_code, max_results=5):
         results = []
 
         for item in data.get("value", [])[:max_results]:
-            results.append({
+            record = {
                 "source": "who",
                 "category": "health",
                 "collected_at": collected_at,
@@ -33,7 +34,14 @@ def fetch_who_indicator(indicator_code, max_results=5):
                     "value": item.get("Value"),
                     "indicator": indicator_code
                 }
-            })
+            }
+            results.append(record)
+
+            # Send each record to Kafka immediately
+            try:
+                send_to_kafka(record)
+            except Exception as e:
+                print(f"Error sending record to Kafka: {e}")
 
         return results
 
@@ -57,10 +65,15 @@ def convert_for_json(obj):
 
 
 if __name__ == "__main__":
+    print("Starting WHO collector...")
+
     # Fetch and insert raw data into MongoDB
     data = fetch_who_indicator("WHOSIS_000001", max_results=5)
-    insert("health", data)
+    if data:
+        insert("health", data)
 
-    # Safe copy for printing JSON (handles datetime & ObjectId)
-    safe_data = convert_for_json(data)
-    print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+        # Safe copy for printing JSON
+        safe_data = convert_for_json(data)
+        print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+
+    print("WHO collection finished.")

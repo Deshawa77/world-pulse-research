@@ -4,6 +4,7 @@ import time
 import random
 import json
 from database.mongo import insert
+from backend.kafka_client import send_to_kafka  # Make sure this exists
 from pytrends.exceptions import TooManyRequestsError
 
 def fetch_trends(keyword="football", max_retries=5):
@@ -47,20 +48,40 @@ def fetch_trends(keyword="football", max_retries=5):
 
     return records
 
-def convert_datetimes(obj):
-    """Recursively convert all datetime objects in a dict/list to ISO strings"""
+def convert_for_json(obj):
+    """Recursively convert datetimes and MongoDB ObjectIds to strings"""
+    from bson import ObjectId
     if isinstance(obj, dict):
-        return {k: convert_datetimes(v) for k, v in obj.items()}
+        return {k: convert_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, list):
-        return [convert_datetimes(i) for i in obj]
+        return [convert_for_json(i) for i in obj]
     elif isinstance(obj, datetime):
         return obj.isoformat()
+    elif isinstance(obj, ObjectId):
+        return str(obj)
     else:
         return obj
 
+def collect_trends(keyword="earthquake"):
+    """
+    Fetch Google Trends data, send each record to Kafka, insert into MongoDB.
+    """
+    data = fetch_trends(keyword)
+    if not data:
+        print("No data fetched from Google Trends.")
+        return
+
+    # Insert into MongoDB (warehouse)
+    insert("trends", data)
+
+    # Send each record to Kafka (make JSON-safe)
+    for record in data:
+        record_json_safe = convert_for_json(record)
+        send_to_kafka(record_json_safe)
+        print(f"Sent to Kafka: {record['data']['keyword']} - {record['data']['date']}")
+
+    print(f"Google Trends collector finished. {len(data)} records processed.")
+
+
 if __name__ == "__main__":
-    data = fetch_trends("earthquake")
-    if data:
-        insert("trends", data)
-        safe_data = convert_datetimes(data)
-        print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+    collect_trends("earthquake")

@@ -4,7 +4,8 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone
 import json
 from database.mongo import insert
-from bson import ObjectId  # <-- handle Mongo ObjectId
+from bson import ObjectId
+from backend.kafka_client import send_to_kafka  # Make sure this exists
 
 load_dotenv()
 
@@ -59,9 +60,8 @@ def fetch_stock(symbol="AAPL", interval="1day", outputsize=5):
         print("Error fetching stock data:", e)
         return []
 
-
 def convert_for_json(obj):
-    """Recursively convert datetime and ObjectId for JSON serialization"""
+    """Recursively convert datetime and MongoDB ObjectIds to strings"""
     if isinstance(obj, dict):
         return {k: convert_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -73,10 +73,25 @@ def convert_for_json(obj):
     else:
         return obj
 
+def collect_stock(symbol="AAPL", interval="1day", outputsize=5):
+    """
+    Fetch stock data, send to Kafka, and insert into MongoDB.
+    """
+    data = fetch_stock(symbol, interval, outputsize)
+    if not data:
+        print("No stock data fetched.")
+        return
 
-if __name__ == "__main__":
-    data = fetch_stock("AAPL", "1day", 5)
+    # Insert into MongoDB (warehouse)
     insert("stocks", data)
 
-    safe_data = convert_for_json(data)
-    print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+    # Send each record to Kafka
+    for record in data:
+        record_json_safe = convert_for_json(record)
+        send_to_kafka(record_json_safe)
+        print(f"Sent to Kafka: {record['data']['symbol']} @ {record['data']['datetime']}")
+
+    print(f"Twelve Data collector finished. {len(data)} records processed.")
+
+if __name__ == "__main__":
+    collect_stock("AAPL", "1day", 5)

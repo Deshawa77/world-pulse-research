@@ -1,10 +1,13 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, timedelta, timezone  # timezone used for UTC
 
-path = "data/daily_features.csv"
+# Paths
+csv_path = "data/daily_features.csv"
+parquet_path = "data/daily_features.parquet"  # Parquet for orchestrator
+
 days = 365
-start_date = datetime.now(UTC) - timedelta(days=days)
+start_date = datetime.now(timezone.utc) - timedelta(days=days)
 
 np.random.seed(7)
 data = []
@@ -97,9 +100,16 @@ for i in range(days):
         "global_risk_score": risk
     })
 
+# Create DataFrame
 df = pd.DataFrame(data)
-df.to_csv(path, index=False)
+
+# Save CSV (optional backup)
+df.to_csv(csv_path, index=False)
+
+# Save Parquet for orchestrator (valid format)
+df.to_parquet(parquet_path, index=False, engine='pyarrow')  # <-- ensures proper Parquet file
 
 print("Phase-2 synthetic dataset created")
 print("Rows:", len(df))
 print("Crisis days (>70):", (df["global_risk_score"] > 70).sum())
+print(f"Parquet file saved at: {parquet_path}")

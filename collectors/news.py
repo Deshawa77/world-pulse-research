@@ -4,7 +4,8 @@ import requests
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from database.mongo import insert
-from bson import ObjectId  # <-- handle MongoDB ObjectId
+from bson import ObjectId  # handle MongoDB ObjectId
+from backend.kafka_client import send_to_kafka
 
 # Load environment variables
 load_dotenv()
@@ -37,7 +38,7 @@ def fetch_news(query: str, page_size: int = 10):
 
         records = []
         for item in payload.get("articles", []):
-            records.append({
+            record = {
                 "source": "newsapi",
                 "category": "media",
                 "collected_at": collected_at,
@@ -49,7 +50,11 @@ def fetch_news(query: str, page_size: int = 10):
                     "published_at": item.get("publishedAt"),
                     "source_name": item.get("source", {}).get("name")
                 }
-            })
+            }
+            records.append(record)
+
+            # Send each record to Kafka in real-time
+            send_to_kafka(record)
 
         return records
 
@@ -70,11 +75,27 @@ def convert_for_json(obj):
     else:
         return obj
 
-if __name__ == "__main__":
-    data = fetch_news("earthquake", page_size=5)
-    if data:
+def collect_news(query="earthquake", page_size=10, save_to_mongo=True):
+    """
+    Fetch news, send to Kafka, and optionally save to MongoDB.
+    """
+    data = fetch_news(query, page_size=page_size)
+    if not data:
+        return
+
+    if save_to_mongo:
         insert("news", data)  # Insert raw data into MongoDB
 
-        # Convert datetimes and ObjectIds to strings for safe printing
-        safe_data = convert_for_json(data)
-        print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+    # Safe JSON conversion for logging/printing
+    safe_data = convert_for_json(data)
+    print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+
+if __name__ == "__main__":
+    # Example: fetch 5 news articles about earthquakes
+    collect_news(query="earthquake", page_size=5)
+
+
+#Real-time Kafka streaming: every news item is sent via send_to_kafka(record).
+#MongoDB backup: keeps your raw data in your warehouse.
+#Safe JSON printing: converts datetimes and ObjectIds to strings.
+#Flexible collector function: collect_news() can now be called from your orchestrator for different queries.

@@ -1,4 +1,4 @@
-# processing/advanced_nlp_with_csv.py
+# processing/topic_modeling_with_nlp.py
 
 from database.mongo import db
 from bertopic import BERTopic
@@ -7,6 +7,9 @@ import pandas as pd
 import yake
 from datetime import datetime
 
+# -------------------------------
+# Collections and text keys
+# -------------------------------
 COLLECTIONS = {
     "news": ["data.title", "data.description"],
     "reddit": ["data.title", "data.text"],
@@ -15,6 +18,9 @@ COLLECTIONS = {
     "who": ["data.description"]
 }
 
+# -------------------------------
+# Helper: Fetch texts from Mongo
+# -------------------------------
 def fetch_texts(collection_name, text_keys):
     collection = db[collection_name]
     docs = []
@@ -35,16 +41,25 @@ def fetch_texts(collection_name, text_keys):
             doc_ids.append(doc["_id"])
     return docs, doc_ids
 
+# -------------------------------
+# Topic modeling batch function
+# -------------------------------
 def topic_modeling(texts):
     vectorizer = CountVectorizer(stop_words="english")
     model = BERTopic(vectorizer_model=vectorizer, language="english")
     topics, probs = model.fit_transform(texts)
     return model, topics
 
+# -------------------------------
+# Keyword extraction
+# -------------------------------
 def extract_keywords(texts, top=5):
     kw_extractor = yake.KeywordExtractor(top=top, stopwords=None)
     return [kw_extractor.extract_keywords(t) for t in texts]
 
+# -------------------------------
+# Update Mongo documents
+# -------------------------------
 def update_documents(collection_name, doc_ids, topics, topic_model, keywords):
     collection = db[collection_name]
     for i, doc_id in enumerate(doc_ids):
@@ -65,6 +80,9 @@ def update_documents(collection_name, doc_ids, topics, topic_model, keywords):
             }}
         )
 
+# -------------------------------
+# Export to CSV
+# -------------------------------
 def export_collection_to_csv(collection_name, doc_ids, topics, topic_model, keywords):
     rows = []
     for i, doc_id in enumerate(doc_ids):
@@ -87,6 +105,9 @@ def export_collection_to_csv(collection_name, doc_ids, topics, topic_model, keyw
     df.to_csv(filename, index=False)
     print(f"{collection_name}: Exported {len(rows)} records to {filename}")
 
+# -------------------------------
+# Daily summary
+# -------------------------------
 def generate_daily_summary():
     sentiment_totals = 0
     sentiment_count = 0
@@ -111,6 +132,20 @@ def generate_daily_summary():
     print(summary)
     return summary
 
+# -------------------------------
+# Per-record stub for orchestrator
+# -------------------------------
+def process_record(record):
+    """
+    Stub for per-record topic modeling in streaming.
+    Since BERTopic is batch, we just mark the record as pending for topic assignment.
+    """
+    record["topic_modeling_status"] = "pending"
+    return record
+
+# -------------------------------
+# Main batch routine
+# -------------------------------
 def main():
     print("Starting Topic Modeling with NLP...")
 
@@ -129,5 +164,8 @@ def main():
     generate_daily_summary()
     print("\nTopic Modeling with NLP complete!")
 
+# -------------------------------
+# Run if called directly
+# -------------------------------
 if __name__ == "__main__":
     main()

@@ -1,8 +1,9 @@
 import requests
 from datetime import datetime, timezone
 import json
+from bson import ObjectId
+from backend.kafka_client import send_to_kafka
 from database.mongo import insert
-from bson import ObjectId  # <-- handle MongoDB ObjectId
 
 BASE_URL = "https://api.frankfurter.app/latest"
 
@@ -24,7 +25,7 @@ def fetch_exchange_rates(base_currency="USD"):
 
         standardized = []
         for currency, rate in rates.items():
-            standardized.append({
+            record = {
                 "source": "frankfurter",
                 "category": "finance",
                 "collected_at": collected_at,
@@ -33,7 +34,17 @@ def fetch_exchange_rates(base_currency="USD"):
                     "currency": currency,
                     "rate": rate
                 }
-            })
+            }
+            standardized.append(record)
+
+            # Send to Kafka immediately
+            send_to_kafka(record)
+            print(f"Sent to Kafka: {currency} → {rate}")
+
+        # Insert all records into MongoDB (warehouse)
+        if standardized:
+            insert("economics", standardized)
+            print(f"Inserted {len(standardized)} records into MongoDB")
 
         return standardized
 
@@ -54,11 +65,9 @@ def convert_for_json(obj):
     else:
         return obj
 
+# Optional main for standalone testing
 if __name__ == "__main__":
     data = fetch_exchange_rates("USD")
     if data:
-        insert("economics", data)  # Insert raw data into MongoDB
-
-        # Convert any datetime objects and Mongo ObjectIds to strings for safe printing
         safe_data = convert_for_json(data)
         print(json.dumps(safe_data, indent=2, ensure_ascii=False))

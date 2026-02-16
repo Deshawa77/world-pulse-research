@@ -5,6 +5,7 @@ import praw
 from bson import ObjectId
 from dotenv import load_dotenv
 from database.mongo import insert
+from backend.kafka_client import send_to_kafka  # Make sure this exists
 
 # Load environment variables
 load_dotenv()
@@ -41,18 +42,18 @@ def fetch_reddit_posts(query: str, limit: int = 5):
                 "created_utc": datetime.fromtimestamp(
                     submission.created_utc,
                     tz=timezone.utc
-                ).isoformat()
+                )
             }
         })
 
     return records
 
-def convert_datetimes(obj):
-    """Recursively convert all datetime objects in a dict/list to ISO strings and ObjectId to str"""
+def convert_for_json(obj):
+    """Recursively convert datetimes and MongoDB ObjectIds to strings"""
     if isinstance(obj, dict):
-        return {k: convert_datetimes(v) for k, v in obj.items()}
+        return {k: convert_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, list):
-        return [convert_datetimes(i) for i in obj]
+        return [convert_for_json(i) for i in obj]
     elif isinstance(obj, datetime):
         return obj.isoformat()
     elif isinstance(obj, ObjectId):
@@ -60,12 +61,26 @@ def convert_datetimes(obj):
     else:
         return obj
 
-if __name__ == "__main__":
-    data = fetch_reddit_posts("earthquake", limit=5)
-    
-    # Insert into MongoDB
+def collect_reddit(query="earthquake", limit=5):
+    """
+    Fetch Reddit data, send to Kafka, and insert into MongoDB.
+    """
+    data = fetch_reddit_posts(query=query, limit=limit)
+    if not data:
+        print("No Reddit posts fetched.")
+        return
+
+    # Insert into MongoDB (warehouse)
     insert("reddit", data)
 
-    # Convert datetimes and ObjectId for safe printing
-    safe_data = convert_datetimes(data)
-    print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+    # Send each record to Kafka
+    for record in data:
+        record_json_safe = convert_for_json(record)  # convert datetimes/ObjectId
+        send_to_kafka(record_json_safe)
+        print(f"Sent to Kafka: {record['data']['title']}")
+
+    print(f"Reddit collector finished. {len(data)} records processed.")
+
+
+if __name__ == "__main__":
+    collect_reddit()

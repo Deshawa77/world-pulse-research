@@ -2,7 +2,8 @@ import requests
 from datetime import datetime, timezone
 import json
 from database.mongo import insert
-from bson import ObjectId  # <- Add this to handle ObjectId
+from bson import ObjectId  # Handle MongoDB ObjectId
+from backend.kafka_client import send_to_kafka  # Your Kafka helper
 
 BASE_URL = "http://api.worldbank.org/v2/country/all/indicator/NY.GDP.MKTP.CD"
 
@@ -11,7 +12,6 @@ def fetch_worldbank_data(date="2020:2025", per_page=5):
     Fetch global GDP data from World Bank API and return standardized records.
     """
     collected_at = datetime.now(timezone.utc).isoformat()
-
     params = {
         "format": "json",
         "date": date,
@@ -19,7 +19,7 @@ def fetch_worldbank_data(date="2020:2025", per_page=5):
     }
 
     try:
-        response = requests.get(BASE_URL, params=params)
+        response = requests.get(BASE_URL, params=params, timeout=10)
         if response.status_code != 200:
             print(f"HTTP Error: {response.status_code}")
             return []
@@ -29,9 +29,9 @@ def fetch_worldbank_data(date="2020:2025", per_page=5):
             print("Error or empty response:", data)
             return []
 
-        results = []
+        records = []
         for item in data[1]:
-            results.append({
+            record = {
                 "source": "worldbank",
                 "category": "economy",
                 "collected_at": collected_at,
@@ -41,17 +41,23 @@ def fetch_worldbank_data(date="2020:2025", per_page=5):
                     "year": item['date'],
                     "gdp": item['value']
                 }
-            })
+            }
+            records.append(record)
 
-        return results
+            # Send to Kafka in real-time
+            send_to_kafka(record)
+            print("Sent to Kafka:", record)  # Debug/log
+
+        return records
 
     except Exception as e:
         print("Error fetching World Bank data:", e)
         return []
 
+
 def convert_for_json(obj):
     """
-    Recursively convert datetime and ObjectId to strings in dicts/lists.
+    Recursively convert datetime and ObjectId to strings for JSON.
     """
     if isinstance(obj, dict):
         return {k: convert_for_json(v) for k, v in obj.items()}
@@ -64,9 +70,15 @@ def convert_for_json(obj):
     else:
         return obj
 
-if __name__ == "__main__":
-    data = fetch_worldbank_data(date="2020:2025", per_page=5)
-    insert("worldbank", data)
 
-    safe_data = convert_for_json(data)
-    print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+if __name__ == "__main__":
+    print("Fetching World Bank data...")
+    data = fetch_worldbank_data(date="2020:2025", per_page=5)
+
+    if data:
+        # Insert raw data into MongoDB
+        insert("worldbank", data)
+        safe_data = convert_for_json(data)
+        print(json.dumps(safe_data, indent=2, ensure_ascii=False))
+    else:
+        print("No data fetched.")

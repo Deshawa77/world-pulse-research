@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-World Pulse Orchestrator
-Integrated ML Engine + Feature Store + Model Registry
-Phase 6+7 (MLOps Architecture)
+World Pulse Orchestrator - Optimized Production Streaming
+Collectors → Kafka → Consumer → Data Lake → Preprocessing → Mongo → NLP → Feature Store → ML → Alerts
 """
 
-import sys, os, time, traceback, logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import sys, io, os, json, logging, traceback, time, hashlib
+from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from kafka import KafkaProducer, KafkaConsumer
 import pandas as pd
 import numpy as np
 import joblib
@@ -15,50 +16,17 @@ from email.mime.text import MIMEText
 import smtplib
 
 # -------------------------------
-# Safe UTF-8 stdout/stderr
+# UTF-8 stdout/stderr
 # -------------------------------
-try:
-    sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
-    sys.stderr.reconfigure(encoding='utf-8', line_buffering=True)
-except Exception:
-    pass
-
-print("🚀 World Pulse Orchestrator starting with MLOps stack...", flush=True)
-
-# -------------------------------
-# CONFIG
-# -------------------------------
-FEATURES_PATH = "./data/hourly_features.csv"
-COUNTRY_FEATURES_PATH = "./data/country_features.csv"
-LOG_DIR = "./logs"
-LOG_FILE = os.path.join(LOG_DIR, "orchestrator.log")
-os.makedirs(LOG_DIR, exist_ok=True)
-
-ALERT_THRESHOLD_HIGH = 0.75
-ALERT_THRESHOLD_MED = 0.40
-CHECK_INTERVAL = 60*60  # 1 hour
-
-EMAIL_ALERT = False
-EMAIL_TO = "you@example.com"
-EMAIL_FROM = "worldpulse.ai@example.com"
-SMTP_SERVER = "smtp.example.com"
-SMTP_PORT = 587
-SMTP_USER = "smtp_user"
-SMTP_PASS = "smtp_password"
-
-FEATURE_COLUMNS = [
-    "news_sentiment",
-    "gdelt_sentiment",
-    "crypto_return",
-    "crypto_volatility",
-    "stock_return",
-    "stock_volatility",
-    "weather_anomaly"
-]
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 # -------------------------------
 # Logging
 # -------------------------------
+LOG_DIR = "./logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, "orchestrator.log")
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
@@ -73,8 +41,16 @@ def log_event(msg):
         f.write(f"{ts} | {msg}\n")
 
 # -------------------------------
-# Email Alert
+# Email Alerts
 # -------------------------------
+EMAIL_ALERT = False
+EMAIL_TO = "you@example.com"
+EMAIL_FROM = "worldpulse.ai@example.com"
+SMTP_SERVER = "smtp.example.com"
+SMTP_PORT = 587
+SMTP_USER = "smtp_user"
+SMTP_PASS = "smtp_password"
+
 def send_email(subject, body):
     if not EMAIL_ALERT:
         return
@@ -92,53 +68,129 @@ def send_email(subject, body):
         log_event(f"❌ Failed to send email: {e}")
 
 # -------------------------------
-# Feature Store
+# Kafka Setup
 # -------------------------------
+# -------------------------------
+# JSON serializer for datetime
+# -------------------------------
+def json_serializer(obj):
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    return str(obj)
+
+
+KAFKA_BROKER = "localhost:9092"
+producer = KafkaProducer(
+    bootstrap_servers=KAFKA_BROKER,
+    value_serializer=lambda v: json.dumps(v, default=json_serializer).encode("utf-8")
+)
+
+def send_to_kafka(topic, data):
+    try:
+        if isinstance(data, list):
+            for record in data:
+                producer.send(topic, record)
+        else:
+            producer.send(topic, data)
+        producer.flush()
+        log_event(f"Sent {len(data) if isinstance(data,list) else 1} items to Kafka topic '{topic}'")
+    except Exception as e:
+        log_event(f"Kafka send failed: {e}")
+
+# -------------------------------
+# Import collectors
+# -------------------------------
+import collectors.news as news
+import collectors.gdelt as gdelt
+import collectors.wiki as wiki
+import collectors.trends as trends
+import collectors.usgs as usgs
+import collectors.weather as weather
+import collectors.coingecko as coingecko
+import collectors.fred as fred
+import collectors.frankfurter as frankfurter
+import collectors.who as who
+import collectors.twelvedata as twelvedata
+import collectors.worldbank as worldbank
+
+# -------------------------------
+# Database & Processing
+# -------------------------------
+from database.mongo import db
+from processing.preprocess_data import main as preprocess_main, process_record as preprocess_record
+from processing.nlp_analysis import clean_text, analyze_text
+from processing.daily_feature_builder import build_hourly_features
+from processing.topic_modeling_with_nlp import process_record as topic_modeling_process_record
+from processing.global_crisis_detector import detect_crisis
 from feature_store.feature_store import FeatureStore
+from feature_store.model_registry import get_production_model
+
 fs = FeatureStore()
 
 # -------------------------------
-# Model Registry (NEW)
+# Collector Tasks
 # -------------------------------
-from feature_store.model_registry import get_production_model
+COLLECTOR_TASKS = {
+    "news": (lambda: news.fetch_news("earthquake", page_size=5), "news_topic"),
+    "gdelt": (lambda: gdelt.fetch_gdelt_articles("(earthquake OR flood)", max_records=5), "gdelt_topic"),
+    "wiki": (lambda: wiki.fetch_pageviews("Earthquake", days=5), "wiki_topic"),
+    "trends": (lambda: trends.fetch_trends("earthquake"), "trends_topic"),
+    "earthquakes": (lambda: usgs.fetch_earthquakes(), "earthquakes_topic"),
+    "weather": (lambda: weather.fetch_weather("Tokyo"), "weather_topic"),
+    "crypto": (lambda: coingecko.fetch_crypto("bitcoin","usd",5), "crypto_topic"),
+    "fred": (lambda: fred.fetch_indicator("GDP","2025-01-01","2026-01-01"), "fred_topic"),
+    "exchange_rates": (lambda: frankfurter.fetch_exchange_rates("USD"), "exchange_rates_topic"),
+    "who": (lambda: who.fetch_who_indicator("WHOSIS_000001", max_results=5), "who_topic"),
+    "stocks": (lambda: twelvedata.fetch_stock("AAPL","1day",5), "stocks_topic"),
+    "worldbank": (lambda: worldbank.fetch_worldbank_data(date="2020:2025", per_page=5), "worldbank_topic")
+}
+
+# -------------------------------
+# Collector Loop
+# -------------------------------
+def collector_loop(label, fetch_fn, topic, interval_sec=60):
+    while True:
+        try:
+            data = fetch_fn()
+            if data:
+                send_to_kafka(topic, data)
+        except Exception as e:
+            log_event(f"Collector '{label}' failed: {e}")
+        time.sleep(interval_sec)
+
+def start_all_collectors():
+    for label, (fn, topic) in COLLECTOR_TASKS.items():
+        t = Thread(target=collector_loop, args=(label, fn, topic), daemon=True)
+        t.start()
+        log_event(f"Collector '{label}' started, streaming to '{topic}'")
 
 # -------------------------------
 # ML Engine
 # -------------------------------
+ALERT_THRESHOLD_HIGH = 0.75
+ALERT_THRESHOLD_MED = 0.40
+FEATURE_COLUMNS = [
+    "news_sentiment","gdelt_sentiment","crypto_return","crypto_volatility",
+    "stock_return","stock_volatility","weather_anomaly"
+]
+
 def load_model():
-    """
-    Load production model from Model Registry
-    """
-    prod_model_path = get_production_model()
-
-    # Fallback safety
-    if prod_model_path is None or not os.path.exists(prod_model_path):
-        log_event("⚠️ No production model in registry. Falling back to ./models/gb_model.pkl")
-        fallback = "./models/gb_model.pkl"
-        if not os.path.exists(fallback):
-            raise FileNotFoundError("No production model and no fallback model found")
-        model = joblib.load(fallback)
-        return model
-
-    log_event(f"🧠 Loading Production Model: {prod_model_path}")
-    model = joblib.load(prod_model_path)
-    log_event("✅ Production model loaded")
-    return model
+    path = get_production_model()
+    fallback = "./models/gb_model.pkl"
+    return joblib.load(path) if path and os.path.exists(path) else joblib.load(fallback)
 
 def classify_risk(prob):
-    if prob >= ALERT_THRESHOLD_HIGH:
-        return "🔴 CRITICAL", "GLOBAL CRISIS IMMINENT"
-    elif prob >= ALERT_THRESHOLD_MED:
-        return "🟠 ELEVATED", "INSTABILITY DETECTED"
-    else:
-        return "🟢 LOW", "STABLE SYSTEM"
+    if prob >= ALERT_THRESHOLD_HIGH: return "🔴 CRITICAL", "GLOBAL CRISIS IMMINENT"
+    if prob >= ALERT_THRESHOLD_MED: return "🟠 ELEVATED", "INSTABILITY DETECTED"
+    return "🟢 LOW", "STABLE SYSTEM"
 
 def compute_forecast(latest, days=7):
     forecasts = []
     for _ in range(days):
         row = latest.copy()
         for col in FEATURE_COLUMNS:
-            row[col] += np.random.normal(0, 0.02)
+            if col in row:
+                row[col] += np.random.normal(0,0.02)
         forecasts.append(row)
     return pd.DataFrame(forecasts)
 
@@ -146,74 +198,42 @@ def detect_anomalies(df):
     anomalies = {}
     for col in FEATURE_COLUMNS:
         if col in df.columns:
-            z_scores = (df[col] - df[col].mean()) / (df[col].std() + 1e-9)
-            anomalies[col] = df[col][abs(z_scores) > 2].tolist()
+            z = (df[col]-df[col].mean())/(df[col].std()+1e-9)
+            anomalies[col] = df[col][abs(z)>2].tolist()
     return anomalies
 
 def run_ml_engine():
     try:
         model = load_model()
-
-        # --- Load latest features ---
-        try:
-            df_features = fs.read_global()
-            if not df_features.empty:
-                latest = df_features.iloc[-1]
-                log_event("✅ Loaded latest features from Feature Store")
-            else:
-                latest = pd.read_csv(FEATURES_PATH).iloc[-1]
-                log_event("⚠️ Feature Store empty, loaded CSV features")
-        except Exception as e:
-            latest = pd.read_csv(FEATURES_PATH).iloc[-1]
-            log_event(f"⚠️ Feature Store read failed: {e}")
-
-        if latest is None:
-            log_event("❌ Latest features not available")
-            return
-
+        df_features = fs.read_global()
+        if df_features.empty:
+            df_features = pd.read_csv("./data/hourly_features.csv")
+        latest = df_features.iloc[-1]
         X = pd.DataFrame([latest[FEATURE_COLUMNS].values], columns=FEATURE_COLUMNS)
-        prob = model.predict_proba(X)[0][1]
-        level, message = classify_risk(prob)
+        prob = model.predict_proba(X)[0,1]
+        level,message = classify_risk(prob)
 
-        # Forecast
-        forecast_df = compute_forecast(latest, days=7)
+        forecast_df = compute_forecast(latest)
         forecast_probs = [model.predict_proba(forecast_df.iloc[[i]][FEATURE_COLUMNS])[0,1] for i in range(len(forecast_df))]
 
-        # Country risk
-        try:
-            country_df = fs.read_country()
-            if country_df.empty:
-                country_df = pd.read_csv(COUNTRY_FEATURES_PATH)
-        except Exception:
-            country_df = pd.read_csv(COUNTRY_FEATURES_PATH)
+        country_df = fs.read_country()
+        if country_df.empty:
+            country_df = pd.read_csv("./data/country_features.csv")
+        country_risks = {row["country"]: round(float(model.predict_proba(row[FEATURE_COLUMNS].values.reshape(1,-1))[0,1]),3)
+                         for _,row in country_df.iterrows()}
 
-        country_risks = {}
-        for _, row in country_df.iterrows():
-            x_country = row[FEATURE_COLUMNS].values.reshape(1,-1)
-            p = model.predict_proba(x_country)[0,1]
-            country_risks[row["country"]] = round(float(p), 3)
-
-        # Anomalies
-        df_history = pd.read_csv(FEATURES_PATH)
+        df_history = pd.read_csv("./data/hourly_features.csv")
         anomalies = detect_anomalies(df_history)
 
-        # Logging
-        ts = datetime.now(timezone.utc).isoformat()
-        log_event(f"Time: {ts}")
+        log_event(f"Time: {datetime.now(timezone.utc).isoformat()}")
         log_event(f"Crisis Probability: {prob:.4f} | Risk Level: {level}")
         log_event(f"7-Day Forecast: {[round(p,3) for p in forecast_probs]}")
         log_event(f"Country Risks: {country_risks}")
         log_event(f"Anomalies: {anomalies}")
         log_event(f"System Status: {message}")
 
-        # Save to Feature Store
-        try:
-            fs.write_global(df_history)
-            log_event("✅ Features saved to Feature Store")
-        except Exception as e:
-            log_event(f"⚠️ Failed to save features: {e}")
-
-        if level == "🔴 CRITICAL":
+        fs.write_global(df_history)
+        if level=="🔴 CRITICAL":
             send_email("🚨 GLOBAL CRISIS ALERT", f"Crisis probability: {prob:.2f}\n{country_risks}")
 
     except Exception as e:
@@ -221,52 +241,96 @@ def run_ml_engine():
         traceback.print_exc()
 
 # -------------------------------
-# Orchestrator Pipeline
+# Mongo Delta Insert/Update
 # -------------------------------
-def run_pipeline():
-    log_event("Starting World Pulse Pipeline...")
+def compute_record_hash(record):
+    record_json = json.dumps(record, sort_keys=True, ensure_ascii=False)
+    return hashlib.md5(record_json.encode("utf-8")).hexdigest()
 
-    try:
-        from processing import preprocess_data
-        preprocess_data.main()
-    except Exception as e:
-        log_event(f"Preprocessing error: {e}")
+def upsert_delta(collection_name, record, unique_key="id"):
+    coll = db[collection_name]
+    if unique_key not in record:
+        record["_hash"] = compute_record_hash(record)
+        query = {"_hash": record["_hash"]}
+    else:
+        query = {unique_key: record[unique_key]}
+        existing = coll.find_one(query)
+        new_hash = compute_record_hash(record)
+        if existing and existing.get("_hash") == new_hash:
+            return False
+        record["_hash"] = new_hash
+    coll.update_one(query, {"$set": record}, upsert=True)
+    return True
 
+# -------------------------------
+# Kafka Consumer → Full Stream Processing
+# -------------------------------
+def process_message(record, topic):
+    collection = topic.replace("_topic","")
     try:
-        from processing import nlp_analysis
-        nlp_analysis.main()
-    except Exception as e:
-        log_event(f"NLP error: {e}")
+        # 1️⃣ Data Lake
+        os.makedirs("data_lake", exist_ok=True)
+        with open(f"data_lake/{collection}.json","a",encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False)+"\n")
 
-    try:
-        from processing.daily_feature_builder import build_hourly_features
-        build_hourly_features()
-    except Exception as e:
-        log_event(f"Daily features error: {e}")
+        # 2️⃣ Preprocessing → NLP → Features
+        processed_record = preprocess_record(record)
 
-    try:
-        from processing import topic_modeling_with_nlp
-        topic_modeling_with_nlp.main()
-    except Exception as e:
-        log_event(f"Topic modeling error: {e}")
+        # NLP processing
+        if 'text' in processed_record:
+            processed_record['cleaned_text'] = clean_text(processed_record['text'])
+            processed_record['analysis'] = analyze_text(processed_record['cleaned_text'])
 
-    try:
-        from processing.global_crisis_detector import detect_crisis
+        # Feature building: now correctly call build_hourly_features
+        processed_record.update(build_hourly_features())
+
+        # Topic modeling
+        processed_record = topic_modeling_process_record(processed_record)
+
+        # 3️⃣ Mongo (delta)
+        if upsert_delta(collection, processed_record, unique_key="id"):
+            log_event(f"Mongo updated with new/changed record for {collection}")
+
+        # 4️⃣ Crisis detection + ML
         detect_crisis(email_alert_func=send_email)
+        run_ml_engine()
+
     except Exception as e:
-        log_event(f"Crisis detector error: {e}")
+        log_event(f"Error processing message from {topic}: {e}")
+        traceback.print_exc()
 
-    run_ml_engine()
+def start_kafka_stream(parallel_workers=4):
+    consumer = KafkaConsumer(
+        *[topic for _,topic in COLLECTOR_TASKS.values()],
+        bootstrap_servers=KAFKA_BROKER,
+        value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+        auto_offset_reset="earliest",
+        enable_auto_commit=True,
+        group_id="worldpulse_consumer_group"
+    )
+    log_event("Kafka consumer started (streaming all topics)...")
+
+    with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+        for message in consumer:
+            executor.submit(process_message, message.value, message.topic)
 
 # -------------------------------
-# Main Loop
+# Main
 # -------------------------------
-if __name__ == "__main__":
-    print("🧠 World Pulse Autonomous AI System running...", flush=True)
-    while True:
-        try:
-            run_pipeline()
-        except Exception as e:
-            log_event(f"Monitoring pipeline error: {e}")
-        print(f"Sleeping for {CHECK_INTERVAL/60:.0f} minutes...\n", flush=True)
-        time.sleep(CHECK_INTERVAL)
+if __name__=="__main__":
+    log_event("Starting World Pulse Optimized Production Streaming Orchestrator...")
+
+    # 0️⃣ Run full preprocessing pipeline at startup
+    try:
+        log_event("🚀 Running full preprocessing (preprocess_data.main)...")
+        preprocess_main()
+        log_event("✅ Preprocessing completed successfully")
+    except Exception as e:
+        log_event(f"❌ Preprocessing pipeline failed: {e}")
+        traceback.print_exc()
+
+    # 1️⃣ Start collectors
+    start_all_collectors()
+
+    # 2️⃣ Start Kafka stream
+    start_kafka_stream(parallel_workers=8)
