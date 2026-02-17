@@ -22,17 +22,31 @@ class FeatureStore:
         self._write(df, REALTIME_PATH, "realtime")
 
     def _write(self, df, path, name):
+        # ✅ Check for empty DataFrame
+        if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+            print(f"[WARN] {name} feature DataFrame empty — skipping Parquet write")
+            return
+
         df = df.copy()
         df["fs_timestamp"] = datetime.utcnow().isoformat()
-        df.to_parquet(path, index=False)
 
+        # ✅ Force numeric columns to avoid zero / bad types
+        numeric_cols = ['crypto_return', 'crypto_volatility', 'stock_return', 'stock_volatility', 'weather_anomaly']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+
+        # ✅ Write Parquet safely
+        df.to_parquet(path, engine='pyarrow', index=False)
+        print(f"[INFO] Features written to Parquet: {path}")
+
+        # ---------- Metadata and schema ----------
         meta = {
             "name": name,
             "updated_at": datetime.utcnow().isoformat(),
             "rows": len(df),
             "columns": list(df.columns)
         }
-
         meta_path = path.replace("features.parquet", "metadata.json")
         schema_path = path.replace("features.parquet", "schema.json")
 
@@ -58,5 +72,11 @@ class FeatureStore:
 
     def _read(self, path):
         if not os.path.exists(path):
+            print(f"[WARN] Parquet file not found: {path}")
             return pd.DataFrame()
-        return pd.read_parquet(path)
+        try:
+            df = pd.read_parquet(path)
+            return df
+        except Exception as e:
+            print(f"[ERROR] Could not read Parquet: {path} → {e}")
+            return pd.DataFrame()

@@ -2,21 +2,31 @@
 
 import requests
 import os
-from datetime import datetime, timezone
-from dotenv import load_dotenv
-import json
 import time
-from database.mongo import insert
+import pandas as pd
+from datetime import datetime
+from dotenv import load_dotenv
 from bson import ObjectId
-from backend.kafka_client import send_to_kafka  # <-- send to Kafka
+from database.mongo import insert
+from backend.kafka_client import send_to_kafka
+import uuid
 
-# Load API key
+# ----------------------------
+# Utility functions
+# ----------------------------
+def generate_uuid():
+    return str(uuid.uuid4())
+
+def normalize(value, min_val=-50, max_val=50):
+    return (value - min_val) / (max_val - min_val)
+
+# ----------------------------
+# Config
+# ----------------------------
 load_dotenv()
 API_KEY = os.getenv("WEATHER_API_KEY")
+PROCESSED_CSV = "processed_weather.csv"
 
-# ----------------------------
-# Top 100 Global Cities
-# ----------------------------
 TOP_100_CITIES = [
     "New York", "Los Angeles", "Chicago", "Houston", "Toronto",
     "Vancouver", "Mexico City", "Montreal", "Miami", "San Francisco",
@@ -40,10 +50,10 @@ TOP_100_CITIES = [
 ]
 
 # ----------------------------
-# Fetch weather for a city with retry
+# Fetch weather
 # ----------------------------
 def fetch_weather(city, retries=3, wait_seconds=2):
-    collected_at = datetime.now(timezone.utc).isoformat()
+    collected_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     url = "https://api.openweathermap.org/data/2.5/weather"
     params = {"q": city, "appid": API_KEY, "units": "metric"}
 
@@ -61,42 +71,36 @@ def fetch_weather(city, retries=3, wait_seconds=2):
                 return None
 
             data = response.json()
-            standardized = {
+            temp = data.get("main", {}).get("temp", 0.0)
+            humidity = data.get("main", {}).get("humidity", 0.0)
+            weather_desc = data.get("weather", [{}])[0].get("description", "unknown")
+
+            return {
+                "_id": generate_uuid(),
                 "source": "openweathermap",
                 "category": "weather",
                 "collected_at": collected_at,
-                "data": {
-                    "city": data.get("name"),
-                    "country": data.get("sys", {}).get("country"),
-                    "temperature": data.get("main", {}).get("temp"),
-                    "feels_like": data.get("main", {}).get("feels_like"),
-                    "humidity": data.get("main", {}).get("humidity"),
-                    "pressure": data.get("main", {}).get("pressure"),
-                    "weather": data.get("weather", [{}])[0].get("description"),
-                    "wind_speed": data.get("wind", {}).get("speed")
-                }
+                "data_city": data.get("name", city),
+                "data_country": data.get("sys", {}).get("country", ""),
+                "data_temperature": temp,
+                "data_temperature_normalized": normalize(temp),
+                "data_humidity": humidity,
+                "data_weather": weather_desc
             }
-            return standardized
 
         except Exception as e:
             print(f"Exception fetching {city}: {e}")
             time.sleep(wait_seconds)
+
     return None
 
 # ----------------------------
-# JSON safe conversion
+# Save to CSV
 # ----------------------------
-def convert_for_json(obj):
-    if isinstance(obj, dict):
-        return {k: convert_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_for_json(i) for i in obj]
-    elif isinstance(obj, datetime):
-        return obj.isoformat()
-    elif isinstance(obj, ObjectId):
-        return str(obj)
-    else:
-        return obj
+def append_to_csv(row):
+    df = pd.read_csv(PROCESSED_CSV) if os.path.exists(PROCESSED_CSV) else pd.DataFrame()
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    df.to_csv(PROCESSED_CSV, index=False)
 
 # ----------------------------
 # Main collector
@@ -108,17 +112,13 @@ def collect_weather():
     for city in TOP_100_CITIES:
         data = fetch_weather(city)
         if data:
-            # Save to MongoDB
             insert("weather", data)
-
-            # Convert and send to Kafka
-            safe_data = convert_for_json(data)
-            send_to_kafka(safe_data)
-
+            append_to_csv(data)
+            send_to_kafka(data)
             print(f"Processed: {city}")
             success += 1
 
-        time.sleep(1)  # Delay to avoid API throttling
+        time.sleep(1)
 
     print(f"\nWeather collection complete. {success} cities collected.")
 

@@ -5,6 +5,8 @@ import os
 from bson import ObjectId
 from database.mongo import insert, db
 from backend.kafka_client import send_to_kafka  # Make sure this exists
+import time
+
 
 BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 

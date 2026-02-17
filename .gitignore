@@ -1,49 +1,95 @@
 # =========================
+
 # Python
+
 # =========================
-__pycache__/
+
+**pycache**/
 *.pyc
 *.pyo
 *.pyd
 .Python
+
+# Virtual environments
+
 .env
 env/
 venv/
 .venv/
 
 # =========================
+
 # Logs
-# =========================
-*.log
 
 # =========================
-# Jupyter
+
+*.log
+logs.txt
+
 # =========================
+
+# Jupyter
+
+# =========================
+
 .ipynb_checkpoints/
 
 # =========================
+
 # Data / ML artifacts
+
 # =========================
-data/*.csv
+
+data/
+data_lake/
+*.csv
+*.parquet
 processed_*.csv
 advanced_sentiment_*.csv
 topics_keywords_*.csv
 
 # =========================
-# Models
+
+# Feature Store (large generated files)
+
 # =========================
+
+feature_store/**/features.parquet
+feature_store/**/metadata.json
+
+# =========================
+
+# Models
+
+# =========================
+
 models/
 *.pkl
 
 # =========================
-# Archives / backups
+
+# Certificates / Secrets
+
 # =========================
+
+*.pem
+*.pfx
+
+# =========================
+
+# Archives / backups
+
+# =========================
+
 *.zip
 *.tar
 *.gz
 
 # =========================
+
 # OS files
+
 # =========================
+
 .DS_Store
 Thumbs.db

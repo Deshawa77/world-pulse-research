@@ -99,9 +99,12 @@ def write_global_features_v2(features, mode="online"):
     Supports mode: 'online' (real-time) or 'offline' (training).
     Automatically increments the version based on the last document in that mode.
     """
-    last_doc = db.global_features.find({"mode": mode}).sort("timestamp", -1).limit(1)
-    last_doc = list(last_doc)
-    version = (last_doc[0]["version"] + 1) if last_doc else 1
+    last_doc = list(db.global_features.find({"mode": mode}).sort("timestamp", -1).limit(1))
+    
+    if last_doc and "version" in last_doc[0]:
+        version = last_doc[0]["version"] + 1
+    else:
+        version = 1  # fallback if no previous version exists
 
     doc = {
         "timestamp": datetime.utcnow(),
@@ -111,15 +114,19 @@ def write_global_features_v2(features, mode="online"):
     }
     db.global_features.insert_one(doc)
 
+
 def write_country_features_v2(country, features, mode="online"):
     """
     Insert a versioned country feature document into MongoDB.
     Supports mode: 'online' (real-time) or 'offline' (training).
     Automatically increments the version based on the last document for that country and mode.
     """
-    last_doc = db.country_features.find({"country": country, "mode": mode}).sort("timestamp", -1).limit(1)
-    last_doc = list(last_doc)
-    version = (last_doc[0]["version"] + 1) if last_doc else 1
+    last_doc = list(db.country_features.find({"country": country, "mode": mode}).sort("timestamp", -1).limit(1))
+    
+    if last_doc and "version" in last_doc[0]:
+        version = last_doc[0]["version"] + 1
+    else:
+        version = 1  # fallback if no previous version exists
 
     doc = {
         "timestamp": datetime.utcnow(),
@@ -129,6 +136,7 @@ def write_country_features_v2(country, features, mode="online"):
         "features": features
     }
     db.country_features.insert_one(doc)
+
 
 # ==========================
 # RETRIEVE FEATURES

@@ -116,7 +116,7 @@ import collectors.worldbank as worldbank
 # -------------------------------
 # Database & Processing
 # -------------------------------
-from database.mongo import db
+from database.mongo import db, write_global_features_v2
 from processing.preprocess_data import main as preprocess_main, process_record as preprocess_record
 from processing.nlp_analysis import clean_text, analyze_text
 from processing.daily_feature_builder import build_hourly_features
@@ -207,7 +207,9 @@ def run_ml_engine():
         model = load_model()
         df_features = fs.read_global()
         if df_features.empty:
-            df_features = pd.read_csv("./data/hourly_features.csv")
+            print("⚠️ No features available to run ML engine. Skipping this cycle.")
+            return  # stop ML for this cycle
+
         latest = df_features.iloc[-1]
         X = pd.DataFrame([latest[FEATURE_COLUMNS].values], columns=FEATURE_COLUMNS)
         prob = model.predict_proba(X)[0,1]
@@ -223,7 +225,22 @@ def run_ml_engine():
                          for _,row in country_df.iterrows()}
 
         df_history = pd.read_csv("./data/hourly_features.csv")
+        print("[DEBUG] df_history head:\n", df_history[["news_sentiment","gdelt_sentiment"]].head()) #Remove this later
+
         anomalies = detect_anomalies(df_history)
+
+        global_coll = db.global_features
+        for _, row in df_history.iterrows():
+            record = row.to_dict()
+            # Convert timestamp to ISO string for JSON
+            record["timestamp"] = datetime.utcnow().isoformat()
+            record["_hash"] = hashlib.md5(json.dumps(record, sort_keys=True).encode("utf-8")).hexdigest()
+            global_coll.update_one(
+                {"_hash": record["_hash"]},
+                {"$set": record},
+                upsert=True
+            )
+
 
         log_event(f"Time: {datetime.now(timezone.utc).isoformat()}")
         log_event(f"Crisis Probability: {prob:.4f} | Risk Level: {level}")
@@ -281,8 +298,18 @@ def process_message(record, topic):
             processed_record['cleaned_text'] = clean_text(processed_record['text'])
             processed_record['analysis'] = analyze_text(processed_record['cleaned_text'])
 
+            print("[DEBUG] NLP analysis:", processed_record.get("analysis"))
+
+
         # Feature building: now correctly call build_hourly_features
-        processed_record.update(build_hourly_features())
+        #processed_record.update(build_hourly_features())
+
+        features = build_hourly_features()
+        print("[DEBUG] Hourly features:", features)
+        if not features.get("news_sentiment") or not features.get("gdelt_sentiment"):
+            print("[DEBUG] ⚠️ Sentiment data missing! Check collectors/NLP.")
+        processed_record.update(features)
+
 
         # Topic modeling
         processed_record = topic_modeling_process_record(processed_record)
@@ -293,7 +320,36 @@ def process_message(record, topic):
 
         # 4️⃣ Crisis detection + ML
         detect_crisis(email_alert_func=send_email)
+
+        # 🔹 DEBUG: log features before ML
+        feature_row = build_hourly_features()
+        log_event(f"[DEBUG] Features built this cycle (before ML): {feature_row}")
+
+        # -----------------------------------
+        # WRITE FEATURES TO Mongo (THIS WAS MISSING)
+        # -----------------------------------
+        ml_features = {
+            "news_sentiment": feature_row.get("news_sentiment", 0.0),
+            "gdelt_sentiment": feature_row.get("gdelt_sentiment", 0.0),
+            "crypto_return": feature_row.get("crypto_return", 0.0),
+            "crypto_volatility": feature_row.get("crypto_volatility", 0.0),
+            "stock_return": feature_row.get("stock_return", 0.0),
+            "stock_volatility": feature_row.get("stock_volatility", 0.0),
+            "weather_anomaly": feature_row.get("weather_anomaly", 0.0),
+        }
+
+        try:
+            write_global_features_v2(ml_features, mode="online")
+            log_event("[INFO] Global features written to Mongo")
+        except Exception as e:
+            log_event(f"❌ Failed to write global features: {e}")
+
+        # -----------------------------------
+        # Now run ML
+        # -----------------------------------
         run_ml_engine()
+
+
 
     except Exception as e:
         log_event(f"Error processing message from {topic}: {e}")

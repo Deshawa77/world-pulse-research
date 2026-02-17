@@ -6,6 +6,7 @@ import numpy as np
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from datetime import datetime
 import time
+import logging
 import os
 
 # Path to your CSV
@@ -52,6 +53,9 @@ for i in range(RUN_ITERATIONS):
     try:
         df = load_features()
         df = prepare_targets(df)
+
+        logging.basicConfig(filename="../logs/live_prediction.log", level=logging.DEBUG)
+        logging.debug(f"Features loaded: {latest.to_dict()}")
 
         if len(df) < 5 or df["crisis_next_hour"].nunique() < 2:
             clear_screen()

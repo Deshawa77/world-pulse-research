@@ -14,6 +14,20 @@ import smtplib
 from email.mime.text import MIMEText
 import pandas as pd
 
+
+# ---------------------------
+# INITIAL GLOBAL FEATURES
+# ---------------------------
+initial_global_features = {
+    "news_sentiment": 0.12,
+    "gdelt_sentiment": -0.05,
+    "crypto_return": 0.03,
+    "crypto_volatility": 0.1,
+    "stock_return": -0.02,
+    "stock_volatility": 0.08,
+    "weather_anomaly": 0.15
+}
+
 # ============================
 # MONGO IMPORT
 # ============================
@@ -136,15 +150,42 @@ def load_model():
 # DATA LOADERS
 # ============================
 def load_latest_global():
+    """
+    Load the latest global features from Mongo.
+
+    Supports both:
+    1. Nested 'features' document
+    2. Flat old-style documents
+    Fills missing keys with 0.0
+    """
     doc = db.global_features.find({"mode": "online"}).sort("timestamp", -1).limit(1)
     docs = list(doc)
     if not docs:
         return None
+
     latest = docs[0]
-    return latest.get("features", latest)
+
+    # Extract features
+    if "features" in latest:
+        features = latest["features"]
+    else:
+        # Old-style flat document: only keep FEATURE_COLUMNS
+        features = {k: v for k, v in latest.items() if k in FEATURE_COLUMNS}
+
+    # Fill missing keys with 0.0
+    for col in FEATURE_COLUMNS:
+        if col not in features:
+            log_event(f"⚠️ Key '{col}' missing in Mongo document — filling with default 0.0")
+            features[col] = 0.0
+
+    return features
 
 
 def load_country_features():
+    """
+    Load all country-level features from Mongo.
+    If none exist, populate with random initial values.
+    """
     docs = list(db.country_features.find({"mode": "online"}))
 
     if not docs:
@@ -164,6 +205,26 @@ def load_country_features():
         extracted.append(f)
 
     return extracted
+
+
+# ============================
+# LOAD LATEST GLOBAL FEATURES
+# ============================
+latest_features = load_latest_global()
+
+# If nothing in Mongo, insert initial features
+if latest_features is None:
+    log_event("No global features found — inserting initial features")
+    safe_write_global(initial_global_features, mode="online")
+    latest_features = initial_global_features.copy()
+
+# Only keep numeric ML features
+latest_features = {k: v for k, v in latest_features.items() if k in FEATURE_COLUMNS}
+
+# DEBUG log before ML
+log_event(f"[DEBUG] Features used for realtime engine: {latest_features}")
+
+
 
 # ============================
 # RISK CLASSIFICATION
@@ -259,18 +320,6 @@ def realtime_loop():
 
         time.sleep(CHECK_INTERVAL)
 
-# ============================
-# INITIAL GLOBAL FEATURES
-# ============================
-initial_global_features = {
-    "news_sentiment": 0.12,
-    "gdelt_sentiment": -0.05,
-    "crypto_return": 0.03,
-    "crypto_volatility": 0.1,
-    "stock_return": -0.02,
-    "stock_volatility": 0.08,
-    "weather_anomaly": 0.15
-}
 
 # ============================
 # ENTRY POINT

@@ -2,13 +2,18 @@ import sys
 import os
 import logging
 from datetime import datetime
+import asyncio
+from dotenv import load_dotenv
 
 # ----------------------------
 # Ensure project root is importable
 # ----------------------------
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header, Depends, WebSocket, WebSocketDisconnect, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel
 from pymongo import MongoClient, ASCENDING, DESCENDING
 import joblib
@@ -18,7 +23,26 @@ from processing.global_risk import compute_global_risk
 from feature_store.model_registry import get_production_model, list_models
 
 # =====================================================
-# Logging Configuration (File-based backup audit)
+# Load environment variables for security
+# =====================================================
+load_dotenv()
+API_KEY = os.environ.get("API_KEY")
+ADMIN_KEY = os.environ.get("ADMIN_KEY")
+
+# =====================================================
+# FastAPI app and rate limiter
+# =====================================================
+app = FastAPI(title="World Pulse Secure API")
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+# Exception handler for rate limiting
+@app.exception_handler(RateLimitExceeded)
+def rate_limit_handler(request, exc):
+    return {"error": "Too many requests, slow down!"}
+
+# =====================================================
+# Logging Configuration
 # =====================================================
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
@@ -28,17 +52,10 @@ logging.basicConfig(
 )
 
 # =====================================================
-# FastAPI app
-# =====================================================
-app = FastAPI(title="World Pulse API")
-
-# =====================================================
 # MongoDB Connection
 # =====================================================
 client = MongoClient("mongodb://localhost:27017/")
 db = client["world_pulse"]
-
-# Prediction audit collection
 prediction_collection = db["prediction_logs"]
 
 # Create indexes for scalable queries (run once)
@@ -51,20 +68,33 @@ prediction_collection.create_index([("model_version", ASCENDING)])
 model_cache = {"model": None, "version": None}
 
 # =====================================================
+# Security: API Key Verification
+# =====================================================
+def verify_api_key(x_api_key: str = Header(...)):
+    if x_api_key != API_KEY and x_api_key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return x_api_key
+
+# Role-Based Access Control
+def check_role(x_api_key: str = Depends(verify_api_key)):
+    return "admin" if x_api_key == ADMIN_KEY else "user"
+
+# =====================================================
 # Helpers
 # =====================================================
 def serialize_doc(doc: dict) -> dict:
-    """Convert MongoDB ObjectId to string for JSON serialization."""
+    doc = doc.copy()
     if "_id" in doc:
         doc["_id"] = str(doc["_id"])
+    for key, value in doc.items():
+        if isinstance(value, datetime):
+            doc[key] = value.isoformat()
     return doc
 
 def load_production_model():
-    """Load and cache the current production model."""
     model_path = get_production_model()
     if not model_path or not os.path.exists(model_path):
         return None, None
-
     models = list_models()
     for version, info in models.items():
         if info.get("stage") == "production":
@@ -75,7 +105,6 @@ def load_production_model():
     return None, None
 
 def log_prediction_to_mongo(model_version, features, prediction, probability):
-    """Store prediction in Mongo audit collection."""
     prediction_collection.insert_one({
         "timestamp": datetime.utcnow(),
         "model_version": model_version,
@@ -91,85 +120,124 @@ class PredictionRequest(BaseModel):
     features: list[float]
 
 # =====================================================
+# WebSocket Connection Manager
+# =====================================================
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except:
+                pass
+
+manager = ConnectionManager()
+
+# =====================================================
 # ROOT
 # =====================================================
-@app.get("/")
+@app.get("/", dependencies=[Depends(verify_api_key)])
 def root():
     return {"status": "ok", "message": "World Pulse backend running"}
 
 # =====================================================
-# DATA ENDPOINTS
+# DATA ENDPOINTS (all protected)
 # =====================================================
 @app.get("/news")
-def get_news():
+@limiter.limit("10/minute")
+def get_news(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.news.find().limit(10)]
 
 @app.get("/gdelt")
-def get_gdelt():
+@limiter.limit("10/minute")
+def get_gdelt(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.gdelt.find().limit(10)]
 
 @app.get("/wiki")
-def get_wiki():
+@limiter.limit("10/minute")
+def get_wiki(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.wiki.find().limit(10)]
 
 @app.get("/trends")
-def get_trends():
+@limiter.limit("10/minute")
+def get_trends(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.trends.find().limit(10)]
 
 @app.get("/earthquakes")
-def get_earthquakes():
+@limiter.limit("10/minute")
+def get_earthquakes(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.earthquakes.find().limit(10)]
 
 @app.get("/weather")
-def get_weather():
+@limiter.limit("10/minute")
+def get_weather(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.weather.find().limit(10)]
 
 @app.get("/crypto")
-def get_crypto():
+@limiter.limit("10/minute")
+def get_crypto(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.crypto.find().limit(10)]
 
 @app.get("/economics")
-def get_economics():
+@limiter.limit("10/minute")
+def get_economics(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.economics.find().limit(10)]
 
 @app.get("/health_data")
-def get_health_data():
+@limiter.limit("10/minute")
+def get_health_data(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.health.find().limit(10)]
 
 @app.get("/stocks")
-def get_stocks():
+@limiter.limit("10/minute")
+def get_stocks(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.stocks.find().limit(10)]
 
 @app.get("/worldbank")
-def get_worldbank():
+@limiter.limit("10/minute")
+def get_worldbank(request: Request, role: str = Depends(check_role)):
     return [serialize_doc(d) for d in db.worldbank.find().limit(10)]
 
 # =====================================================
-# FEATURE STORE ENDPOINTS
+# FEATURE STORE ENDPOINTS (protected + rate limited)
 # =====================================================
 @app.get("/features/global/latest")
-def get_latest_global(mode: str = Query("online")):
+@limiter.limit("10/minute")
+def get_latest_global(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
     doc = list(db.global_features.find({"mode": mode}).sort("timestamp", -1).limit(1))
     if not doc:
         raise HTTPException(status_code=404, detail="No global features found")
     return serialize_doc(doc[0])
 
 @app.get("/features/global/{version}")
-def get_global_by_version(version: int, mode: str = Query("online")):
+@limiter.limit("10/minute")
+def get_global_by_version(request: Request, version: int, role: str = Depends(check_role), mode: str = Query("online")):
     doc = db.global_features.find_one({"version": version, "mode": mode})
     if not doc:
         raise HTTPException(status_code=404, detail="No global features found")
     return serialize_doc(doc)
 
 @app.get("/features/country/{country}/latest")
-def get_latest_country(country: str, mode: str = Query("online")):
+@limiter.limit("10/minute")
+def get_latest_country(request: Request, country: str, role: str = Depends(check_role), mode: str = Query("online")):
     doc = list(db.country_features.find({"country": country, "mode": mode}).sort("timestamp", -1).limit(1))
     if not doc:
         raise HTTPException(status_code=404, detail=f"No features found for country {country}")
     return serialize_doc(doc[0])
 
 @app.get("/features/country/{country}")
-def get_country_versions(country: str, limit: int = Query(10, ge=1), mode: str = Query("online")):
+@limiter.limit("10/minute")
+def get_country_versions(request: Request, country: str, role: str = Depends(check_role), limit: int = Query(10, ge=1), mode: str = Query("online")):
     cursor = list(db.country_features.find({"country": country, "mode": mode}).sort("timestamp", -1).limit(limit))
     if not cursor:
         raise HTTPException(status_code=404, detail=f"No features found for country {country}")
@@ -179,18 +247,21 @@ def get_country_versions(country: str, limit: int = Query(10, ge=1), mode: str =
 # RISK + SUMMARY
 # =====================================================
 @app.get("/risk_score")
-def risk_score():
+@limiter.limit("10/minute")
+def risk_score(request: Request, role: str = Depends(check_role)):
     return {"risk_score": compute_global_risk()}
 
 @app.get("/summary")
-def summary():
+@limiter.limit("10/minute")
+def summary(request: Request, role: str = Depends(check_role)):
     return {"summary": generate_summary()}
 
 # =====================================================
 # MODEL REGISTRY ENDPOINTS
 # =====================================================
 @app.get("/model_info")
-def model_info():
+@limiter.limit("5/minute")
+def model_info(request: Request, role: str = Depends(check_role)):
     models = list_models()
     for version, info in models.items():
         if info.get("stage") == "production":
@@ -206,34 +277,26 @@ def model_info():
 # PREDICT ENDPOINT
 # =====================================================
 @app.post("/predict")
-def predict(request: PredictionRequest):
+@limiter.limit("10/minute")
+def predict(request: Request, payload: PredictionRequest, role: str = Depends(check_role)):
     model, version = load_production_model()
     if model is None:
         raise HTTPException(status_code=404, detail="No production model available")
 
-    # Feature validation
     expected_features = model.n_features_in_
-    if len(request.features) != expected_features:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model expects {expected_features} features"
-        )
+    if len(payload.features) != expected_features:
+        raise HTTPException(status_code=400, detail=f"Model expects {expected_features} features")
 
     try:
-        prediction = model.predict([request.features])[0]
-        probabilities = model.predict_proba([request.features])[0]
+        prediction = model.predict([payload.features])[0]
+        probabilities = model.predict_proba([payload.features])[0]
         confidence = float(probabilities[1])
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Prediction failed: {str(e)}")
 
-    # Log to MongoDB
-    log_prediction_to_mongo(version, request.features, prediction, confidence)
+    log_prediction_to_mongo(version, payload.features, prediction, confidence)
 
-    # Backup log to file
-    logging.info(
-        f"version={version} | features={request.features} | "
-        f"prediction={int(prediction)} | confidence={confidence}"
-    )
+    logging.info(f"version={version} | features={payload.features} | prediction={int(prediction)} | confidence={confidence}")
 
     return {
         "model_version": version,
@@ -245,7 +308,10 @@ def predict(request: PredictionRequest):
 # PREDICTION LOGS ENDPOINT
 # =====================================================
 @app.get("/prediction_logs")
-def get_prediction_logs(limit: int = Query(50, ge=1)):
+@limiter.limit("5/minute")
+def get_prediction_logs(request: Request, limit: int = Query(50, ge=1), role: str = Depends(check_role)):
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access only")
     logs = list(prediction_collection.find().sort("timestamp", -1).limit(limit))
     return [serialize_doc(log) for log in logs]
 
@@ -253,14 +319,31 @@ def get_prediction_logs(limit: int = Query(50, ge=1)):
 # SYSTEM HEALTH
 # =====================================================
 @app.get("/health")
-def health():
+@limiter.limit("5/minute")
+def health(request: Request, role: str = Depends(check_role)):
     try:
         db.command("ping")
         model, _ = load_production_model()
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "model_loaded": model is not None
-        }
+        return {"status": "healthy", "database": "connected", "model_loaded": model is not None}
     except Exception:
         return {"status": "unhealthy"}
+
+# =====================================================
+# REAL-TIME RISK STREAM
+# =====================================================
+@app.websocket("/ws/risk")
+async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(...)):
+    if x_api_key != API_KEY and x_api_key != ADMIN_KEY:
+        await websocket.close(code=1008)
+        return
+
+    await manager.connect(websocket)
+    try:
+        while True:
+            doc = list(db.global_features.find({"mode": "online"}).sort("timestamp", -1).limit(1))
+            if doc:
+                data = serialize_doc(doc[0])
+                await websocket.send_json(data)
+            await asyncio.sleep(5)
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)

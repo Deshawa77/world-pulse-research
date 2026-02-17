@@ -1,0 +1,13 @@
+{
+  "schema": {
+    "country": "object",
+    "news_sentiment": "float64",
+    "gdelt_sentiment": "float64",
+    "crypto_return": "float64",
+    "crypto_volatility": "float64",
+    "stock_return": "float64",
+    "stock_volatility": "float64",
+    "weather_anomaly": "float64",
+    "fs_timestamp": "object"
+  }
+}
