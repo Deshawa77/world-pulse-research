@@ -54,7 +54,7 @@ def fetch_news(query: str, page_size: int = 10):
             records.append(record)
 
             # Send each record to Kafka in real-time
-            send_to_kafka(record)
+            send_to_kafka("media", record)
 
         return records
 

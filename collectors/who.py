@@ -39,7 +39,7 @@ def fetch_who_indicator(indicator_code, max_results=5):
 
             # Send each record to Kafka immediately
             try:
-                send_to_kafka(record)
+                send_to_kafka("who_indicators", record)
             except Exception as e:
                 print(f"Error sending record to Kafka: {e}")
 

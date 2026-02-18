@@ -47,7 +47,7 @@ def fetch_indicator(series_id="GDP", start_date="2025-01-01", end_date="2026-01-
             standardized.append(record)
 
             # ✅ Send each record to Kafka in real-time
-            send_to_kafka(record)
+            send_to_kafka("macro", record)
             # Optionally print for debugging
             print(f"Sent to Kafka: {record}")
 

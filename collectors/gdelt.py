@@ -98,7 +98,7 @@ def collect_gdelt(query="earthquake OR flood", max_records=10):
     # Send each record to Kafka (after converting datetimes to strings)
     for record in data:
         record_json_safe = convert_for_json(record)  # <-- convert datetime/ObjectId
-        send_to_kafka(record_json_safe)
+        send_to_kafka("news", record_json_safe)
         print(f"Sent to Kafka: {record['data']['title']}")
 
     print(f"GDELT collector finished. {len(data)} records processed.")

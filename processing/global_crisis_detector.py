@@ -31,9 +31,10 @@ def get_daily_sentiment(days=HISTORY_DAYS):
             collection = db[col_name]
             count = 0
 
-            for doc in collection.find({}, {"data.sentiment.vader.compound": 1, "data.processed_at": 1}):
-                processed_time = doc.get("data", {}).get("processed_at")
-                sentiment = doc.get("data", {}).get("sentiment", {}).get("vader", {}).get("compound")
+            for doc in collection.find({}, {"analysis.sentiment.vader.compound": 1, "processed_at": 1}):
+                processed_time = doc.get("processed_at")
+                sentiment = doc.get("analysis", {}).get("sentiment", {}).get("vader", {}).get("compound")
+
 
                 if sentiment is None:
                     continue
@@ -109,13 +110,14 @@ def generate_summary(level, delta, topics):
 # --------------------------
 # Crisis Detection
 # --------------------------
+from datetime import datetime, timezone
+
 def detect_crisis(email_alert_func=None, verbose=True):
     history = get_daily_sentiment()
     dates = list(history.keys())
 
+    # Need at least two days to compare
     if len(dates) < 2:
-        if verbose:
-            print("Not enough data.")
         return None
 
     today = dates[-1]
@@ -124,13 +126,13 @@ def detect_crisis(email_alert_func=None, verbose=True):
     current_avg = history[today]["avg"]
     previous_avg = history[yesterday]["avg"]
 
+    # Normal during streaming: no sentiment yet → silently skip
     if current_avg is None or previous_avg is None:
-        if verbose:
-            print("No valid sentiment data to compute crisis.")
         return None
 
     delta = current_avg - previous_avg
 
+    # Only print useful info (no noise)
     if verbose:
         print("\nSource contribution today:")
         for src, cnt in history[today]["sources"].items():
@@ -141,8 +143,12 @@ def detect_crisis(email_alert_func=None, verbose=True):
 
     level = get_alert_level(delta)
 
+    # --------------------------
+    # ALERT TRIGGERED
+    # --------------------------
     if level:
         topics = get_top_topics()
+
         alert = {
             "date": today,
             "previous_sentiment": previous_avg,
@@ -152,17 +158,17 @@ def detect_crisis(email_alert_func=None, verbose=True):
             "top_topics": topics,
             "sources": history[today]["sources"],
             "message": generate_summary(level, delta, topics),
-            "created_at": datetime.utcnow().isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat()
         }
 
-        # Save to alerts collection
+        # Save alert
         db["alerts"].insert_one(alert)
 
         if verbose:
             print("\n⚠️ GLOBAL ALERT!")
             print(alert["message"])
 
-        # Send email alert
+        # Email notification (optional)
         try:
             if email_alert_func:
                 email_alert_func(
@@ -174,10 +180,12 @@ def detect_crisis(email_alert_func=None, verbose=True):
                 print(f"⚠️ Failed to send email alert: {e}")
 
         return alert
-    else:
-        if verbose:
-            print("\nSystem Stable. No crisis detected.")
-        return None
+
+    # --------------------------
+    # SYSTEM STABLE (silent)
+    # --------------------------
+    return None
+
 
 
 # --------------------------

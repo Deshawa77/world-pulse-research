@@ -6,7 +6,7 @@ import json
 import pandas as pd
 from database.mongo import insert
 from bson import ObjectId
-from backend.kafka_client import send_to_kafka  # Make sure this exists
+from backend.kafka_client import send_to_kafka
 import uuid
 
 load_dotenv()
@@ -48,9 +48,12 @@ def normalize(value, min_val=0, max_val=1000):
     return (value - min_val) / (max_val - min_val)
 
 # -------------------------
-# Fetch and standardize stock data
+# Fetch stock data
 # -------------------------
-def fetch_stock(symbol="AAPL", interval="1day", outputsize=5):
+def fetch_stock(symbol="AAPL", interval="1h", outputsize=24):
+    """
+    Fetch multiple recent points (default last 24 hours) from Twelve Data
+    """
     collected_at = datetime.now(timezone.utc).isoformat()
 
     params = {
@@ -65,7 +68,6 @@ def fetch_stock(symbol="AAPL", interval="1day", outputsize=5):
         response.raise_for_status()
         data = response.json()
 
-        # Check for API errors
         if "code" in data or "values" not in data:
             print("TwelveData API error or no values returned:", data)
             return []
@@ -73,7 +75,6 @@ def fetch_stock(symbol="AAPL", interval="1day", outputsize=5):
         results = []
         for item in data["values"]:
             close_price = safe_float(item.get("close"))
-            # ✅ Skip records with invalid closing price
             if close_price <= 0:
                 continue
 
@@ -83,7 +84,7 @@ def fetch_stock(symbol="AAPL", interval="1day", outputsize=5):
                 "category": "finance",
                 "collected_at": collected_at,
                 "data_symbol": symbol,
-                "data_datetime": item.get("datetime")[:10] if item.get("datetime") else collected_at[:10],
+                "data_datetime": item.get("datetime") if item.get("datetime") else collected_at,
                 "data_open": safe_float(item.get("open")),
                 "data_high": safe_float(item.get("high")),
                 "data_low": safe_float(item.get("low")),
@@ -102,31 +103,51 @@ def fetch_stock(symbol="AAPL", interval="1day", outputsize=5):
 # -------------------------
 # Collector pipeline
 # -------------------------
-def collect_stock(symbol="AAPL", interval="1day", outputsize=5):
+def collect_stock(symbol="AAPL", interval="1h", outputsize=24, rolling_window=5):
+    """
+    Collect stock data, compute rolling return/volatility, store in CSV & MongoDB
+    """
     data = fetch_stock(symbol, interval, outputsize)
     if not data:
         print("No valid stock data fetched.")
         return
 
-    # Insert into MongoDB
-    insert("stocks", data)
-
     # Append to CSV
     df_existing = pd.read_csv(HOURLY_CSV) if os.path.exists(HOURLY_CSV) else pd.DataFrame()
     df_new = pd.DataFrame(data)
     df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+
+    # Convert timestamp to datetime for rolling calculations
+    ts_col = "data_datetime"
+    df_combined[ts_col] = pd.to_datetime(df_combined[ts_col], errors="coerce")
+    df_combined = df_combined.sort_values(ts_col)
+
+    # -------------------------
+    # Compute rolling return & volatility
+    # -------------------------
+    df_combined["return"] = df_combined["data_close"].pct_change(periods=rolling_window)
+    df_combined["volatility"] = df_combined["return"].rolling(window=rolling_window).std()
+
+    # Save CSV
     df_combined.to_csv(HOURLY_CSV, index=False)
 
+    # -------------------------
+    # Insert to MongoDB
+    # -------------------------
+    insert("stocks", df_new.to_dict(orient="records"))
+
+    # -------------------------
     # Send to Kafka
-    for record in data:
-        record_json_safe = convert_for_json(record)
-        send_to_kafka("stocks_topic", record_json_safe)
+    # -------------------------
+    for record in df_new.to_dict(orient="records"):
+        send_to_kafka("stocks_topic", convert_for_json(record))
         print(f"Sent 1 stock record to Kafka: {record['data_symbol']} @ {record['data_datetime']}")
 
-    print(f"Twelve Data collector finished. {len(data)} valid records processed.")
+    print(f"Twelve Data collector finished. {len(df_new)} valid records processed.")
+    print(f"Rolling return/volatility computed with window={rolling_window}.")
 
 # -------------------------
 # Run standalone
 # -------------------------
 if __name__ == "__main__":
-    collect_stock("AAPL", "1day", 5)
+    collect_stock("AAPL", interval="1h", outputsize=24, rolling_window=5)

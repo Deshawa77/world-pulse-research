@@ -1,18 +1,26 @@
 from kafka import KafkaProducer, KafkaConsumer
 import json
+from datetime import datetime
 
 KAFKA_SERVER = "localhost:9092"
 TOPIC = "worldpulse.raw"
 
-# Producer
+def json_serializer(obj):
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    return str(obj)
+
 producer = KafkaProducer(
     bootstrap_servers=KAFKA_SERVER,
-    value_serializer=lambda v: json.dumps(v).encode("utf-8")
+    value_serializer=lambda v: json.dumps(v, default=json_serializer).encode("utf-8")
 )
 
-def send_to_kafka(data):
-    producer.send(TOPIC, data)
-    producer.flush()
+def send_to_kafka(topic, message):
+    try:
+        producer.send(topic, message)
+        producer.flush()
+    except Exception as e:
+        print(f"Kafka error: {e}")
 
 # Consumer
 def get_consumer():

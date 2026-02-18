@@ -77,7 +77,7 @@ def collect_trends(keyword="earthquake"):
     # Send each record to Kafka (make JSON-safe)
     for record in data:
         record_json_safe = convert_for_json(record)
-        send_to_kafka(record_json_safe)
+        send_to_kafka("trends", record_json_safe)
         print(f"Sent to Kafka: {record['data']['keyword']} - {record['data']['date']}")
 
     print(f"Google Trends collector finished. {len(data)} records processed.")

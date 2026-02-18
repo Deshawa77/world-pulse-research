@@ -5,7 +5,7 @@ Collectors → Kafka → Consumer → Data Lake → Preprocessing → Mongo → 
 """
 
 import sys, io, os, json, logging, traceback, time, hashlib
-from threading import Thread
+from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from kafka import KafkaProducer, KafkaConsumer
@@ -14,6 +14,70 @@ import numpy as np
 import joblib
 from email.mime.text import MIMEText
 import smtplib
+
+
+def safe_keys(d):
+    """Recursively replace numeric keys with safe string keys"""
+    if isinstance(d, dict):
+        new_d = {}
+        for k, v in d.items():
+            if isinstance(k, int) or (isinstance(k, str) and k.isdigit()):
+                k = f"key_{k}"  # prefix numeric keys
+            new_d[k] = safe_keys(v)
+        return new_d
+    elif isinstance(d, list):
+        return [safe_keys(x) for x in d]
+    else:
+        return d
+
+def stringify_keys(d):
+    if isinstance(d, dict):
+        return {str(k): stringify_keys(v) for k, v in d.items()}
+    elif isinstance(d, list):
+        return [stringify_keys(x) for x in d]
+    else:
+        return d
+
+def safe_update(collection, record):
+    # 1. Make a safe copy
+    record_safe = record.copy()
+
+    # 2. Convert numeric keys to safe strings
+    record_safe = safe_keys(record_safe)
+
+    # 3. Ensure no _id and all keys are strings
+    record_safe = sanitize_for_mongo(record_safe)
+
+    # 4. Upsert to Mongo
+    collection.update_one({"_hash": record_safe["_hash"]}, {"$set": record_safe}, upsert=True)
+
+def mongo_safe_upsert(collection, record):
+    """
+    Safely insert/update a record into MongoDB.
+    - Converts all keys to strings
+    - Handles nested numeric keys safely
+    - Removes _id
+    - Performs upsert using a unique _hash
+    """
+    try:
+        record_safe = sanitize_for_mongo(record)
+        if "_hash" not in record_safe:
+            # generate hash if not present
+            record_safe["_hash"] = hashlib.md5(
+                json.dumps(record_safe, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+
+        collection.update_one(
+            {"_hash": record_safe["_hash"]},
+            {"$set": record_safe},
+            upsert=True
+        )
+        return True
+    except Exception as e:
+        log_event(f"❌ Mongo upsert failed: {e}")
+        traceback.print_exc()
+        return False
+
 
 # -------------------------------
 # UTF-8 stdout/stderr
@@ -70,14 +134,10 @@ def send_email(subject, body):
 # -------------------------------
 # Kafka Setup
 # -------------------------------
-# -------------------------------
-# JSON serializer for datetime
-# -------------------------------
 def json_serializer(obj):
     if isinstance(obj, datetime):
         return obj.isoformat()
     return str(obj)
-
 
 KAFKA_BROKER = "localhost:9092"
 producer = KafkaProducer(
@@ -119,13 +179,24 @@ import collectors.worldbank as worldbank
 from database.mongo import db, write_global_features_v2
 from processing.preprocess_data import main as preprocess_main, process_record as preprocess_record
 from processing.nlp_analysis import clean_text, analyze_text
-from processing.daily_feature_builder import build_hourly_features
+from processing.daily_feature_builder import build_hourly_features, load_hourly_features
 from processing.topic_modeling_with_nlp import process_record as topic_modeling_process_record
 from processing.global_crisis_detector import detect_crisis
 from feature_store.feature_store import FeatureStore
 from feature_store.model_registry import get_production_model
+from populate_hourly_features import populate_hourly_features
+
+
 
 fs = FeatureStore()
+db_connection = db
+
+# -------------------------------
+# Paths
+# -------------------------------
+DATA_DIR = "./data"
+os.makedirs(DATA_DIR, exist_ok=True)
+HOURLY_FEATURES_CSV = os.path.join(DATA_DIR, "hourly_features.csv")
 
 # -------------------------------
 # Collector Tasks
@@ -144,6 +215,8 @@ COLLECTOR_TASKS = {
     "stocks": (lambda: twelvedata.fetch_stock("AAPL","1day",5), "stocks_topic"),
     "worldbank": (lambda: worldbank.fetch_worldbank_data(date="2020:2025", per_page=5), "worldbank_topic")
 }
+
+topic_feature_map = {topic: build_hourly_features for _, topic in COLLECTOR_TASKS.values()}
 
 # -------------------------------
 # Collector Loop
@@ -165,7 +238,7 @@ def start_all_collectors():
         log_event(f"Collector '{label}' started, streaming to '{topic}'")
 
 # -------------------------------
-# ML Engine
+# ML Engine & Utility Functions
 # -------------------------------
 ALERT_THRESHOLD_HIGH = 0.75
 ALERT_THRESHOLD_MED = 0.40
@@ -202,45 +275,90 @@ def detect_anomalies(df):
             anomalies[col] = df[col][abs(z)>2].tolist()
     return anomalies
 
+def sanitize_for_mongo(record):
+    """
+    Recursively convert all keys to strings and remove None/_id.
+    Converts nested numeric keys safely for MongoDB to avoid conflicts like '0.0.1'.
+    """
+    def sanitize(value):
+        if isinstance(value, dict):
+            new_dict = {}
+            for k, v in value.items():
+                # Prefix numeric keys to avoid path conflicts
+                if isinstance(k, int) or (isinstance(k, str) and k.isdigit()):
+                    k = f"key_{k}"
+                new_dict[str(k)] = sanitize(v)
+            return new_dict
+        elif isinstance(value, list):
+            return [sanitize(v) if isinstance(v, (dict, list)) else v for v in value]
+        else:
+            return value
+
+    sanitized = sanitize(record)
+    sanitized.pop("_id", None)
+    return sanitized
+
 def run_ml_engine():
     try:
         model = load_model()
         df_features = fs.read_global()
         if df_features.empty:
-            print("⚠️ No features available to run ML engine. Skipping this cycle.")
-            return  # stop ML for this cycle
+            log_event("⚠️ No features available to run ML engine. Skipping this cycle.")
+            return
 
         latest = df_features.iloc[-1]
         X = pd.DataFrame([latest[FEATURE_COLUMNS].values], columns=FEATURE_COLUMNS)
-        prob = model.predict_proba(X)[0,1]
-        level,message = classify_risk(prob)
+        prob = model.predict_proba(X)[0, 1]
+        level, message = classify_risk(prob)
 
         forecast_df = compute_forecast(latest)
-        forecast_probs = [model.predict_proba(forecast_df.iloc[[i]][FEATURE_COLUMNS])[0,1] for i in range(len(forecast_df))]
+        forecast_probs = [
+            model.predict_proba(forecast_df.iloc[[i]][FEATURE_COLUMNS])[0, 1]
+            for i in range(len(forecast_df))
+        ]
 
         country_df = fs.read_country()
         if country_df.empty:
-            country_df = pd.read_csv("./data/country_features.csv")
-        country_risks = {row["country"]: round(float(model.predict_proba(row[FEATURE_COLUMNS].values.reshape(1,-1))[0,1]),3)
-                         for _,row in country_df.iterrows()}
+            country_df = pd.read_csv(os.path.join(DATA_DIR, "country_features.csv"))
 
-        df_history = pd.read_csv("./data/hourly_features.csv")
-        print("[DEBUG] df_history head:\n", df_history[["news_sentiment","gdelt_sentiment"]].head()) #Remove this later
+        country_risks = {}
+        for _, row in country_df.iterrows():
+            X_country = pd.DataFrame([row[FEATURE_COLUMNS].values], columns=FEATURE_COLUMNS)
+            country_risks[row["country"]] = round(float(model.predict_proba(X_country)[0, 1]), 3)
 
+        df_history = load_hourly_features()
+        df_history.dropna(subset=["news_sentiment", "gdelt_sentiment"], how="all", inplace=True)
         anomalies = detect_anomalies(df_history)
 
         global_coll = db.global_features
-        for _, row in df_history.iterrows():
-            record = row.to_dict()
-            # Convert timestamp to ISO string for JSON
-            record["timestamp"] = datetime.utcnow().isoformat()
-            record["_hash"] = hashlib.md5(json.dumps(record, sort_keys=True).encode("utf-8")).hexdigest()
-            global_coll.update_one(
-                {"_hash": record["_hash"]},
-                {"$set": record},
-                upsert=True
-            )
 
+        # 1️⃣ Latest record
+        latest_record = latest.to_dict()
+        latest_record["timestamp"] = datetime.utcnow().isoformat()
+        latest_record = sanitize_for_mongo(latest_record)
+        latest_record["_hash"] = hashlib.md5(
+            json.dumps(latest_record, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        mongo_safe_upsert(global_coll, latest_record)
+
+        # 2️⃣ Forecast records
+        for i in range(len(forecast_df)):
+            rec = forecast_df.iloc[i].to_dict()
+            rec["timestamp"] = datetime.utcnow().isoformat()
+            rec = sanitize_for_mongo(rec)
+            rec["_hash"] = hashlib.md5(json.dumps(rec, sort_keys=True).encode("utf-8")).hexdigest()
+            mongo_safe_upsert(global_coll, rec)
+
+        # 3️⃣ Country-level records
+        for country, risk in country_risks.items():
+            rec = {
+                "country": str(country),
+                "risk": risk,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            rec = sanitize_for_mongo(rec)
+            rec["_hash"] = hashlib.md5(json.dumps(rec, sort_keys=True).encode("utf-8")).hexdigest()
+            mongo_safe_upsert(global_coll, rec)
 
         log_event(f"Time: {datetime.now(timezone.utc).isoformat()}")
         log_event(f"Crisis Probability: {prob:.4f} | Risk Level: {level}")
@@ -250,12 +368,17 @@ def run_ml_engine():
         log_event(f"System Status: {message}")
 
         fs.write_global(df_history)
-        if level=="🔴 CRITICAL":
-            send_email("🚨 GLOBAL CRISIS ALERT", f"Crisis probability: {prob:.2f}\n{country_risks}")
+
+        if level == "🔴 CRITICAL":
+            send_email(
+                "🚨 GLOBAL CRISIS ALERT",
+                f"Crisis probability: {prob:.2f}\n{country_risks}"
+            )
 
     except Exception as e:
         log_event(f"❌ ML Engine error: {e}")
         traceback.print_exc()
+
 
 # -------------------------------
 # Mongo Delta Insert/Update
@@ -266,98 +389,110 @@ def compute_record_hash(record):
 
 def upsert_delta(collection_name, record, unique_key="id"):
     coll = db[collection_name]
-    if unique_key not in record:
-        record["_hash"] = compute_record_hash(record)
-        query = {"_hash": record["_hash"]}
+
+    # 1. Convert numeric keys and sanitize
+    record_safe = safe_keys(record)
+    record_safe = sanitize_for_mongo(record_safe)
+
+    if unique_key not in record_safe:
+        record_safe["_hash"] = compute_record_hash(record_safe)
+        query = {"_hash": record_safe["_hash"]}
     else:
-        query = {unique_key: record[unique_key]}
+        query = {unique_key: record_safe[unique_key]}
         existing = coll.find_one(query)
-        new_hash = compute_record_hash(record)
+        new_hash = compute_record_hash(record_safe)
         if existing and existing.get("_hash") == new_hash:
             return False
-        record["_hash"] = new_hash
-    coll.update_one(query, {"$set": record}, upsert=True)
+        record_safe["_hash"] = new_hash
+
+    coll.update_one(query, {"$set": record_safe}, upsert=True)
     return True
 
+
 # -------------------------------
-# Kafka Consumer → Full Stream Processing
+# Kafka Consumer → Full End-to-End Processing (Batching & CSV Safe)
 # -------------------------------
+from threading import Thread, Lock
+import threading 
+
+BATCH_SIZE = 50
+batch_lock = Lock()
+message_batch = []
+
+def flush_batch_to_csv(batch, csv_path=HOURLY_FEATURES_CSV):
+    if not batch:
+        return
+    df_batch = pd.DataFrame(batch)
+
+    if os.path.exists(csv_path):
+        df_existing = pd.read_csv(csv_path)
+        for col in df_existing.columns:
+            if col not in df_batch.columns:
+                df_batch[col] = 0.0
+        for col in df_batch.columns:
+            if col not in df_existing.columns:
+                df_existing[col] = 0.0
+        df_combined = pd.concat([df_existing, df_batch], ignore_index=True)
+    else:
+        df_combined = df_batch
+
+    df_combined.to_csv(csv_path, index=False)
+    log_event(f"Flushed {len(batch)} messages to {csv_path}")
+
 def process_message(record, topic):
     collection = topic.replace("_topic","")
+    global message_batch
     try:
-        # 1️⃣ Data Lake
         os.makedirs("data_lake", exist_ok=True)
-        with open(f"data_lake/{collection}.json","a",encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False)+"\n")
+        with open(f"data_lake/{collection}.json", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-        # 2️⃣ Preprocessing → NLP → Features
+        if not isinstance(record, dict):
+            record = json.loads(record)
+
         processed_record = preprocess_record(record)
 
-        # NLP processing
         if 'text' in processed_record:
             processed_record['cleaned_text'] = clean_text(processed_record['text'])
             processed_record['analysis'] = analyze_text(processed_record['cleaned_text'])
 
-            print("[DEBUG] NLP analysis:", processed_record.get("analysis"))
+        feature_builder = topic_feature_map.get(topic)
+        if feature_builder:
+            features = feature_builder(db_connection)
+            processed_record.update(features)
 
-
-        # Feature building: now correctly call build_hourly_features
-        #processed_record.update(build_hourly_features())
-
-        features = build_hourly_features()
-        print("[DEBUG] Hourly features:", features)
-        if not features.get("news_sentiment") or not features.get("gdelt_sentiment"):
-            print("[DEBUG] ⚠️ Sentiment data missing! Check collectors/NLP.")
-        processed_record.update(features)
-
-
-        # Topic modeling
         processed_record = topic_modeling_process_record(processed_record)
 
-        # 3️⃣ Mongo (delta)
         if upsert_delta(collection, processed_record, unique_key="id"):
             log_event(f"Mongo updated with new/changed record for {collection}")
 
-        # 4️⃣ Crisis detection + ML
         detect_crisis(email_alert_func=send_email)
-
-        # 🔹 DEBUG: log features before ML
-        feature_row = build_hourly_features()
-        log_event(f"[DEBUG] Features built this cycle (before ML): {feature_row}")
-
-        # -----------------------------------
-        # WRITE FEATURES TO Mongo (THIS WAS MISSING)
-        # -----------------------------------
-        ml_features = {
-            "news_sentiment": feature_row.get("news_sentiment", 0.0),
-            "gdelt_sentiment": feature_row.get("gdelt_sentiment", 0.0),
-            "crypto_return": feature_row.get("crypto_return", 0.0),
-            "crypto_volatility": feature_row.get("crypto_volatility", 0.0),
-            "stock_return": feature_row.get("stock_return", 0.0),
-            "stock_volatility": feature_row.get("stock_volatility", 0.0),
-            "weather_anomaly": feature_row.get("weather_anomaly", 0.0),
-        }
-
-        try:
-            write_global_features_v2(ml_features, mode="online")
-            log_event("[INFO] Global features written to Mongo")
-        except Exception as e:
-            log_event(f"❌ Failed to write global features: {e}")
-
-        # -----------------------------------
-        # Now run ML
-        # -----------------------------------
         run_ml_engine()
 
-
+        with batch_lock:
+            message_batch.append(processed_record)
+            if len(message_batch) >= BATCH_SIZE:
+                flush_batch_to_csv(message_batch)
+                message_batch = []
 
     except Exception as e:
         log_event(f"Error processing message from {topic}: {e}")
         traceback.print_exc()
 
+def batch_flusher_thread(interval_sec=30):
+    global message_batch
+    while True:
+        time.sleep(interval_sec)
+        with batch_lock:
+            if message_batch:
+                flush_batch_to_csv(message_batch)
+                message_batch = []
+
 def start_kafka_stream(parallel_workers=4):
+    threading.Thread(target=batch_flusher_thread, daemon=True).start()
+
     consumer = KafkaConsumer(
-        *[topic for _,topic in COLLECTOR_TASKS.values()],
+        *topic_feature_map.keys(),
         bootstrap_servers=KAFKA_BROKER,
         value_deserializer=lambda v: json.loads(v.decode("utf-8")),
         auto_offset_reset="earliest",
@@ -376,7 +511,6 @@ def start_kafka_stream(parallel_workers=4):
 if __name__=="__main__":
     log_event("Starting World Pulse Optimized Production Streaming Orchestrator...")
 
-    # 0️⃣ Run full preprocessing pipeline at startup
     try:
         log_event("🚀 Running full preprocessing (preprocess_data.main)...")
         preprocess_main()
@@ -385,8 +519,11 @@ if __name__=="__main__":
         log_event(f"❌ Preprocessing pipeline failed: {e}")
         traceback.print_exc()
 
-    # 1️⃣ Start collectors
-    start_all_collectors()
+    # --- Populate hourly features automatically ---
+    try:
+        populate_hourly_features()
+    except Exception as e:
+        log_event(f"❌ Failed to populate hourly features: {e}")
 
-    # 2️⃣ Start Kafka stream
+    start_all_collectors()
     start_kafka_stream(parallel_workers=8)

@@ -12,6 +12,18 @@
     "weather_anomaly": "float64",
     "global_risk_score": "float64",
     "top_topics": "object",
+    "_id": "object",
+    "source": "object",
+    "category": "object",
+    "collected_at": "object",
+    "data": "object",
+    "topic_modeling_status": "object",
+    "_hash": "object",
+    "data_coin_id": "object",
+    "data_vs_currency": "object",
+    "data_timestamp": "object",
+    "data_price": "float64",
+    "data_price_normalized": "float64",
     "fs_timestamp": "object"
   }
 }

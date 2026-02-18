@@ -49,7 +49,7 @@ def fetch_pageviews(article="Earthquake", days=7):
         }
 
         # Send to Kafka
-        send_to_kafka(record)
+        send_to_kafka("wiki_pageviews", record)
 
         # Insert into MongoDB
         insert("wiki", record)

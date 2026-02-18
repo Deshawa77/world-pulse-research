@@ -70,7 +70,7 @@ def collect_earthquakes():
     # Send each record to Kafka (convert datetime/ObjectId first)
     for record in data:
         record_json_safe = convert_for_json(record)
-        send_to_kafka(record_json_safe)
+        send_to_kafka("earthquakes", record_json_safe)
         print(f"Sent to Kafka: {record['data']['place']} | M{record['data']['magnitude']}")
 
     print(f"USGS collector finished. {len(data)} records processed.")

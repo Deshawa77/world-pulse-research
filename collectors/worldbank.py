@@ -45,7 +45,7 @@ def fetch_worldbank_data(date="2020:2025", per_page=5):
             records.append(record)
 
             # Send to Kafka in real-time
-            send_to_kafka(record)
+            send_to_kafka("worldbank_data", record)
             print("Sent to Kafka:", record)  # Debug/log
 
         return records

@@ -38,7 +38,7 @@ def fetch_exchange_rates(base_currency="USD"):
             standardized.append(record)
 
             # Send to Kafka immediately
-            send_to_kafka(record)
+            send_to_kafka("finance", record)
             print(f"Sent to Kafka: {currency} → {rate}")
 
         # Insert all records into MongoDB (warehouse)
