@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from pymongo import MongoClient, ASCENDING, DESCENDING
 import joblib
 
-from processing.ai_summary import generate_summary
+
 from processing.global_risk import compute_global_risk
 from feature_store.model_registry import get_production_model, list_models
 
@@ -33,6 +33,25 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY")
 # FastAPI app and rate limiter
 # =====================================================
 app = FastAPI(title="World Pulse Secure API")
+
+# ---------------- CORS Middleware -----------------
+from fastapi.middleware.cors import CORSMiddleware
+
+origins = [
+    "http://localhost:5173",  # Vite dev server
+    "http://localhost:3000",  # React dev server if used
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --------------------------------------------------
+
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
@@ -112,6 +131,13 @@ def log_prediction_to_mongo(model_version, features, prediction, probability):
         "prediction": int(prediction),
         "probability": float(probability)
     })
+
+def get_latest_global_doc(mode: str = "online") -> dict:
+    doc = db.global_features.find_one({"mode": mode}, sort=[("timestamp", DESCENDING)])
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"No global features found for mode '{mode}'")
+    return serialize_doc(doc)
+
 
 # =====================================================
 # Request Schema
@@ -211,13 +237,11 @@ def get_worldbank(request: Request, role: str = Depends(check_role)):
 # =====================================================
 # FEATURE STORE ENDPOINTS (protected + rate limited)
 # =====================================================
+
 @app.get("/features/global/latest")
 @limiter.limit("10/minute")
 def get_latest_global(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
-    doc = list(db.global_features.find({"mode": mode}).sort("timestamp", -1).limit(1))
-    if not doc:
-        raise HTTPException(status_code=404, detail="No global features found")
-    return serialize_doc(doc[0])
+    return get_latest_global_doc(mode)
 
 @app.get("/features/global/{version}")
 @limiter.limit("10/minute")
@@ -249,12 +273,26 @@ def get_country_versions(request: Request, country: str, role: str = Depends(che
 @app.get("/risk_score")
 @limiter.limit("10/minute")
 def risk_score(request: Request, role: str = Depends(check_role)):
-    return {"risk_score": compute_global_risk()}
+    doc = get_latest_global_doc(mode="online")
+    features = doc.get("features", {})
+    return {
+        "risk_score": [
+            features.get("global_risk_score", 50),
+            features.get("top_topics", ["no data"])
+        ]
+    }
 
 @app.get("/summary")
 @limiter.limit("10/minute")
 def summary(request: Request, role: str = Depends(check_role)):
-    return {"summary": generate_summary()}
+    doc = get_latest_global_doc(mode="online")
+    features = doc.get("features", {})
+    risk_score = features.get("global_risk_score", 50)
+    top_topics = features.get("top_topics", ["no data"])
+    return {
+        "summary": f"Moderate risk: Global Risk Score: {risk_score}/100.\n"
+                   f"Top topics influencing sentiment today: {top_topics}."
+    }
 
 # =====================================================
 # MODEL REGISTRY ENDPOINTS
@@ -325,25 +363,43 @@ def health(request: Request, role: str = Depends(check_role)):
         db.command("ping")
         model, _ = load_production_model()
         return {"status": "healthy", "database": "connected", "model_loaded": model is not None}
-    except Exception:
-        return {"status": "unhealthy"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
+
 
 # =====================================================
 # REAL-TIME RISK STREAM
 # =====================================================
+# =====================================================
+# REAL-TIME RISK STREAM WITH TOPICS
+# =====================================================
 @app.websocket("/ws/risk")
 async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(...)):
+    # --- Security check ---
     if x_api_key != API_KEY and x_api_key != ADMIN_KEY:
         await websocket.close(code=1008)
         return
 
+    # --- Connect client ---
     await manager.connect(websocket)
+
     try:
         while True:
-            doc = list(db.global_features.find({"mode": "online"}).sort("timestamp", -1).limit(1))
+            # Fetch the latest global_features doc
+            doc = db.global_features.find_one({"mode": "online"}, sort=[("timestamp", DESCENDING)])
             if doc:
-                data = serialize_doc(doc[0])
+                # Serialize for JSON + include top topics
+                data = {
+                    "timestamp": doc.get("timestamp"),
+                    "global_risk_score": doc["features"].get("global_risk_score", 50),
+                    "top_topics": doc["features"].get("top_topics", ["no data"])
+                }
                 await websocket.send_json(data)
+            
+            # Repeat every 5 seconds
             await asyncio.sleep(5)
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+

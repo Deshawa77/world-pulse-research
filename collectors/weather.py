@@ -210,6 +210,30 @@ def collect_weather():
 
     print(f"\nWeather collection complete. {success} cities collected.")
 
+def collect_weather_for_orchestrator():
+    """
+    Collect weather for all 100 cities, return a flat list of records
+    for orchestrator. No Mongo/CVS/Kafka side-effects.
+    """
+    all_records = []
+    for city in TOP_100_CITIES:
+        city_name = city["name"]
+        lat = city["lat"]
+        lon = city["lon"]
+
+        try:
+            records = fetch_weather(city_name, lat, lon)
+            if records:
+                # Remove Mongo _id to avoid conflicts
+                for rec in records:
+                    rec.pop("_id", None)
+                all_records.extend(records)
+        except Exception as e:
+            print(f"Error fetching weather for {city_name}: {e}")
+
+    return all_records
+
+
 # ----------------------------
 # Run if main
 # ----------------------------

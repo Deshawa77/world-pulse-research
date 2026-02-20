@@ -7,6 +7,13 @@ from pycoingecko import CoinGeckoAPI
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from dotenv import load_dotenv
 
+from utils import log_event             # <-- only this one
+from feature_store.feature_store import FeatureStore
+from config import HOURLY_FEATURES_CSV
+
+fs = FeatureStore()
+
+
 load_dotenv()
 
 # API keys
@@ -112,39 +119,47 @@ def calculate_global_risk(news_mean, gdelt_mean, crypto_vol, weather_anomaly):
 
 # --- Main ---
 def populate_hourly_features():
+    # -------------------------------
+    # 1️⃣ Compute features
+    # -------------------------------
     # News
     news_texts = fetch_news_texts("bitcoin")
     news_sentiments = compute_sentiment(news_texts)
-    news_mean = np.mean(news_sentiments) if news_sentiments else np.nan
-    news_std = np.std(news_sentiments) if news_sentiments else np.nan
+    news_mean = np.mean(news_sentiments) if news_sentiments else 0.0
+    news_std = np.std(news_sentiments) if news_sentiments else 0.0
 
     # GDELT
     gdelt_sentiments = fetch_gdelt_sentiments("bitcoin")
-    gdelt_mean = np.mean(gdelt_sentiments) if gdelt_sentiments else np.nan
-    gdelt_std = np.std(gdelt_sentiments) if gdelt_sentiments else np.nan
+    gdelt_mean = np.mean(gdelt_sentiments) if gdelt_sentiments else 0.0
+    gdelt_std = np.std(gdelt_sentiments) if gdelt_sentiments else 0.0
 
-    # Crypto
+    # --- Crypto ---
     crypto_prices = get_crypto_prices("bitcoin")
-    crypto_return = (crypto_prices[-1] - crypto_prices[0]) / crypto_prices[0] if len(crypto_prices) > 1 else np.nan
-    crypto_volatility = np.std(np.diff(crypto_prices)) if len(crypto_prices) > 1 else np.nan
+    print("Crypto prices:", crypto_prices)        # ✅ Debug print
+    crypto_return = (crypto_prices[-1] - crypto_prices[0]) / crypto_prices[0] if len(crypto_prices) > 1 else 0.0
+    crypto_volatility = np.std(np.diff(crypto_prices)) if len(crypto_prices) > 1 else 0.0
 
-    # Stock
+    # --- Stock ---
     stock_prices_dict = fetch_stock_prices_twelvedata(["AAPL", "MSFT"])
+    print("Stock prices:", stock_prices_dict)    # ✅ Debug print
     all_returns = []
     for prices in stock_prices_dict.values():
         if len(prices) > 1:
             all_returns.extend(np.diff(prices)/prices[:-1])
-    stock_return = np.mean(all_returns) if all_returns else np.nan
-    stock_volatility = np.std(all_returns) if all_returns else np.nan
+    stock_return = np.mean(all_returns) if all_returns else 0.0
+    stock_volatility = np.std(all_returns) if all_returns else 0.0
+
 
     # Weather
     weather_data = fetch_weather(6.9271, 79.8612)
-    weather_anomaly = compute_weather_anomaly(weather_data)
+    weather_anomaly = compute_weather_anomaly(weather_data) if weather_data else 0.0
 
     # Global Risk
     global_risk_score = calculate_global_risk(news_mean, gdelt_mean, crypto_volatility, weather_anomaly)
 
-    # Compose row
+    # -------------------------------
+    # 2️⃣ Compose row
+    # -------------------------------
     row = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "news_sentiment": news_mean,
@@ -159,10 +174,11 @@ def populate_hourly_features():
         "global_risk_score": global_risk_score
     }
 
-    # Save CSV cleanly
-    csv_path = "data/hourly_features.csv"
+    # -------------------------------
+    # 3️⃣ Save to CSV
+    # -------------------------------
+    csv_path = HOURLY_FEATURES_CSV
     columns = list(row.keys())
-
     if os.path.exists(csv_path):
         df_existing = pd.read_csv(csv_path)
         df_new = pd.DataFrame([row], columns=columns)
@@ -171,7 +187,24 @@ def populate_hourly_features():
         df_combined = pd.DataFrame([row], columns=columns)
 
     df_combined.to_csv(csv_path, index=False)
-    print("✅ hourly_features.csv populated successfully.")
+    log_event("✅ hourly_features.csv populated successfully")
+
+    # -------------------------------
+    # 4️⃣ Ensure all numeric features exist
+    # -------------------------------
+    for col in [
+        "news_sentiment","gdelt_sentiment","crypto_return","crypto_volatility",
+        "stock_return","stock_volatility","weather_anomaly"
+    ]:
+        if col not in df_combined.columns:
+            df_combined[col] = 0.0
+
+    # -------------------------------
+    # 5️⃣ Write to FeatureStore / Mongo
+    # -------------------------------
+    fs.write_global(df_combined)
+    log_event(f"Hourly features written to global store ({len(df_combined)} rows)")
+
 
 if __name__ == "__main__":
     populate_hourly_features()

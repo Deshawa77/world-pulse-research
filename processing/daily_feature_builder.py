@@ -21,8 +21,8 @@ logging.basicConfig(
 # Data paths
 # -------------------------
 DATA_DIR = os.path.join(os.path.dirname(__file__), "../data")
-HOURLY_FEATURES_CSV = os.path.join(DATA_DIR, "hourly_features.csv")
 os.makedirs(DATA_DIR, exist_ok=True)
+HOURLY_FEATURES_CSV = os.path.join(DATA_DIR, "hourly_features.csv")
 
 # -------------------------
 # CSV Loader
@@ -37,44 +37,20 @@ def load_processed_csv(filename, ts_cols=None):
                 df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
         df = df.drop_duplicates(subset=ts_cols or df.columns.tolist())
         df = df.sort_values(ts_cols[0] if ts_cols else df.columns[0])
+        logging.debug(f"CSV {filename} loaded with {len(df)} rows")
         return df
     return pd.DataFrame()
 
-
 def load_hourly_features():
-    """Load hourly features CSV safely, skipping bad lines and logging malformed rows."""
+    """Fallback CSV loader for precomputed hourly features."""
     if not os.path.exists(HOURLY_FEATURES_CSV):
         return pd.DataFrame()
-
-    # Inspect problematic lines (optional debug)
-    with open(HOURLY_FEATURES_CSV, "r", encoding="utf-8") as f:
-        for i, line in enumerate(f):
-            if 15 <= i <= 25:  # check lines around the error (line 21)
-                if line.count(",") != 104:  # assuming 104 expected columns
-                    logging.warning(f"Malformed line {i}: {line.strip()}")
-
-    # Read CSV safely, skipping bad lines
     try:
         df = pd.read_csv(HOURLY_FEATURES_CSV, on_bad_lines="skip")
-    except pd.errors.EmptyDataError:
-        logging.warning(f"{HOURLY_FEATURES_CSV} is empty or unreadable.")
+        return df
+    except Exception as e:
+        logging.warning(f"Error loading hourly features CSV: {e}")
         return pd.DataFrame()
-
-    numeric_cols = [
-        "news_sentiment", "news_sentiment_std",
-        "gdelt_sentiment", "gdelt_sentiment_std",
-        "crypto_return", "crypto_volatility",
-        "stock_return", "stock_volatility",
-        "weather_anomaly", "global_risk_score"
-    ]
-    for col in numeric_cols:
-        if col not in df.columns:
-            df[col] = 0.0
-        else:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-
-    df.dropna(subset=numeric_cols, how="all", inplace=True)
-    return df
 
 # -------------------------
 # Numeric feature helpers
@@ -85,16 +61,18 @@ def get_return_volatility(df, value_col, ts_col, window=5):
 
     df = df.dropna(subset=[value_col, ts_col]).copy()
     df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce", utc=True)
+    df = df.sort_values(ts_col)
     df["hour"] = df[ts_col].dt.floor("h")
     df = df.groupby("hour").agg({value_col: "last"}).sort_index()
 
-    if len(df) < 2:
+    if len(df) < 1:
         return 0.0, 0.0
 
     returns = df[value_col].pct_change()
-    rolling_returns = returns.rolling(window=window, min_periods=2)
-    latest_ret = rolling_returns.mean().iloc[-1]
-    latest_vol = rolling_returns.std().iloc[-1]
+    rolling_mean = returns.rolling(window=window, min_periods=1).mean()
+    rolling_std = returns.rolling(window=window, min_periods=1).std()
+    latest_ret = rolling_mean.iloc[-1] if not rolling_mean.empty and not np.isnan(rolling_mean.iloc[-1]) else 0.0
+    latest_vol = rolling_std.iloc[-1] if not rolling_std.empty and not np.isnan(rolling_std.iloc[-1]) else 0.0
     return float(latest_ret), float(latest_vol)
 
 def compute_crypto_features(df):
@@ -106,11 +84,9 @@ def compute_stock_features(df):
 def compute_weather_features(df):
     if df.empty or "data_temperature_normalized" not in df.columns or "data_city" not in df.columns:
         return {"weather_anomaly": 0.0}
-
     df = df.dropna(subset=["data_temperature_normalized", "data_city", "collected_at"]).copy()
     df["collected_at"] = pd.to_datetime(df["collected_at"], errors="coerce", utc=True)
     df["hour"] = df["collected_at"].dt.floor("h")
-
     anomalies = []
     for city, group in df.groupby("data_city"):
         if len(group) < 2:
@@ -119,7 +95,6 @@ def compute_weather_features(df):
         current = group["data_temperature_normalized"].iloc[-1]
         avg = group["data_temperature_normalized"].mean()
         anomalies.append(current - avg)
-
     return {"weather_anomaly": float(np.mean(anomalies)) if anomalies else 0.0}
 
 # -------------------------
@@ -138,10 +113,8 @@ def compute_hourly_sentiment(collection_name):
         except:
             continue
         rows.append({"timestamp": ts, "polarity": float(sentiment)})
-
     if not rows:
         return 0.0, 0.0
-
     df = pd.DataFrame(rows).sort_values("timestamp")
     df["hour"] = df["timestamp"].dt.floor("h")
     hourly_avg = df.groupby("hour")["polarity"].mean()
@@ -161,7 +134,6 @@ def safe_mongo_dict(d):
 def upsert_safe(collection, record, unique_key="_id"):
     if unique_key not in record or not record[unique_key]:
         record[unique_key] = str(uuid.uuid4())
-
     query = {unique_key: record[unique_key]}
     try:
         collection.update_one(query, {"$set": safe_mongo_dict(record)}, upsert=True)
@@ -174,32 +146,62 @@ def upsert_safe(collection, record, unique_key="_id"):
 # -------------------------
 # Build Hourly Features
 # -------------------------
-def build_hourly_features(db,
-                          crypto_df: pd.DataFrame | None = None,
-                          stocks_df: pd.DataFrame | None = None,
-                          weather_df: pd.DataFrame | None = None) -> dict:
-    """
-    Compute hourly features and return them as a dict.
-    Safe defaults are used to avoid undefined variable issues.
-    """
+def build_hourly_features(db) -> dict:
+    """Compute hourly features from Mongo (CSV fallback) and return as top-level dict."""
 
-    # --- Ensure DataFrames are not None ---
-    crypto_df = crypto_df if crypto_df is not None else pd.DataFrame()
-    stocks_df = stocks_df if stocks_df is not None else pd.DataFrame()
-    weather_df = weather_df if weather_df is not None else pd.DataFrame()
-
-    # --- UTC-aware timestamp ---
     hour_str = datetime.now(timezone.utc).isoformat()
 
-    # --- Defaults to avoid undefined variable warnings ---
-    crypto_return, crypto_vol = 0.0, 0.0
-    stock_return, stock_vol = 0.0, 0.0
-    weather_feats = {"weather_anomaly": 0.0}
-    news_sentiment, news_std = 0.0, 0.0
-    gdelt_sentiment, gdelt_std = 0.0, 0.0
-    global_risk_score, top_topics = 0.0, []
+    # --- Load data from Mongo first, flatten nested fields ---
+    try:
+        crypto_docs = list(db.crypto.find({}, {"_id":0, "data.data_price":1, "data.data_timestamp":1}))
+        crypto_df = pd.DataFrame([{
+            "data_price": d.get("data", {}).get("data_price", 0),
+            "data_timestamp": d.get("data", {}).get("data_timestamp")
+        } for d in crypto_docs])
 
-    # --- Safe computation helper ---
+        stocks_docs = list(db.stocks.find({}, {"_id":0, "data.data_close":1, "data.data_datetime":1}))
+        stocks_df = pd.DataFrame([{
+            "data_close": d.get("data", {}).get("data_close", 0),
+            "data_datetime": d.get("data", {}).get("data_datetime")
+        } for d in stocks_docs])
+
+        weather_docs = list(db.weather.find({}, {"_id":0, "data.data_temperature_normalized":1,
+                                                "data.data_city":1, "data.collected_at":1}))
+        weather_df = pd.DataFrame([{
+            "data_temperature_normalized": d.get("data", {}).get("data_temperature_normalized", 0),
+            "data_city": d.get("data", {}).get("data_city"),
+            "collected_at": d.get("data", {}).get("collected_at")
+        } for d in weather_docs])
+
+        logging.debug(f"Mongo rows loaded: crypto={len(crypto_df)}, stocks={len(stocks_df)}, weather={len(weather_df)}")
+    except Exception as e:
+        logging.warning(f"Error loading data from Mongo: {e}")
+        crypto_df, stocks_df, weather_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    # --- Fallback to CSV ---
+    if crypto_df.empty:
+        crypto_df = load_processed_csv("crypto_data.csv", ts_cols=["data_timestamp"])
+    if stocks_df.empty:
+        stocks_df = load_processed_csv("stocks_data.csv", ts_cols=["data_datetime"])
+    if weather_df.empty:
+        weather_df = load_processed_csv("weather_data.csv", ts_cols=["collected_at"])
+
+    # --- Aggregate / normalize numeric fields ---
+    features = {
+        "news_sentiment": 0.0,             # fallback, or compute from NLP pipeline if available
+        "gdelt_sentiment": 0.0,            # fallback
+        "crypto_return": float(crypto_df["data_price"].pct_change().iloc[-1]) if not crypto_df.empty else 0.0,
+        "crypto_volatility": float(crypto_df["data_price"].pct_change().std()) if not crypto_df.empty else 0.0,
+        "stock_return": float(stocks_df["data_close"].pct_change().iloc[-1]) if not stocks_df.empty else 0.0,
+        "stock_volatility": float(stocks_df["data_close"].pct_change().std()) if not stocks_df.empty else 0.0,
+        "weather_anomaly": float(weather_df["data_temperature_normalized"].iloc[-1]) if not weather_df.empty else 0.0,
+        "global_risk_score": 50.0,          # fallback; ML or summary can overwrite later
+        "top_topics": ["no data"],          # placeholder; NLP can overwrite later
+        "timestamp": hour_str
+    }
+
+    return features
+    # --- Compute features safely ---
     def safe_compute(func, *args, default=None, **kwargs):
         try:
             return func(*args, **kwargs)
@@ -207,26 +209,19 @@ def build_hourly_features(db,
             logging.warning(f"Error computing {func.__name__}: {e}")
             return default
 
-
-    # --- Load historical CSVs if available ---
-    crypto_df = safe_compute(load_processed_csv, "crypto_data.csv", ts_cols=["data_timestamp"], default=pd.DataFrame())
-    stocks_df = safe_compute(load_processed_csv, "stocks_data.csv", ts_cols=["data_datetime"], default=pd.DataFrame())
-    weather_df = safe_compute(load_processed_csv, "weather_data.csv", ts_cols=["collected_at"], default=pd.DataFrame())
-
-    # --- Compute numeric features safely ---
     crypto_return, crypto_vol = safe_compute(compute_crypto_features, crypto_df, default=(0.0, 0.0))
     stock_return, stock_vol = safe_compute(compute_stock_features, stocks_df, default=(0.0, 0.0))
     weather_feats = safe_compute(compute_weather_features, weather_df, default={"weather_anomaly": 0.0})
-
-    # --- Compute sentiment features safely ---
     news_sentiment, news_std = safe_compute(compute_hourly_sentiment, "news", default=(0.0, 0.0))
     gdelt_sentiment, gdelt_std = safe_compute(compute_hourly_sentiment, "gdelt", default=(0.0, 0.0))
 
-    # --- Compute global risk safely ---
+    # --- Global risk ---
     from processing.global_risk import compute_global_risk
     global_risk_score, top_topics = safe_compute(compute_global_risk, default=(0.0, []))
+    if top_topics is None:
+        top_topics = []
 
-    # --- Build feature row ---
+    # --- Feature row ---
     feature_row = {
         "_id": str(uuid.uuid4()),
         "timestamp": hour_str,
@@ -240,16 +235,15 @@ def build_hourly_features(db,
         "stock_volatility": stock_vol or 0.0,
         "weather_anomaly": weather_feats.get("weather_anomaly", 0.0),
         "global_risk_score": global_risk_score or 0.0,
-        "top_topics": ", ".join(top_topics) if top_topics else "no data",
+        "top_topics": top_topics,  # keep as list
     }
 
     logging.debug(f"[SAFE FEATURES] {feature_row}")
-
     return feature_row
+
 # -------------------------
 # Run if main
 # -------------------------
 if __name__ == "__main__":
-    # Example usage with empty dataframes
     feature_row = build_hourly_features(db)
     print("Hourly features computed:", feature_row)
