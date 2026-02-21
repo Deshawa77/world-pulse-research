@@ -147,31 +147,33 @@ def upsert_safe(collection, record, unique_key="_id"):
 # Build Hourly Features
 # -------------------------
 def build_hourly_features(db) -> dict:
-    """Compute hourly features from Mongo (CSV fallback) and return as top-level dict."""
-
+    """Compute hourly features from Mongo (CSV fallback) and return as dict."""
     hour_str = datetime.now(timezone.utc).isoformat()
 
-    # --- Load data from Mongo first, flatten nested fields ---
+    # --- Load data from Mongo first (top-level schema used by collectors) ---
     try:
-        crypto_docs = list(db.crypto.find({}, {"_id":0, "data.data_price":1, "data.data_timestamp":1}))
-        crypto_df = pd.DataFrame([{
-            "data_price": d.get("data", {}).get("data_price", 0),
-            "data_timestamp": d.get("data", {}).get("data_timestamp")
-        } for d in crypto_docs])
+        crypto_docs = list(db.crypto.find({}, {"_id": 0, "data_price": 1, "data_timestamp": 1}))
+        crypto_df = pd.DataFrame(
+            [{"data_price": d.get("data_price"), "data_timestamp": d.get("data_timestamp")} for d in crypto_docs]
+        )
 
-        stocks_docs = list(db.stocks.find({}, {"_id":0, "data.data_close":1, "data.data_datetime":1}))
-        stocks_df = pd.DataFrame([{
-            "data_close": d.get("data", {}).get("data_close", 0),
-            "data_datetime": d.get("data", {}).get("data_datetime")
-        } for d in stocks_docs])
+        stocks_docs = list(db.stocks.find({}, {"_id": 0, "data_close": 1, "data_datetime": 1}))
+        stocks_df = pd.DataFrame(
+            [{"data_close": d.get("data_close"), "data_datetime": d.get("data_datetime")} for d in stocks_docs]
+        )
 
-        weather_docs = list(db.weather.find({}, {"_id":0, "data.data_temperature_normalized":1,
-                                                "data.data_city":1, "data.collected_at":1}))
-        weather_df = pd.DataFrame([{
-            "data_temperature_normalized": d.get("data", {}).get("data_temperature_normalized", 0),
-            "data_city": d.get("data", {}).get("data_city"),
-            "collected_at": d.get("data", {}).get("collected_at")
-        } for d in weather_docs])
+        weather_docs = list(db.weather.find({}, {"_id": 0, "data_city": 1, "data_temperature_normalized": 1, "collected_at": 1, "data": 1}))
+        weather_rows = []
+        for d in weather_docs:
+            nested = d.get("data", {}) if isinstance(d.get("data"), dict) else {}
+            weather_rows.append(
+                {
+                    "data_temperature_normalized": d.get("data_temperature_normalized", nested.get("temperature_normalized")),
+                    "data_city": d.get("data_city", nested.get("city")),
+                    "collected_at": d.get("collected_at", nested.get("collected_at")),
+                }
+            )
+        weather_df = pd.DataFrame(weather_rows)
 
         logging.debug(f"Mongo rows loaded: crypto={len(crypto_df)}, stocks={len(stocks_df)}, weather={len(weather_df)}")
     except Exception as e:
@@ -180,27 +182,12 @@ def build_hourly_features(db) -> dict:
 
     # --- Fallback to CSV ---
     if crypto_df.empty:
-        crypto_df = load_processed_csv("crypto_data.csv", ts_cols=["data_timestamp"])
+        crypto_df = load_processed_csv("processed_crypto.csv", ts_cols=["data_timestamp"])
     if stocks_df.empty:
-        stocks_df = load_processed_csv("stocks_data.csv", ts_cols=["data_datetime"])
+        stocks_df = load_processed_csv("processed_stocks.csv", ts_cols=["data_datetime"])
     if weather_df.empty:
-        weather_df = load_processed_csv("weather_data.csv", ts_cols=["collected_at"])
+        weather_df = load_processed_csv("processed_weather.csv", ts_cols=["collected_at"])
 
-    # --- Aggregate / normalize numeric fields ---
-    features = {
-        "news_sentiment": 0.0,             # fallback, or compute from NLP pipeline if available
-        "gdelt_sentiment": 0.0,            # fallback
-        "crypto_return": float(crypto_df["data_price"].pct_change().iloc[-1]) if not crypto_df.empty else 0.0,
-        "crypto_volatility": float(crypto_df["data_price"].pct_change().std()) if not crypto_df.empty else 0.0,
-        "stock_return": float(stocks_df["data_close"].pct_change().iloc[-1]) if not stocks_df.empty else 0.0,
-        "stock_volatility": float(stocks_df["data_close"].pct_change().std()) if not stocks_df.empty else 0.0,
-        "weather_anomaly": float(weather_df["data_temperature_normalized"].iloc[-1]) if not weather_df.empty else 0.0,
-        "global_risk_score": 50.0,          # fallback; ML or summary can overwrite later
-        "top_topics": ["no data"],          # placeholder; NLP can overwrite later
-        "timestamp": hour_str
-    }
-
-    return features
     # --- Compute features safely ---
     def safe_compute(func, *args, default=None, **kwargs):
         try:

@@ -133,7 +133,8 @@ def log_prediction_to_mongo(model_version, features, prediction, probability):
     })
 
 def get_latest_global_doc(mode: str = "online") -> dict:
-    doc = db.global_features.find_one({"mode": mode}, sort=[("timestamp", DESCENDING)])
+    # Use _id ordering to avoid mixed-type timestamp sort issues.
+    doc = db.global_features.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
     if not doc:
         raise HTTPException(status_code=404, detail=f"No global features found for mode '{mode}'")
     return serialize_doc(doc)
@@ -386,7 +387,7 @@ async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(...)):
     try:
         while True:
             # Fetch the latest global_features doc
-            doc = db.global_features.find_one({"mode": "online"}, sort=[("timestamp", DESCENDING)])
+            doc = db.global_features.find_one({"mode": "online"}, sort=[("_id", DESCENDING)])
             if doc:
                 # Serialize for JSON + include top topics
                 data = {

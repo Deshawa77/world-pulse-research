@@ -128,31 +128,6 @@ def collect_stock(symbol="AAPL", interval="1h", outputsize=24, rolling_window=5)
     df_combined["return"] = df_combined["data_close"].pct_change(periods=rolling_window)
     df_combined["volatility"] = df_combined["return"].rolling(window=rolling_window).std()
 
-    # ----------------------------
-    # After computing rolling metrics
-    # ----------------------------
-    if not df_combined.empty:
-        latest = df_combined.iloc[-1]
-        
-        # Build top-level snapshot for orchestrator
-        snapshot = {
-            "_id": generate_uuid(),
-            "source": "twelvedata",
-            "category": "stock_snapshot",
-            "data_close": float(latest["data_close"]),
-            "data_volatility_stock": float(latest.get("volatility", 0.0)),
-            "return": float(latest.get("return", 0.0)),
-            "timestamp": latest["data_datetime"].isoformat()
-        }
-
-        # Send snapshot to Kafka for top-level features
-        send_to_kafka("stocks_snapshot_topic", convert_for_json(snapshot))
-        print(f"[Kafka] Top-level stock snapshot sent: close={snapshot['data_close']:.2f}")
-
-        # Upsert snapshot into Mongo for orchestrator
-        from database.mongo import insert_or_update
-        insert_or_update("stocks_snapshot", snapshot, unique_key="category")  # keeps only latest doc
-
     # Save CSV
     df_combined.to_csv(HOURLY_CSV, index=False)
 

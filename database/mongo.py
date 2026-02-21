@@ -145,11 +145,12 @@ def get_latest_global_features(mode="online"):
     """
     Return the latest global features document by mode.
     """
-    return db["global_features"].find_one({"mode": mode}, sort=[("timestamp", -1)])
+    # Use _id ordering to avoid mixed-type timestamp sort issues (str vs datetime).
+    return db["global_features"].find_one({"mode": mode}, sort=[("_id", -1)])
 
 def get_historical_global_features(limit=1000, mode="online"):
     """
     Return the last 'limit' global features documents by mode.
     """
-    cursor = db["global_features"].find({"mode": mode}).sort("timestamp", -1).limit(limit)
+    cursor = db["global_features"].find({"mode": mode}).sort("_id", -1).limit(limit)
     return list(cursor)

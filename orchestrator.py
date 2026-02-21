@@ -4,10 +4,11 @@ World Pulse Orchestrator - Optimized Production Streaming
 Collectors → Kafka → Consumer → Data Lake → Preprocessing → Mongo → NLP → Feature Store → ML → Alerts
 """
 
-import sys, io, os, json, logging, traceback, time, hashlib
+import sys, io, os, json, logging, traceback, time, hashlib, re
 from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from collections import Counter
 from kafka import KafkaProducer, KafkaConsumer
 import pandas as pd
 import numpy as np
@@ -113,7 +114,7 @@ def mongo_safe_upsert(collection, record):
         if "_hash" not in record_safe:
             # generate hash if not present
             record_safe["_hash"] = hashlib.md5(
-                json.dumps(record_safe, sort_keys=True).encode("utf-8")
+                json.dumps(record_safe, sort_keys=True, default=json_serializer).encode("utf-8")
             ).hexdigest()
 
         collection.update_one(
@@ -232,10 +233,6 @@ from populate_hourly_features import populate_hourly_features
 from populate_hourly_features import populate_hourly_features
 from backend.observability import health_check
 from config import HOURLY_FEATURES_CSV, FEATURE_COLUMNS
-from processing.ai_summary import update_global_features
-
-
-
 fs = FeatureStore()
 db_connection = db
 
@@ -327,6 +324,49 @@ def detect_anomalies(df):
             anomalies[col] = df[col][abs(z)>2].tolist()
     return anomalies
 
+TOPIC_STOPWORDS = {
+    "the", "and", "for", "with", "this", "that", "from", "are", "was", "were",
+    "has", "have", "had", "not", "you", "your", "about", "into", "over", "under",
+    "latest", "breaking", "report", "global", "world", "update", "today", "after",
+    "before", "will", "can", "new"
+}
+
+def extract_recent_topics(db, top_n=5, max_docs=200):
+    try:
+        news_docs = list(db.news.find({}, {"data.title": 1, "title": 1}).sort("collected_at", -1).limit(max_docs))
+        gdelt_docs = list(db.gdelt.find({}, {"data.title": 1, "title": 1}).sort("collected_at", -1).limit(max_docs))
+    except Exception as e:
+        log_event(f"Topic extraction read failed: {e}")
+        return ["no data"]
+
+    words = []
+    for doc in news_docs + gdelt_docs:
+        title = (doc.get("data", {}) or {}).get("title") or doc.get("title")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        tokens = re.findall(r"\b[a-zA-Z]{3,}\b", title.lower())
+        words.extend([t for t in tokens if t not in TOPIC_STOPWORDS])
+
+    if not words:
+        return ["no data"]
+    return [word for word, _ in Counter(words).most_common(top_n)]
+
+def compute_model_risk_score(models, feature_values):
+    try:
+        row = {}
+        for col in FEATURE_COLUMNS:
+            value = feature_values.get(col, 0.0)
+            row[col] = 0.0 if value is None or pd.isna(value) else float(value)
+
+        X = pd.DataFrame([row], columns=FEATURE_COLUMNS)
+        probs = [m.predict_proba(X)[0, 1] for m in models.values() if hasattr(m, "predict_proba")]
+        if not probs:
+            return 50.0
+        return round(float(np.mean(probs) * 100), 2)
+    except Exception as e:
+        log_event(f"Model risk scoring failed: {e}")
+        return 50.0
+
 def sanitize_for_mongo(record):
     """
     Recursively convert all keys to strings and remove None/_id.
@@ -414,17 +454,17 @@ def run_ml_engine():
         anomalies = detect_anomalies(df_history)
 
         # -------------------------
-        # 6️⃣ Extract top topics safely
+        # 6️⃣ Extract top topics from recent news/gdelt titles
         # -------------------------
-        raw_topics = anomalies.get("topics", [])
-        top_topics = raw_topics[:5] if raw_topics and any(str(t).strip() for t in raw_topics) else ["no data"]
+        top_topics = extract_recent_topics(db, top_n=5)
 
         # -------------------------
         # 7️⃣ Prepare global_features document
         # -------------------------
         now_iso = datetime.utcnow().isoformat()
+        now_dt = datetime.utcnow()
         global_doc = {
-            "timestamp": now_iso,
+            "timestamp": now_dt,
             "version": int(time.time()),
             "mode": "online",
             "features": {
@@ -438,11 +478,6 @@ def run_ml_engine():
 
         # Upsert to global_features
         mongo_safe_upsert(db.global_features, global_doc)
-
-        # ✅ Update AI summary
-        doc_id = db.global_features.find_one({"timestamp": now_iso, "mode": "online"})["_id"]
-        summary_text = update_global_features(db)
-        print("AI summary generated:", summary_text)
 
         # -------------------------
         # 8️⃣ Update dashboard
@@ -556,35 +591,12 @@ def process_message(record, topic):
             processed_record['cleaned_text'] = clean_text(processed_record['text'])
             processed_record['analysis'] = analyze_text(processed_record['cleaned_text'])
 
-        feature_builder = topic_feature_map.get(topic)
-        if feature_builder:
-            features = feature_builder(db_connection)
-
-            # Ensure all numeric features exist
-            for col in FEATURE_COLUMNS:
-                # Preserve tiny/negative values, only default if missing or NaN
-                if col not in features or features[col] is None or pd.isna(features[col]):
-                    features[col] = 0.0
-                else:
-                    features[col] = float(features[col])
-
-            processed_record.update(features)
-
         processed_record = topic_modeling_process_record(processed_record)
 
         if upsert_delta(collection, processed_record, unique_key="id"):
             log_event(f"Mongo updated with new/changed record for {collection}")
 
         detect_crisis(email_alert_func=send_email)
-
-        # -----------------------------
-        # Update AI summary immediately
-        # -----------------------------
-        try:
-            summary_text = update_global_features(db)
-            log_event(f"AI summary updated from Kafka batch: {summary_text}")
-        except Exception as e:
-            log_event(f"❌ AI summary update failed in Kafka batch: {e}")
 
         with batch_lock:
             message_batch.append(processed_record)
@@ -667,41 +679,50 @@ if __name__=="__main__":
                 populate_hourly_features()
                 log_event("Hourly features updated")
 
-                # 2️⃣ Get latest hourly_features document
-                latest_doc = db.get_collection("hourly_features").find_one(sort=[("timestamp", -1)])
-                if not latest_doc:
-                    log_event("⚠️ No hourly_features found, skipping global_features update")
+                # 2️⃣ Read latest feature row from hourly_features CSV
+                if not os.path.exists(HOURLY_FEATURES_CSV):
+                    log_event("⚠️ hourly_features.csv missing, skipping global_features update")
                     continue
 
-                # ✅ Use raw fields directly
-                features = latest_doc  
+                df_hourly = pd.read_csv(HOURLY_FEATURES_CSV)
+                if df_hourly.empty:
+                    log_event("⚠️ hourly_features.csv empty, skipping global_features update")
+                    continue
+
+                # ✅ Use latest CSV row as source of truth
+                features = df_hourly.iloc[-1].to_dict()
 
                 # 3️⃣ Define timestamp
                 now_iso = datetime.utcnow().isoformat()
+                now_dt = datetime.utcnow()
 
-                # 4️⃣ Build global_features document
+                # 4️⃣ Compute model-aligned risk + top topics
+                models = load_model()
+                risk_score = compute_model_risk_score(models, features)
+                top_topics = extract_recent_topics(db, top_n=5)
+
+                # 5️⃣ Build global_features document
                 global_doc = {
-                    "timestamp": now_iso,
+                    "timestamp": now_dt,
                     "version": int(time.time()),
                     "mode": "online",
                     "features": {
-                        **{k: float(features.get(k, 0)) for k in FEATURE_COLUMNS},  # fill missing features with 0
+                        **{
+                            k: (0.0 if features.get(k) is None or pd.isna(features.get(k)) else float(features.get(k)))
+                            for k in FEATURE_COLUMNS
+                        },
                         "timestamp": now_iso,
-                        "global_risk_score": round(features.get("global_risk_score", 50), 2),
-                        "top_topics": features.get("top_topics", ["no data"]),
+                        "global_risk_score": risk_score,
+                        "top_topics": top_topics,
                     }
                 }
 
-                # 5️⃣ Upsert to global_features
-                mongo_safe_upsert(db.global_features, global_doc)
-                log_event(f"Global_features updated from hourly_features ✅ {global_doc['timestamp']}")
-
-                # 6️⃣ Optionally run AI summary / dashboard update
-                try:
-                    summary_text = update_global_features(db)
-                    log_event(f"AI summary updated: {summary_text}")
-                except Exception as e:
-                    log_event(f"❌ AI summary update failed: {e}")
+                # 6️⃣ Upsert to global_features
+                if mongo_safe_upsert(db.global_features, global_doc):
+                    log_event(f"Global_features updated from hourly_features ✅ {global_doc['timestamp']}")
+                else:
+                    log_event("❌ Global_features upsert from hourly_features failed")
+                    continue
 
                 # 7️⃣ Update dashboard with latest global features
                 update_dashboard(global_doc)

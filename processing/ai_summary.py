@@ -118,51 +118,22 @@ def compute_global_risk_score(db, top_n_topics=5):
     return features
 
 # -----------------------------
-# Update MongoDB
+# Read-Only Summary
 # -----------------------------
-# ai_summary.py
 def update_global_features(db):
     """
-    Read latest hourly features or CSV, normalize field paths, compute global risk,
-    and return a summary string.
+    Build a summary from the latest online global_features document.
+    This function is intentionally read-only.
     """
-    try:
-        # 1️⃣ Load latest hourly features
-        latest_doc = db.get_collection("hourly_features").find_one(sort=[("timestamp", -1)])
-        if not latest_doc:
-            return "No hourly features available"
+    doc = db.global_features.find_one({"mode": "online"}, sort=[("timestamp", -1)])
+    if not doc:
+        return "No global features available"
 
-        features = latest_doc
+    features = doc.get("features", {})
+    risk_score = features.get("global_risk_score", 50)
+    top_topics = features.get("top_topics", ["no data"])
 
-        # 2️⃣ Normalize field names to top-level expected by orchestrator
-        normalized_features = {
-            "news_sentiment": float(features.get("news_sentiment", 0)),
-            "gdelt_sentiment": float(features.get("gdelt_sentiment", 0)),
-            "crypto_return": float(features.get("crypto_return", 0)),
-            "crypto_volatility": float(features.get("crypto_volatility", 0)),
-            "stock_return": float(features.get("stock_return", 0)),
-            "stock_volatility": float(features.get("stock_volatility", 0)),
-            "weather_anomaly": float(features.get("weather_anomaly", 0)),
-            "global_risk_score": round(features.get("global_risk_score", 50), 2),
-            "top_topics": features.get("top_topics", ["no data"]),
-            "timestamp": features.get("timestamp", datetime.utcnow().isoformat())
-        }
-
-        # 3️⃣ Upsert to global_features
-        mongo_safe_upsert(db.global_features, {
-            "timestamp": normalized_features["timestamp"],
-            "version": int(time.time()),
-            "mode": "online",
-            "features": normalized_features
-        })
-
-        summary = (
-            f"Moderate risk: Global Risk Score: {normalized_features['global_risk_score']}/100.\n"
-            f"Top topics influencing sentiment today: {normalized_features['top_topics']}"
-        )
-        return summary
-
-    except Exception as e:
-        log_event(f"❌ update_global_features error: {e}")
-        traceback.print_exc()
-        return "Error generating summary"
+    return (
+        f"Moderate risk: Global Risk Score: {risk_score}/100.\n"
+        f"Top topics influencing sentiment today: {top_topics}"
+    )
