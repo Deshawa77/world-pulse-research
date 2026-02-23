@@ -496,7 +496,175 @@ button:hover {
   }
 }
 
+/* Auth Pages Styling */
+.wp-auth-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background:
+    radial-gradient(1200px 500px at 15% -10%, rgba(86, 214, 255, 0.22), transparent 65%),
+    radial-gradient(1000px 500px at 90% -10%, rgba(78, 137, 255, 0.18), transparent 60%),
+    linear-gradient(180deg, #04070f 0%, #080e1a 100%);
+}
+
+.wp-auth-card {
+  width: min(420px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background:
+    linear-gradient(140deg, rgba(12, 19, 33, 0.96), rgba(8, 14, 25, 0.96)),
+    repeating-linear-gradient(
+      90deg,
+      rgba(86, 214, 255, 0.035) 0px,
+      rgba(86, 214, 255, 0.035) 1px,
+      transparent 1px,
+      transparent 64px
+    );
+  padding: 32px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+}
+
+.wp-auth-card h1 {
+  margin: 0 0 8px;
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
+  text-align: center;
+  letter-spacing: 1px;
+}
+
+.wp-auth-card h1 span {
+  color: var(--cyan);
+}
+
+.wp-auth-subtitle {
+  text-align: center;
+  color: var(--muted);
+  margin: 0 0 28px;
+  font-size: 1.05rem;
+}
+
+.wp-auth-form {
+  display: grid;
+  gap: 16px;
+}
+
+.wp-auth-field {
+  display: grid;
+  gap: 6px;
+}
+
+.wp-auth-field label {
+  color: var(--muted);
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.wp-auth-field input,
+.wp-auth-field select {
+  padding: 12px 14px;
+  border: 1px solid rgba(146, 170, 210, 0.35);
+  border-radius: 10px;
+  background: rgba(4, 9, 18, 0.6);
+  color: var(--text);
+  font: inherit;
+  font-size: 1.1rem;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.wp-auth-field input:focus,
+.wp-auth-field select:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgba(86, 214, 255, 0.15);
+}
+
+.wp-auth-field input::placeholder {
+  color: rgba(159, 176, 207, 0.5);
+}
+
+.wp-auth-field select option {
+  background: #0a121f;
+  color: var(--text);
+}
+
+.wp-auth-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 14px;
+  font-size: 1.2rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border: 1px solid rgba(86, 214, 255, 0.5);
+  border-radius: 10px;
+  background: linear-gradient(120deg, rgba(86, 214, 255, 0.25), rgba(78, 137, 255, 0.25));
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.wp-auth-btn:hover {
+  border-color: var(--cyan);
+  background: linear-gradient(120deg, rgba(86, 214, 255, 0.35), rgba(78, 137, 255, 0.35));
+  box-shadow: 0 0 20px rgba(86, 214, 255, 0.2);
+}
+
+.wp-auth-links {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.wp-auth-links a {
+  color: var(--cyan);
+  text-decoration: none;
+  font-size: 1rem;
+  transition: color 0.2s;
+}
+
+.wp-auth-links a:hover {
+  color: var(--text);
+  text-shadow: 0 0 8px rgba(86, 214, 255, 0.5);
+}
+
+.wp-auth-error {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fda4af;
+  font-size: 0.95rem;
+  text-align: center;
+}
+
+.wp-auth-success {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  color: #86efac;
+  font-size: 0.95rem;
+  text-align: center;
+}
+
+.wp-auth-token-box {
+  padding: 14px;
+  border-radius: 10px;
+  background: rgba(4, 9, 18, 0.8);
+  border: 1px solid rgba(86, 214, 255, 0.3);
+  font-family: monospace;
+  font-size: 0.9rem;
+  color: var(--cyan);
+  word-break: break-all;
+  text-align: center;
+}
+
 @media (max-width: 1280px) {
+
   .wp-strip {
     grid-template-columns: 1fr 1fr;
   }

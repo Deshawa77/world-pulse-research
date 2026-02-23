@@ -1,2 +1,2 @@
 _id,source,category,collected_at,data_symbol,data_datetime,data_open,data_high,data_low,data_close,data_volume,data_close_normalized
-69860c8ba6cb4e9b67bd72ec,twelvedata,finance,2026-02-06 15:45:15.218,AAPL,2026-02-06,277.16,280.88,276.97,0.0,481378,0.0
+6986c8ea61fb9c0b2b64dd79,twelvedata,finance,2026-02-07 05:08:58.149,AAPL,2026-02-06,277.16000,280.90500,276.92499,278.12,50050812,0.0

@@ -113,6 +113,27 @@ function buildSnapshot(doc: GlobalDoc): Snapshot {
   };
 }
 
+function fallbackGlobalDoc(): GlobalDoc {
+  const ts = new Date().toISOString();
+  return {
+    mode: "online",
+    version: 0,
+    timestamp: ts,
+    features: {
+      timestamp: ts,
+      news_sentiment: 0,
+      gdelt_sentiment: 0,
+      crypto_return: 0,
+      crypto_volatility: 0,
+      stock_return: 0,
+      stock_volatility: 0,
+      weather_anomaly: 0,
+      global_risk_score: 50,
+      top_topics: ["no data"],
+    },
+  };
+}
+
 function readJson<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
@@ -414,15 +435,27 @@ export default function Dashboard() {
       }
       inFlight.current = true;
       try {
-        const [h, s, g] = await Promise.all([
+        const [h, s, g] = await Promise.allSettled([
           API.get("/health", { headers: API_HEADERS }),
           API.get("/summary", { headers: API_HEADERS }),
           API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } }),
         ]);
-        const doc = g.data as GlobalDoc;
+
+        if (h.status === "fulfilled") {
+          setHealth(h.value.data as Health);
+        }
+
+        if (s.status === "fulfilled") {
+          setSummary(String(s.value.data?.summary ?? "No summary"));
+        } else if (!summary || summary === "Loading...") {
+          setSummary("No summary available yet.");
+        }
+
+        const doc =
+          g.status === "fulfilled" && g.value?.data?.features
+            ? (g.value.data as GlobalDoc)
+            : (latest ?? fallbackGlobalDoc());
         const snap = buildSnapshot(doc);
-        setHealth(h.data as Health);
-        setSummary(String(s.data?.summary ?? "No summary"));
         setLatest(doc);
         setErr("");
         setHistory((prev) => {
@@ -439,6 +472,10 @@ export default function Dashboard() {
         failCount.current = 0;
       } catch (e: any) {
         failCount.current += 1;
+        // Keep UI bootable with last cache/default even during hard failures.
+        if (!latest) {
+          setLatest(fallbackGlobalDoc());
+        }
         setErr(e?.message ?? "Fetch failed");
       } finally {
         inFlight.current = false;
