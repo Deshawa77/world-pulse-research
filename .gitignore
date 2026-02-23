@@ -61,3 +61,6 @@ models/
 # =========================
 .DS_Store
 Thumbs.db
+
+# Processed pipeline outputs
+processed_*.csv
