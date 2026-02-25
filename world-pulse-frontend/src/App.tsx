@@ -1,4 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import Landing from "./pages/Landing";
+import About from "./pages/About";
+import Contact from "./pages/Contact";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import ForgotPassword from "./pages/ForgotPassword";
@@ -9,6 +12,7 @@ import HistoricalTrends from "./pages/HistoricalTrends";
 import ScenarioStudio from "./pages/ScenarioStudio";
 
 
+
 function App() {
 
   const token = localStorage.getItem("token");
@@ -17,14 +21,19 @@ function App() {
     <BrowserRouter>
       <Routes>
 
-        {/* Default Route */}
-        <Route path="/" element={<Navigate to="/login" />} />
+        {/* Default Route - Landing Page */}
+        <Route path="/" element={<Landing />} />
+
+        {/* Public Pages */}
+        <Route path="/about" element={<About />} />
+        <Route path="/contact" element={<Contact />} />
 
         {/* Login Page */}
         <Route path="/login" element={<Login />} />
 
         {/* Register Page */}
         <Route path="/register" element={<Register />} />
+
 
         {/* Forgot Password Page */}
         <Route path="/forgot-password" element={<ForgotPassword />} />

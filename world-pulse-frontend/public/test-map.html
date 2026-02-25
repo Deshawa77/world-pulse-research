@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Map API Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .success { color: green; }
+        .error { color: red; }
+        pre { background: #f4f4f4; padding: 10px; overflow: auto; }
+    </style>
+</head>
+<body>
+    <h1>Dashboard Map API Test</h1>
+    <div id="status">Testing...</div>
+    <div id="results"></div>
+
+    <script>
+        const API_URL = "http://127.0.0.1:8000";
+        const API_KEY = "super_secure_api_key";
+        
+        async function testAPI() {
+            const statusDiv = document.getElementById('status');
+            const resultsDiv = document.getElementById('results');
+            
+            try {
+                // Test the risk-map endpoint
+                const response = await fetch(`${API_URL}/dashboard/risk-map?mode=online`, {
+                    headers: {
+                        'x-api-key': API_KEY,
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                statusDiv.innerHTML = '<span class="success">✅ API Call Successful</span>';
+                
+                let html = '<h2>Results:</h2>';
+                html += `<p><strong>Countries returned:</strong> ${data.length}</p>`;
+                
+                if (data.length === 0) {
+                    html += '<p class="error">⚠️ No countries returned - map will be empty!</p>';
+                } else {
+                    html += '<h3>Country Data:</h3><ul>';
+                    data.forEach(country => {
+                        const hasRisk = country.risk !== null && country.risk !== undefined;
+                        const riskClass = hasRisk ? 'success' : 'error';
+                        html += `<li class="${riskClass}">${country.country}: risk=${country.risk}</li>`;
+                    });
+                    html += '</ul>';
+                    
+                    // Check for valid risk values
+                    const validCountries = data.filter(c => c.risk !== null && c.risk !== undefined);
+                    html += `<p><strong>Valid risk scores:</strong> ${validCountries.length}/${data.length}</p>`;
+                    
+                    if (validCountries.length === data.length) {
+                        html += '<p class="success">✅ All countries have valid risk scores!</p>';
+                    } else {
+                        html += '<p class="error">⚠️ Some countries missing risk scores</p>';
+                    }
+                }
+                
+                html += '<h3>Raw Response:</h3>';
+                html += `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+                
+                resultsDiv.innerHTML = html;
+                
+            } catch (error) {
+                statusDiv.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+                resultsDiv.innerHTML = `<p>Make sure:</p>
+                    <ul>
+                        <li>Backend is running on ${API_URL}</li>
+                        <li>CORS is properly configured</li>
+                        <li>API key is correct</li>
+                    </ul>`;
+            }
+        }
+        
+        testAPI();
+    </script>
+</body>
+</html>

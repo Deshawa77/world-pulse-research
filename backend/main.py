@@ -519,8 +519,9 @@ def get_worldbank(request: Request, role: str = Depends(check_role)):
 # =====================================================
 
 @app.get("/features/global/latest")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 def get_latest_global(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+
     return get_latest_global_doc(mode)
 
 @app.get("/features/global/{version}")
@@ -611,8 +612,9 @@ def summary(request: Request, role: str = Depends(check_role)):
 # DASHBOARD ENDPOINTS
 # =====================================================
 @app.get("/dashboard/live-feed")
-@limiter.limit("20/minute")
+@limiter.limit("60/minute")
 def dashboard_live_feed(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+
     latest = get_latest_global_doc(mode)
     latest_ts = latest.get("timestamp")
     ts_dt = parse_iso_dt(str(latest_ts)) if latest_ts else None
@@ -633,9 +635,56 @@ def dashboard_live_feed(request: Request, role: str = Depends(check_role), mode:
     }
 
 
+# ISO 3166-1 alpha-2 to alpha-3 country code mapping
+ISO2_TO_ISO3 = {
+    "AF": "AFG", "AX": "ALA", "AL": "ALB", "DZ": "DZA", "AS": "ASM", "AD": "AND", "AO": "AGO", "AI": "AIA",
+    "AQ": "ATA", "AG": "ATG", "AR": "ARG", "AM": "ARM", "AW": "ABW", "AU": "AUS", "AT": "AUT", "AZ": "AZE",
+    "BS": "BHS", "BH": "BHR", "BD": "BGD", "BB": "BRB", "BY": "BLR", "BE": "BEL", "BZ": "BLZ", "BJ": "BEN",
+    "BM": "BMU", "BT": "BTN", "BO": "BOL", "BQ": "BES", "BA": "BIH", "BW": "BWA", "BV": "BVT", "BR": "BRA",
+    "IO": "IOT", "BN": "BRN", "BG": "BGR", "BF": "BFA", "BI": "BDI", "CV": "CPV", "KH": "KHM", "CM": "CMR",
+    "CA": "CAN", "KY": "CYM", "CF": "CAF", "TD": "TCD", "CL": "CHL", "CN": "CHN", "CX": "CXR", "CC": "CCK",
+    "CO": "COL", "KM": "COM", "CG": "COG", "CD": "COD", "CK": "COK", "CR": "CRI", "CI": "CIV", "HR": "HRV",
+    "CU": "CUB", "CW": "CUW", "CY": "CYP", "CZ": "CZE", "DK": "DNK", "DJ": "DJI", "DM": "DMA", "DO": "DOM",
+    "EC": "ECU", "EG": "EGY", "SV": "SLV", "GQ": "GNQ", "ER": "ERI", "EE": "EST", "ET": "ETH", "FK": "FLK",
+    "FO": "FRO", "FJ": "FJI", "FI": "FIN", "FR": "FRA", "GF": "GUF", "PF": "PYF", "TF": "ATF", "GA": "GAB",
+    "GM": "GMB", "GE": "GEO", "DE": "DEU", "GH": "GHA", "GI": "GIB", "GR": "GRC", "GL": "GRL", "GD": "GRD",
+    "GP": "GLP", "GU": "GUM", "GT": "GTM", "GG": "GGY", "GN": "GIN", "GW": "GNB", "GY": "GUY", "HT": "HTI",
+    "HM": "HMD", "VA": "VAT", "HN": "HND", "HK": "HKG", "HU": "HUN", "IS": "ISL", "IN": "IND", "ID": "IDN",
+    "IR": "IRN", "IQ": "IRQ", "IE": "IRL", "IM": "IMN", "IL": "ISR", "IT": "ITA", "JM": "JAM", "JP": "JPN",
+    "JE": "JEY", "JO": "JOR", "KZ": "KAZ", "KE": "KEN", "KI": "KIR", "KP": "PRK", "KR": "KOR", "KW": "KWT",
+    "KG": "KGZ", "LA": "LAO", "LV": "LVA", "LB": "LBN", "LS": "LSO", "LR": "LBR", "LY": "LBY", "LI": "LIE",
+    "LT": "LTU", "LU": "LUX", "MO": "MAC", "MK": "MKD", "MG": "MDG", "MW": "MWI", "MY": "MYS", "MV": "MDV",
+    "ML": "MLI", "MT": "MLT", "MH": "MHL", "MQ": "MTQ", "MR": "MRT", "MU": "MUS", "YT": "MYT", "MX": "MEX",
+    "FM": "FSM", "MD": "MDA", "MC": "MCO", "MN": "MNG", "ME": "MNE", "MS": "MSR", "MA": "MAR", "MZ": "MOZ",
+    "MM": "MMR", "NA": "NAM", "NR": "NRU", "NP": "NPL", "NL": "NLD", "NC": "NCL", "NZ": "NZL", "NI": "NIC",
+    "NE": "NER", "NG": "NGA", "NU": "NIU", "NF": "NFK", "MP": "MNP", "NO": "NOR", "OM": "OMN", "PK": "PAK",
+    "PW": "PLW", "PS": "PSE", "PA": "PAN", "PG": "PNG", "PY": "PRY", "PE": "PER", "PH": "PHL", "PN": "PCN",
+    "PL": "POL", "PT": "PRT", "PR": "PRI", "QA": "QAT", "RE": "REU", "RO": "ROU", "RU": "RUS", "RW": "RWA",
+    "BL": "BLM", "SH": "SHN", "KN": "KNA", "LC": "LCA", "MF": "MAF", "PM": "SPM", "VC": "VCT", "WS": "WSM",
+    "SM": "SMR", "ST": "STP", "SA": "SAU", "SN": "SEN", "RS": "SRB", "SC": "SYC", "SL": "SLE", "SG": "SGP",
+    "SX": "SXM", "SK": "SVK", "SI": "SVN", "SB": "SLB", "SO": "SOM", "ZA": "ZAF", "GS": "SGS", "SS": "SSD",
+    "ES": "ESP", "LK": "LKA", "SD": "SDN", "SR": "SUR", "SJ": "SJM", "SE": "SWE", "CH": "CHE", "SY": "SYR",
+    "TW": "TWN", "TJ": "TJK", "TZ": "TZA", "TH": "THA", "TL": "TLS", "TG": "TGO", "TK": "TKL", "TO": "TON",
+    "TT": "TTO", "TN": "TUN", "TR": "TUR", "TM": "TKM", "TC": "TCA", "TV": "TUV", "UG": "UGA", "UA": "UKR",
+    "AE": "ARE", "GB": "GBR", "US": "USA", "UM": "UMI", "UY": "URY", "UZ": "UZB", "VU": "VUT", "VE": "VEN",
+    "VN": "VNM", "VG": "VGB", "VI": "VIR", "WF": "WLF", "EH": "ESH", "YE": "YEM", "ZM": "ZMB", "ZW": "ZWE",
+    "UK": "GBR",  # Common non-standard code
+}
+
+def convert_country_code(code: str) -> str:
+    """Convert 2-letter country code to 3-letter ISO code"""
+    if not code:
+        return code
+    code = code.upper().strip()
+    if len(code) == 3:
+        return code  # Already 3-letter
+    return ISO2_TO_ISO3.get(code, code)  # Convert or return as-is
+
+
 @app.get("/dashboard/risk-map")
-@limiter.limit("15/minute")
+@limiter.limit("30/minute")
 def dashboard_risk_map(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+
     pipeline = [
         {"$match": {"mode": mode}},
         {"$sort": {"timestamp": -1}},
@@ -643,15 +692,44 @@ def dashboard_risk_map(request: Request, role: str = Depends(check_role), mode: 
         {"$project": {"country": "$_id", "risk": "$doc.features.global_risk_score", "timestamp": "$doc.timestamp"}},
     ]
     docs = list(db.country_features.aggregate(pipeline))
+    
+    # Convert 2-letter country codes to 3-letter ISO codes for Plotly
+    for doc in docs:
+        doc["country"] = convert_country_code(doc.get("country", ""))
+    
     return [serialize_doc(d) for d in docs]
+
+
+
+# ISO 3166-1 alpha-3 to alpha-2 reverse mapping (for drilldown lookups)
+ISO3_TO_ISO2 = {v: k for k, v in ISO2_TO_ISO3.items()}
+
+def normalize_country_lookup(country: str) -> list:
+    """Generate list of possible country code formats to search for"""
+    country = country.upper().strip()
+    codes = [country]  # Original code
+    if len(country) == 2 and country in ISO2_TO_ISO3:
+        codes.append(ISO2_TO_ISO3[country])  # Add 3-letter version
+    elif len(country) == 3 and country in ISO3_TO_ISO2:
+        codes.append(ISO3_TO_ISO2[country])  # Add 2-letter version
+    return codes
 
 
 @app.get("/dashboard/country/{country}")
 @limiter.limit("20/minute")
 def dashboard_country(request: Request, country: str, role: str = Depends(check_role), mode: str = Query("online")):
-    docs = list(db.country_features.find({"country": country, "mode": mode}).sort("timestamp", -1).limit(50))
+    # Try multiple country code formats (2-letter and 3-letter)
+    country_codes = normalize_country_lookup(country)
+    
+    docs = []
+    for code in country_codes:
+        docs = list(db.country_features.find({"country": code, "mode": mode}).sort("timestamp", -1).limit(50))
+        if docs:
+            break
+    
     if not docs:
-        raise HTTPException(status_code=404, detail=f"No country data for {country}")
+        raise HTTPException(status_code=404, detail=f"No country data for {country} (tried: {country_codes})")
+
 
     ordered = list(reversed(docs))
     latest = ordered[-1]
@@ -695,8 +773,9 @@ def dashboard_country(request: Request, country: str, role: str = Depends(check_
 
 
 @app.get("/dashboard/governance")
-@limiter.limit("15/minute")
+@limiter.limit("30/minute")
 def dashboard_governance(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+
     latest_doc = get_latest_global_doc(mode)
     base_risk = float(latest_doc.get("features", {}).get("global_risk_score", 50.0))
 

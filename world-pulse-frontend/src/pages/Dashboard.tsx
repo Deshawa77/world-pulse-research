@@ -113,7 +113,31 @@ export default function Dashboard() {
   const [retries, setRetries] = useState(0);
   const [activePreset, setActivePreset] = useState<"analyst" | "ops" | "executive">("analyst");
 
+  // Cache for API responses to reduce 429 errors
+  interface CacheEntry<T> {
+    data: T | null;
+    timestamp: number;
+    ttl: number;
+  }
+  
+  const cacheRef = useRef<{
+    liveFeed: CacheEntry<LiveCommandFeed>;
+    governance: CacheEntry<GovernanceData>;
+    riskMap: CacheEntry<RiskMapPoint[]>;
+    global: CacheEntry<any>;
+  }>({
+    liveFeed: { data: null, timestamp: 0, ttl: 3000 }, // 3s TTL
+    governance: { data: null, timestamp: 0, ttl: 10000 }, // 10s TTL
+    riskMap: { data: null, timestamp: 0, ttl: 5000 }, // 5s TTL
+    global: { data: null, timestamp: 0, ttl: 2000 }, // 2s TTL
+  });
+
+
+  // Track in-flight requests to prevent duplicates
+  const inFlightRef = useRef<Set<string>>(new Set());
+
   const panelUpdated = useRef<Record<PanelKey, number>>({
+
     risk: Date.now(),
     map: Date.now(),
     stream: Date.now(),
@@ -125,6 +149,12 @@ export default function Dashboard() {
   const mapMounted = useRef(false);
   const plotlyRef = useRef<any>(null);
   const plotlyLoadingRef = useRef<Promise<any> | null>(null);
+  const rotationRef = useRef<number>(0);
+  const rotationRafRef = useRef<number | null>(null);
+  const isRotatingRef = useRef<boolean>(false);
+
+
+
 
   const active = history[history.length - 1] ?? null;
   const riskDelta = active && lastKnownGood ? active.score - lastKnownGood.score : 0;
@@ -189,16 +219,61 @@ export default function Dashboard() {
   useEffect(() => {
     let stop = false;
     let timer = 0;
+    
+    const isCacheValid = (key: keyof typeof cacheRef.current) => {
+      const cache = cacheRef.current[key];
+      return cache.data && (Date.now() - cache.timestamp) < cache.ttl;
+    };
+
+    const getCachedOrFetch = async <T,>(
+      key: keyof typeof cacheRef.current,
+      fetchFn: () => Promise<T>,
+      transform?: (data: any) => T
+    ): Promise<T> => {
+      // Check cache first
+      if (isCacheValid(key)) {
+        return cacheRef.current[key].data as T;
+      }
+
+      // Prevent duplicate in-flight requests
+      if (inFlightRef.current.has(key)) {
+        // Wait for existing request to complete
+        while (inFlightRef.current.has(key) && !stop) {
+          await new Promise(r => setTimeout(r, 50));
+        }
+        if (stop) throw new Error("Stopped");
+        return cacheRef.current[key].data as T;
+      }
+
+      inFlightRef.current.add(key);
+      try {
+        const data = await fetchFn();
+        const cacheEntry: CacheEntry<T> = {
+          data: transform ? transform(data) : data,
+          timestamp: Date.now(),
+          ttl: cacheRef.current[key].ttl,
+        };
+        (cacheRef.current[key] as CacheEntry<T>) = cacheEntry;
+        return data;
+      } finally {
+        inFlightRef.current.delete(key);
+      }
+    };
+
+
     const pull = async () => {
       if (stop) return;
       setConnectionState(retriesRef.current > 0 ? "reconnecting" : "connecting");
       try {
         const [live, gov, mapRows, global] = await Promise.all([
-          getLiveCommandFeed(),
-          getGovernanceData(),
-          getRiskMap(),
-          API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } }),
+          getCachedOrFetch("liveFeed", getLiveCommandFeed),
+          getCachedOrFetch("governance", getGovernanceData),
+          getCachedOrFetch("riskMap", getRiskMap),
+          getCachedOrFetch("global", () => 
+            API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } })
+          ),
         ]);
+
 
         const features = global.data?.features;
         if (features) {
@@ -227,10 +302,23 @@ export default function Dashboard() {
         setRetries(retriesRef.current);
         setConnectionState(retriesRef.current > 3 ? "disconnected" : "reconnecting");
         setErrorText(String(e?.message ?? "Failed to refresh dashboard feed"));
+        
+        // Clear cache on error to force fresh fetch on retry
+        if (e?.response?.status === 429) {
+          // On 429, back off more aggressively
+          cacheRef.current.liveFeed.timestamp = 0;
+          cacheRef.current.governance.timestamp = 0;
+          cacheRef.current.riskMap.timestamp = 0;
+          cacheRef.current.global.timestamp = 0;
+        }
       } finally {
-        const delay = retriesRef.current > 0 ? Math.min(15000, 2000 * (retriesRef.current + 1)) : 2000;
-        timer = window.setTimeout(pull, delay);
+        // Adaptive polling: longer delays when stale, shorter when fresh
+        const baseDelay = retriesRef.current > 0 ? Math.min(15000, 2000 * (retriesRef.current + 1)) : 3000;
+        // Add jitter to prevent thundering herd
+        const jitter = Math.random() * 500;
+        timer = window.setTimeout(pull, baseDelay + jitter);
       }
+
     };
     pull();
     return () => {
@@ -298,7 +386,9 @@ export default function Dashboard() {
             setSelectedCountry(String(p.location));
           });
           (mapRef.current as any).on?.("plotly_unhover", () => setMapHover(null));
+          
         }
+
       } catch {
         setErrorText("Unable to render map");
       }
@@ -309,9 +399,59 @@ export default function Dashboard() {
     };
   }, [riskMap]);
 
+
+
+  const startAutoRotation = (Plotly: any) => {
+    if (isRotatingRef.current || !mapRef.current) return;
+    
+    isRotatingRef.current = true;
+    
+    const rotate = () => {
+      if (!isRotatingRef.current || !mapRef.current || selectedCountry) return;
+      
+      // Continuous rotation without modulo to avoid stopping at 360
+      rotationRef.current = rotationRef.current + 0.5;
+      
+      Plotly.relayout(mapRef.current, {
+        "geo.projection.rotation.lon": rotationRef.current,
+      }).catch(() => {
+        // Ignore rotation errors
+      });
+      
+      rotationRafRef.current = requestAnimationFrame(rotate);
+    };
+    
+    rotationRafRef.current = requestAnimationFrame(rotate);
+  };
+
+  const stopAutoRotation = () => {
+    isRotatingRef.current = false;
+    if (rotationRafRef.current) {
+      cancelAnimationFrame(rotationRafRef.current);
+      rotationRafRef.current = null;
+    }
+  };
+
+  // Separate effect to manage rotation lifecycle independent of riskMap updates
+  useEffect(() => {
+    if (!mapMounted.current || !plotlyRef.current) return;
+    
+    if (selectedCountry) {
+      stopAutoRotation();
+    } else {
+      startAutoRotation(plotlyRef.current);
+    }
+    
+    return () => {
+      stopAutoRotation();
+    };
+  }, [mapMounted.current, selectedCountry]);
+
+
   useEffect(() => {
     if (!selectedCountry) return;
     let closed = false;
+
     setCountryLoading(true);
     getCountryDrilldown(selectedCountry)
       .then((data) => {

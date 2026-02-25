@@ -3,11 +3,76 @@ import axios from "axios";
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 const API_KEY = import.meta.env.VITE_API_KEY || "super_secure_api_key";
 
+// Simple response cache to reduce 429 errors
+interface CacheEntry {
+  data: any;
+  timestamp: number;
+  ttl: number;
+}
+
+const responseCache = new Map<string, CacheEntry>();
+
 const API = axios.create({
   baseURL: API_URL,
 });
 
+// Add response caching interceptor
+API.interceptors.request.use((config) => {
+  const cacheKey = `${config.method}:${config.url}:${JSON.stringify(config.params || {})}`;
+  const cached = responseCache.get(cacheKey);
+  
+  if (cached && Date.now() - cached.timestamp < cached.ttl) {
+    // Return cached response
+    return Promise.reject({
+      __cached: true,
+      config,
+      response: { data: cached.data, status: 200, statusText: "OK", headers: {}, config }
+    });
+  }
+  
+  return config;
+});
+
+API.interceptors.response.use(
+  (response) => {
+    // Cache successful GET requests
+    if (response.config.method?.toLowerCase() === "get") {
+      const cacheKey = `${response.config.method}:${response.config.url}:${JSON.stringify(response.config.params || {})}`;
+      // Different TTLs for different endpoints
+      let ttl = 2000; // default 2s
+      if (response.config.url?.includes("governance")) ttl = 10000; // 10s
+      if (response.config.url?.includes("risk-map")) ttl = 5000; // 5s
+      if (response.config.url?.includes("live-feed")) ttl = 3000; // 3s
+      
+      responseCache.set(cacheKey, {
+        data: response.data,
+        timestamp: Date.now(),
+        ttl
+      });
+    }
+    return response;
+  },
+  (error) => {
+    // Handle cached responses
+    if (error.__cached) {
+      return Promise.resolve(error.response);
+    }
+    return Promise.reject(error);
+  }
+);
+
+// Clean up old cache entries periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of responseCache.entries()) {
+    if (now - entry.timestamp > entry.ttl * 2) {
+      responseCache.delete(key);
+    }
+  }
+}, 30000); // Clean every 30s
+
 export const API_HEADERS = { "x-api-key": API_KEY };
+
 
 export type LiveCommandFeed = {
   incidents: string[];
