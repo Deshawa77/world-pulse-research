@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { login } from "../services/authService";
+
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -8,9 +9,8 @@ export default function Login() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const navigate = useNavigate();
-
   async function handleSubmit(e: React.FormEvent) {
+
     e.preventDefault();
     setError("");
     setLoading(true);

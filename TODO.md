@@ -1,28 +1,47 @@
-# Authentication Implementation TODO
+# Predictive Analytics Pages Implementation
 
-## Backend API Extensions
-- [x] Add Pydantic models for Register, ForgotPassword, ResetPassword requests
-- [x] Add `/auth/register` endpoint
-- [x] Add `/auth/forgot-password` endpoint
-- [x] Add `/auth/reset-password` endpoint
-- [x] Add password reset token storage mechanism
+## Task: Build Predictive Analytics Pages in world_pulse_frontend
 
-## Frontend Auth Service
-- [x] Add `register()` function to authService.ts
-- [x] Add `forgotPassword()` function to authService.ts
-- [x] Add `resetPassword()` function to authService.ts
+### Pages to Create:
+1. **Trend Prediction Page**
+   - [ ] ML prediction graphs
+   - [ ] Sentiment forecast chart
+   - [ ] Market reaction forecast
+   - [ ] Event-based prediction model results
 
-## Frontend Pages
-- [x] Complete Register.tsx with all fields
-- [x] Complete ForgotPassword.tsx with email input
-- [x] Complete ResetPassword.tsx with password fields
-- [x] Update Login.tsx with role selection
+2. **Historical Trends Page**
+   - [ ] Compare past events
+   - [ ] Sentiment timeline graph
+   - [ ] Exportable data charts
 
-## Routing
-- [x] Update App.tsx with all auth routes
+### Implementation Steps:
 
-## Testing
-- [x] Test login flow - PASSED (API returns JWT token)
-- [x] Test registration flow - PASSED (User created successfully)
-- [x] Test forgot password flow - PASSED (Reset token generated)
-- [x] Test reset password flow - PASSED (Password updated successfully)
+#### Phase 1: Create Service Layer
+- [ ] Create `world-pulse-frontend/src/services/predictionService.ts`
+  - API methods for predictions
+  - Historical data fetching
+  - Export functionality
+
+#### Phase 2: Create Pages
+- [ ] Create `world-pulse-frontend/src/pages/TrendPrediction.tsx`
+  - ML prediction visualization
+  - Sentiment forecast charts
+  - Market reaction forecasts
+  - Event impact analysis
+
+- [ ] Create `world-pulse-frontend/src/pages/HistoricalTrends.tsx`
+  - Historical data comparison
+  - Sentiment timeline
+  - Export functionality
+
+#### Phase 3: Update Routing & Styles
+- [ ] Update `world-pulse-frontend/src/App.tsx`
+  - Add routes for new pages
+  - Protect with auth
+
+- [ ] Update `world-pulse-frontend/src/index.css`
+  - Add styles for prediction pages
+  - Chart container styles
+  - Export button styles
+
+### Status: ✅ COMPLETED
