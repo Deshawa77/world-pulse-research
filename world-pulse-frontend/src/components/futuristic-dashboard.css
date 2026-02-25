@@ -814,27 +814,340 @@
   color: #aa00ff;
 }
 
-/* Map + Sentinel Panel */
+/* Map + Sentinel Panel - ADVANCED CYBERPUNK EDITION */
 .map-sentinel-panel {
   background: 
-    linear-gradient(135deg, rgba(8, 18, 35, 0.98), rgba(12, 25, 45, 0.95)),
+    linear-gradient(135deg, rgba(5, 12, 25, 0.98), rgba(8, 18, 35, 0.95)),
     repeating-linear-gradient(
       90deg,
-      rgba(0, 200, 255, 0.02) 0px,
-      rgba(0, 200, 255, 0.02) 1px,
+      rgba(0, 200, 255, 0.03) 0px,
+      rgba(0, 200, 255, 0.03) 1px,
       transparent 1px,
-      transparent 60px
+      transparent 40px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgba(170, 0, 255, 0.02) 0px,
+      rgba(170, 0, 255, 0.02) 1px,
+      transparent 1px,
+      transparent 40px
     );
-  border: 1px solid rgba(0, 200, 255, 0.25);
+  border: 1px solid rgba(0, 200, 255, 0.3);
   box-shadow: 
-    0 0 30px rgba(0, 200, 255, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    0 0 40px rgba(0, 200, 255, 0.15),
+    0 0 80px rgba(170, 0, 255, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 0 30px rgba(0, 200, 255, 0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Animated holographic border effect */
+.map-sentinel-panel::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(0, 200, 255, 0.4) 25%,
+    rgba(170, 0, 255, 0.4) 50%,
+    rgba(0, 200, 255, 0.4) 75%,
+    transparent 100%
+  );
+  z-index: -1;
+  animation: borderFlow 4s linear infinite;
+  filter: blur(2px);
+}
+
+@keyframes borderFlow {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Corner brackets - cyberpunk style */
+.map-sentinel-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: 
+    /* Top-left corner */
+    linear-gradient(135deg, rgba(0, 200, 255, 0.8) 0px, rgba(0, 200, 255, 0.8) 2px, transparent 2px),
+    linear-gradient(135deg, rgba(0, 200, 255, 0.8) 0px, rgba(0, 200, 255, 0.8) 2px, transparent 2px),
+    /* Top-right corner */
+    linear-gradient(225deg, rgba(0, 200, 255, 0.8) 0px, rgba(0, 200, 255, 0.8) 2px, transparent 2px),
+    linear-gradient(225deg, rgba(0, 200, 255, 0.8) 0px, rgba(0, 200, 255, 0.8) 2px, transparent 2px),
+    /* Bottom-left corner */
+    linear-gradient(45deg, rgba(170, 0, 255, 0.8) 0px, rgba(170, 0, 255, 0.8) 2px, transparent 2px),
+    linear-gradient(45deg, rgba(170, 0, 255, 0.8) 0px, rgba(170, 0, 255, 0.8) 2px, transparent 2px),
+    /* Bottom-right corner */
+    linear-gradient(315deg, rgba(170, 0, 255, 0.8) 0px, rgba(170, 0, 255, 0.8) 2px, transparent 2px),
+    linear-gradient(315deg, rgba(170, 0, 255, 0.8) 0px, rgba(170, 0, 255, 0.8) 2px, transparent 2px);
+  background-size: 
+    20px 2px, 2px 20px,
+    20px 2px, 2px 20px,
+    20px 2px, 2px 20px,
+    20px 2px, 2px 20px;
+  background-position: 
+    0 0, 0 0,
+    100% 0, 100% 0,
+    0 100%, 0 100%,
+    100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  animation: cornerPulse 3s ease-in-out infinite;
+}
+
+@keyframes cornerPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+/* Advanced panel header */
+.map-sentinel-panel .panel-head {
+  position: relative;
+  background: linear-gradient(135deg, rgba(0, 20, 40, 0.9), rgba(0, 10, 25, 0.95));
+  border-bottom: 1px solid rgba(0, 200, 255, 0.3);
+  padding: 14px 18px;
+  overflow: hidden;
+}
+
+.map-sentinel-panel .panel-head::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #00c8ff, #aa00ff, transparent);
+  animation: scanLine 2.5s linear infinite;
 }
 
 .map-sentinel-panel .panel-head h3 {
   color: #00c8ff;
-  text-shadow: 0 0 15px rgba(0, 200, 255, 0.5);
+  text-shadow: 0 0 20px rgba(0, 200, 255, 0.6);
+  font-size: 1.1rem;
+  letter-spacing: 2px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  position: relative;
+  z-index: 1;
 }
+
+/* Tech badge in header */
+.map-sentinel-panel .panel-head h3::before {
+  content: "◈";
+  color: #aa00ff;
+  font-size: 1.2rem;
+  animation: iconRotate 4s linear infinite;
+  text-shadow: 0 0 10px rgba(170, 0, 255, 0.8);
+}
+
+@keyframes iconRotate {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Status indicators in header */
+.map-sentinel-panel .panel-head h3::after {
+  content: "ONLINE";
+  margin-left: auto;
+  padding: 3px 10px;
+  background: linear-gradient(135deg, rgba(0, 255, 136, 0.2), rgba(0, 255, 136, 0.1));
+  border: 1px solid rgba(0, 255, 136, 0.4);
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #00ff88;
+  letter-spacing: 1px;
+  animation: statusBlink 2s ease-in-out infinite;
+  text-shadow: 0 0 8px rgba(0, 255, 136, 0.5);
+}
+
+@keyframes statusBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Map surface advanced styling */
+.wp-map-surface {
+  position: relative;
+  background: 
+    radial-gradient(ellipse at center, rgba(0, 30, 60, 0.3) 0%, transparent 70%),
+    linear-gradient(180deg, rgba(5, 15, 30, 0.8), rgba(8, 20, 40, 0.9));
+  border: 1px solid rgba(0, 200, 255, 0.2);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* Holographic grid overlay on map */
+.wp-map-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: 
+    linear-gradient(rgba(0, 200, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 200, 255, 0.03) 1px, transparent 1px);
+  background-size: 30px 30px;
+  pointer-events: none;
+  animation: gridPulse 4s ease-in-out infinite;
+}
+
+@keyframes gridPulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
+
+/* Animated scan line across map */
+.wp-map-surface::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(0, 200, 255, 0.6), transparent);
+  animation: mapScan 3s linear infinite;
+  pointer-events: none;
+  box-shadow: 0 0 10px rgba(0, 200, 255, 0.4);
+}
+
+@keyframes mapScan {
+  0% { top: 0; opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+
+/* Map hover box enhancement */
+.map-hover-box {
+  position: absolute;
+  background: rgba(5, 15, 30, 0.95);
+  border: 1px solid rgba(0, 200, 255, 0.4);
+  border-radius: 8px;
+  padding: 12px 16px;
+  box-shadow: 
+    0 0 20px rgba(0, 200, 255, 0.2),
+    inset 0 0 20px rgba(0, 200, 255, 0.05);
+  backdrop-filter: blur(10px);
+  animation: hoverBoxAppear 0.3s ease-out;
+}
+
+@keyframes hoverBoxAppear {
+  from { opacity: 0; transform: translateY(10px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.map-hover-box strong {
+  color: #00c8ff;
+  font-size: 1rem;
+  display: block;
+  margin-bottom: 4px;
+  text-shadow: 0 0 10px rgba(0, 200, 255, 0.5);
+}
+
+.map-hover-box span {
+  color: #a0d0e0;
+  font-size: 0.85rem;
+  font-family: monospace;
+}
+
+/* Sentinel container within panel */
+.map-sentinel-container > div:last-child {
+  position: relative;
+  background: 
+    linear-gradient(135deg, rgba(10, 20, 35, 0.9), rgba(15, 25, 45, 0.95)),
+    repeating-linear-gradient(
+      45deg,
+      rgba(170, 0, 255, 0.02) 0px,
+      rgba(170, 0, 255, 0.02) 1px,
+      transparent 1px,
+      transparent 20px
+    );
+  border: 1px solid rgba(170, 0, 255, 0.25);
+  border-radius: 12px;
+  box-shadow: 
+    0 0 30px rgba(170, 0, 255, 0.1),
+    inset 0 0 30px rgba(170, 0, 255, 0.03);
+  overflow: hidden;
+}
+
+/* Circuit board pattern for Sentinel */
+.map-sentinel-container > div:last-child::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: 
+    radial-gradient(circle at 20% 30%, rgba(170, 0, 255, 0.1) 0%, transparent 2%),
+    radial-gradient(circle at 80% 70%, rgba(0, 200, 255, 0.1) 0%, transparent 2%),
+    radial-gradient(circle at 40% 80%, rgba(170, 0, 255, 0.1) 0%, transparent 2%),
+    radial-gradient(circle at 60% 20%, rgba(0, 200, 255, 0.1) 0%, transparent 2%);
+  background-size: 50px 50px;
+  animation: circuitPulse 5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes circuitPulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+}
+
+/* Data flow connector between map and sentinel */
+.map-sentinel-container {
+  position: relative;
+}
+
+.map-sentinel-container::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 66.67%;
+  width: 2px;
+  height: 60%;
+  transform: translateY(-50%);
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(0, 200, 255, 0.3) 20%,
+    rgba(170, 0, 255, 0.3) 50%,
+    rgba(0, 200, 255, 0.3) 80%,
+    transparent 100%
+  );
+  animation: dataFlow 2s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes dataFlow {
+  0% { background-position: 0 0; }
+  100% { background-position: 0 100px; }
+}
+
+/* Panel stale indicator enhancement */
+.map-sentinel-panel .panel-stale {
+  position: absolute;
+  top: 14px;
+  right: 80px;
+  padding: 3px 10px;
+  background: linear-gradient(135deg, rgba(255, 0, 64, 0.3), rgba(255, 0, 64, 0.1));
+  border: 1px solid rgba(255, 0, 64, 0.5);
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #ff0040;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  animation: stalePulse 1s ease-in-out infinite;
+  z-index: 10;
+  text-shadow: 0 0 8px rgba(255, 0, 64, 0.5);
+}
+
+@keyframes stalePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 
 /* Responsive Adjustments */
 @media (max-width: 1080px) {

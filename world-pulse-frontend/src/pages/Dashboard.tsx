@@ -552,11 +552,14 @@ export default function Dashboard() {
 
       <section className="dashboard-grid-layout">
         {/* Map + Sentinel AI Row */}
-        <article className={`wp-card panel-frame map-sentinel-panel ${fpsLow ? "" : "panel-animated"}`} style={{ gridColumn: "span 2" }}>
-          <div className="panel-head"><h3>Map Intelligence & Sentinel AI</h3></div>
+        <article className={`wp-card panel-frame map-sentinel-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`} style={{ gridColumn: "span 2" }}>
+          <div className="panel-head">
+            <h3>Map Intelligence & Sentinel AI</h3>
+          </div>
           {panelStale.map ? <div className="panel-stale">stale</div> : null}
           <div className="map-sentinel-container" style={{ display: "flex", gap: "16px", height: "100%" }}>
-            <div className="wp-map-surface" style={{ flex: 2 }}>
+            <div className="wp-map-surface map-surface-advanced" style={{ flex: 2 }}>
+
               <div ref={mapRef} className="echart-map" />
               {mapHover ? (
                 <div className="map-hover-box">
@@ -566,9 +569,10 @@ export default function Dashboard() {
               ) : null}
               <p style={{ marginTop: 8, fontSize: 12, color: "#888" }}>Click country on map for drilldown.</p>
             </div>
-            <div style={{ flex: 1, minWidth: 280, maxWidth: 350 }}>
+            <div className="sentinel-advanced-container" style={{ flex: 1, minWidth: 280, maxWidth: 350 }}>
               <SentinelAI />
             </div>
+
 
           </div>
         </article>

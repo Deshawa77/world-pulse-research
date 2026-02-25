@@ -381,10 +381,25 @@ def parse_iso_dt(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        v = value.replace("Z", "+00:00")
+        # Handle various ISO formats including milliseconds
+        v = value.strip()
+        # Replace Z with +00:00 for timezone-aware parsing
+        if v.endswith("Z"):
+            v = v[:-1] + "+00:00"
         return datetime.fromisoformat(v)
     except Exception:
-        return None
+        # Fallback: try parsing without timezone info
+        try:
+            v = value.strip().rstrip("Z")
+            # Truncate milliseconds to 6 digits max (Python limit)
+            if "." in v:
+                main, frac = v.split(".")
+                frac = frac[:6]  # Keep only first 6 digits of milliseconds
+                v = f"{main}.{frac}"
+            return datetime.fromisoformat(v)
+        except Exception:
+            return None
+
 
 
 def get_global_history(mode: str = "online", limit: int = 1000, start_date: datetime | None = None, end_date: datetime | None = None):
@@ -526,31 +541,6 @@ def get_latest_global(request: Request, role: str = Depends(check_role), mode: s
 
     return get_latest_global_doc(mode)
 
-@app.get("/features/global/{version}")
-@limiter.limit("10/minute")
-def get_global_by_version(request: Request, version: int, role: str = Depends(check_role), mode: str = Query("online")):
-    doc = db.global_features.find_one({"version": version, "mode": mode})
-    if not doc:
-        raise HTTPException(status_code=404, detail="No global features found")
-    return serialize_doc(doc)
-
-@app.get("/features/country/{country}/latest")
-@limiter.limit("10/minute")
-def get_latest_country(request: Request, country: str, role: str = Depends(check_role), mode: str = Query("online")):
-    doc = list(db.country_features.find({"country": country, "mode": mode}).sort("timestamp", -1).limit(1))
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"No features found for country {country}")
-    return serialize_doc(doc[0])
-
-@app.get("/features/country/{country}")
-@limiter.limit("10/minute")
-def get_country_versions(request: Request, country: str, role: str = Depends(check_role), limit: int = Query(10, ge=1), mode: str = Query("online")):
-    cursor = list(db.country_features.find({"country": country, "mode": mode}).sort("timestamp", -1).limit(limit))
-    if not cursor:
-        raise HTTPException(status_code=404, detail=f"No features found for country {country}")
-    return [serialize_doc(d) for d in cursor]
-
-
 @app.get("/features/global/history")
 @limiter.limit("10/minute")
 def get_global_history_api(
@@ -563,7 +553,15 @@ def get_global_history_api(
 ):
     start_dt = parse_iso_dt(start_date)
     end_dt = parse_iso_dt(end_date)
+    
+    # Validate date formats if provided
+    if start_date and start_dt is None:
+        raise HTTPException(status_code=400, detail=f"Invalid start_date format: {start_date}. Expected ISO format (e.g., 2024-01-01T00:00:00Z)")
+    if end_date and end_dt is None:
+        raise HTTPException(status_code=400, detail=f"Invalid end_date format: {end_date}. Expected ISO format (e.g., 2024-01-01T00:00:00Z)")
+    
     docs = get_global_history(mode=mode, limit=limit, start_date=start_dt, end_date=end_dt)
+
 
     data = []
     for doc in docs:
@@ -582,8 +580,35 @@ def get_global_history_api(
         })
     return data
 
+@app.get("/features/global/{version}")
+@limiter.limit("10/minute")
+def get_global_by_version(request: Request, version: int, role: str = Depends(check_role), mode: str = Query("online")):
+    doc = db.global_features.find_one({"version": version, "mode": mode})
+    if not doc:
+        raise HTTPException(status_code=404, detail="No global features found")
+    return serialize_doc(doc)
+
+@app.get("/features/country/{country}/latest")
+
+@limiter.limit("10/minute")
+def get_latest_country(request: Request, country: str, role: str = Depends(check_role), mode: str = Query("online")):
+    doc = list(db.country_features.find({"country": country, "mode": mode}).sort("timestamp", -1).limit(1))
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"No features found for country {country}")
+    return serialize_doc(doc[0])
+
+@app.get("/features/country/{country}")
+@limiter.limit("10/minute")
+def get_country_versions(request: Request, country: str, role: str = Depends(check_role), limit: int = Query(10, ge=1), mode: str = Query("online")):
+    cursor = list(db.country_features.find({"country": country, "mode": mode}).sort("timestamp", -1).limit(limit))
+    if not cursor:
+        raise HTTPException(status_code=404, detail=f"No features found for country {country}")
+    return [serialize_doc(d) for d in cursor]
+
+
 # =====================================================
 # RISK + SUMMARY
+
 # =====================================================
 @app.get("/risk_score")
 @limiter.limit("10/minute")
