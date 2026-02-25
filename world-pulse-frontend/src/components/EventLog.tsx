@@ -2,7 +2,7 @@ export type OperatorEvent = {
   id: string;
   timestamp: string;
   actor: string;
-  action: string;
+  action: "acknowledge" | "snooze" | "assign";
   comment?: string;
 };
 

@@ -2,8 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import predictionService, { type PredictionLog, type HistoricalDataPoint } from "../services/predictionService";
 
-import API, { API_HEADERS } from "../services/api";
-
 type DateRange = "24h" | "7d" | "30d" | "90d" | "custom";
 
 type ComparisonEvent = {
@@ -15,11 +13,6 @@ type ComparisonEvent = {
   topics: string[];
   selected: boolean;
 };
-
-function safeN(value: unknown, fallback = 0): number {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
 
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString("en-US", {
@@ -109,47 +102,24 @@ export default function HistoricalTrends() {
           break;
       }
 
-      // Fetch prediction logs
-      const logs = await predictionService.getPredictionLogs(1000);
+      const [logs, realHistory] = await Promise.all([
+        predictionService.getPredictionLogs(1000),
+        predictionService.getHistoricalData(startDate.toISOString(), endDate.toISOString(), 2000),
+      ]);
       setPredictionLogs(logs);
+      setHistoricalData(realHistory);
 
-      // Fetch historical data from global features
-      await API.get("/features/global/latest", {
-        headers: API_HEADERS,
-        params: { mode: "online" },
-      });
-
-      // Generate mock historical data based on logs
-      const mockHistorical: HistoricalDataPoint[] = logs.map((log) => {
-        return {
-
-          timestamp: log.timestamp,
-          risk_score: log.prediction * 100,
-          news_sentiment: safeN(log.features[0], 0) * 100,
-          gdelt_sentiment: safeN(log.features[1], 0) * 100,
-          crypto_return: safeN(log.features[2], 0) * 100,
-          crypto_volatility: safeN(log.features[3], 0) * 100,
-          stock_return: safeN(log.features[4], 0) * 100,
-          stock_volatility: safeN(log.features[5], 0) * 100,
-          weather_anomaly: safeN(log.features[6], 0) * 100,
-          top_topics: ["geopolitics", "economy", "climate"],
-        };
-      });
-
-      setHistoricalData(mockHistorical);
-
-      // Generate comparison events from historical data
-      const events: ComparisonEvent[] = mockHistorical
-        .filter((_, idx) => idx % 10 === 0) // Sample every 10th point
+      const events: ComparisonEvent[] = realHistory
+        .filter((_, idx) => idx % 10 === 0)
         .slice(0, 8)
         .map((point, idx) => ({
-          id: `evt-${idx}`,
-          name: `Event ${idx + 1}`,
+          id: `evt-${idx}-${point.timestamp}`,
+          name: `${point.top_topics?.[0] || "Signal"} ${idx + 1}`,
           date: point.timestamp,
           riskScore: point.risk_score,
           sentiment: point.news_sentiment,
-          topics: point.top_topics,
-          selected: idx < 2, // Select first 2 by default
+          topics: point.top_topics ?? [],
+          selected: idx < 2,
         }));
 
       setComparisonEvents(events);

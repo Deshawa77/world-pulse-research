@@ -6,6 +6,8 @@ import asyncio
 import time
 import uuid
 import hmac
+import csv
+import io
 from dotenv import load_dotenv
 
 # ----------------------------
@@ -25,6 +27,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 import jwt
 from datetime import timedelta
+from collections import defaultdict
 
 
 # =====================================================
@@ -223,12 +226,16 @@ client = init_mongo_client()
 db = client["world_pulse"]
 prediction_collection = db["prediction_logs"]
 model_monitoring_collection = db["model_monitoring"]
+users_collection = db["users"]
+operator_events_collection = db["operator_events"]
 
 # Create indexes for scalable queries (run once)
 prediction_collection.create_index([("timestamp", DESCENDING)])
 prediction_collection.create_index([("model_version", ASCENDING)])
 model_monitoring_collection.create_index([("timestamp", DESCENDING)])
 model_monitoring_collection.create_index([("model_version", ASCENDING)])
+users_collection.create_index([("email", ASCENDING)], unique=True)
+operator_events_collection.create_index([("timestamp", DESCENDING)])
 
 # =====================================================
 # Model Cache
@@ -236,11 +243,10 @@ model_monitoring_collection.create_index([("model_version", ASCENDING)])
 model_cache = {"model": None, "version": None}
 
 # =====================================================
-# TEMP USER DATABASE (Testing Only)
-# Replace later with MongoDB users collection
+# USER STORE (MongoDB)
 # =====================================================
 
-fake_users_db = {}
+fake_users_db = {}  # legacy fallback; auth now uses Mongo users collection
 
 # =====================================================
 # Security: API Key Verification
@@ -369,11 +375,55 @@ def get_latest_global_doc(mode: str = "online") -> dict:
     }
 
 
+def parse_iso_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        v = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(v)
+    except Exception:
+        return None
+
+
+def get_global_history(mode: str = "online", limit: int = 1000, start_date: datetime | None = None, end_date: datetime | None = None):
+    query: dict = {"mode": mode}
+    if start_date or end_date:
+        dt_filter: dict = {}
+        if start_date:
+            dt_filter["$gte"] = start_date
+        if end_date:
+            dt_filter["$lte"] = end_date
+        query["timestamp"] = dt_filter
+
+    cursor = list(db.global_features.find(query).sort("timestamp", DESCENDING).limit(limit))
+    if not cursor:
+        cursor = list(db.dashboard_features.find(query).sort("timestamp", DESCENDING).limit(limit))
+    return [serialize_doc(d) for d in reversed(cursor)]
+
+
 # =====================================================
 # Request Schema
 # =====================================================
 class PredictionRequest(BaseModel):
     features: list[float]
+
+
+class AlertActionRequest(BaseModel):
+    country: str
+    action: str
+    owner: str | None = None
+    comment: str | None = None
+
+
+class ScenarioStep(BaseModel):
+    label: str
+    marketShock: float
+    sentimentShock: float
+    weatherShock: float
+
+
+class ScenarioRunRequest(BaseModel):
+    steps: list[ScenarioStep]
 
 # =====================================================
 # WebSocket Connection Manager
@@ -497,6 +547,38 @@ def get_country_versions(request: Request, country: str, role: str = Depends(che
         raise HTTPException(status_code=404, detail=f"No features found for country {country}")
     return [serialize_doc(d) for d in cursor]
 
+
+@app.get("/features/global/history")
+@limiter.limit("10/minute")
+def get_global_history_api(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    limit: int = Query(1000, ge=1, le=10000),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+):
+    start_dt = parse_iso_dt(start_date)
+    end_dt = parse_iso_dt(end_date)
+    docs = get_global_history(mode=mode, limit=limit, start_date=start_dt, end_date=end_dt)
+
+    data = []
+    for doc in docs:
+        f = doc.get("features", {})
+        data.append({
+            "timestamp": str(f.get("timestamp") or doc.get("timestamp") or datetime.utcnow().isoformat()),
+            "risk_score": float(f.get("global_risk_score", 50.0)),
+            "news_sentiment": float(f.get("news_sentiment", 0.0)) * 100,
+            "gdelt_sentiment": float(f.get("gdelt_sentiment", 0.0)) * 100,
+            "crypto_return": float(f.get("crypto_return", 0.0)) * 100,
+            "crypto_volatility": float(f.get("crypto_volatility", 0.0)) * 100,
+            "stock_return": float(f.get("stock_return", 0.0)) * 100,
+            "stock_volatility": float(f.get("stock_volatility", 0.0)) * 100,
+            "weather_anomaly": float(f.get("weather_anomaly", 0.0)) * 100,
+            "top_topics": f.get("top_topics", ["no data"]),
+        })
+    return data
+
 # =====================================================
 # RISK + SUMMARY
 # =====================================================
@@ -523,6 +605,317 @@ def summary(request: Request, role: str = Depends(check_role)):
         "summary": f"Moderate risk: Global Risk Score: {risk_score}/100.\n"
                    f"Top topics influencing sentiment today: {top_topics}."
     }
+
+
+# =====================================================
+# DASHBOARD ENDPOINTS
+# =====================================================
+@app.get("/dashboard/live-feed")
+@limiter.limit("20/minute")
+def dashboard_live_feed(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+    latest = get_latest_global_doc(mode)
+    latest_ts = latest.get("timestamp")
+    ts_dt = parse_iso_dt(str(latest_ts)) if latest_ts else None
+    heartbeat = (datetime.utcnow() - ts_dt).total_seconds() if ts_dt else 0.0
+
+    features = latest.get("features", {})
+    topics = features.get("top_topics", ["no data"])
+    incidents = [f"Topic pressure: {t}" for t in topics[:4]] or ["No active incidents"]
+
+    drift_doc = model_monitoring_collection.find_one(sort=[("timestamp", DESCENDING)])
+    model_drift = float((drift_doc or {}).get("drift_score", 0.0) or 0.0)
+
+    return {
+        "incidents": incidents,
+        "ingestionHeartbeatSec": round(max(0.0, heartbeat), 2),
+        "modelDrift": round(model_drift, 4),
+        "lastUpdated": str(latest_ts or datetime.utcnow().isoformat()),
+    }
+
+
+@app.get("/dashboard/risk-map")
+@limiter.limit("15/minute")
+def dashboard_risk_map(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+    pipeline = [
+        {"$match": {"mode": mode}},
+        {"$sort": {"timestamp": -1}},
+        {"$group": {"_id": "$country", "doc": {"$first": "$$ROOT"}}},
+        {"$project": {"country": "$_id", "risk": "$doc.features.global_risk_score", "timestamp": "$doc.timestamp"}},
+    ]
+    docs = list(db.country_features.aggregate(pipeline))
+    return [serialize_doc(d) for d in docs]
+
+
+@app.get("/dashboard/country/{country}")
+@limiter.limit("20/minute")
+def dashboard_country(request: Request, country: str, role: str = Depends(check_role), mode: str = Query("online")):
+    docs = list(db.country_features.find({"country": country, "mode": mode}).sort("timestamp", -1).limit(50))
+    if not docs:
+        raise HTTPException(status_code=404, detail=f"No country data for {country}")
+
+    ordered = list(reversed(docs))
+    latest = ordered[-1]
+    latest_features = latest.get("features", {})
+    trend = [
+        {
+            "timestamp": str(d.get("timestamp", datetime.utcnow().isoformat())),
+            "value": float(d.get("features", {}).get("global_risk_score", 50.0)),
+        }
+        for d in ordered
+    ]
+
+    drivers = []
+    for k in ("news_sentiment", "gdelt_sentiment", "crypto_return", "crypto_volatility", "stock_return", "stock_volatility", "weather_anomaly"):
+        value = float(latest_features.get(k, 0.0))
+        drivers.append({
+            "feature": k,
+            "value": value,
+            "contribution": round(value * 0.12, 4),
+        })
+
+    events_cursor = list(
+        operator_events_collection.find({"country": country}).sort("timestamp", -1).limit(20)
+    )
+    events = [{
+        "id": str(e.get("_id")),
+        "title": f"{e.get('action', 'update')} by {e.get('owner', 'ops')}",
+        "timestamp": str(e.get("timestamp", datetime.utcnow().isoformat())),
+        "severity": "medium",
+    } for e in events_cursor]
+
+    risk = float(latest_features.get("global_risk_score", 50.0))
+    return {
+        "country": country,
+        "risk": risk,
+        "trend": trend,
+        "drivers": drivers,
+        "events": events,
+        "confidenceInterval": {"lower": max(0, risk - 5), "upper": min(100, risk + 5)},
+    }
+
+
+@app.get("/dashboard/governance")
+@limiter.limit("15/minute")
+def dashboard_governance(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+    latest_doc = get_latest_global_doc(mode)
+    base_risk = float(latest_doc.get("features", {}).get("global_risk_score", 50.0))
+
+    model_info_docs = list(model_monitoring_collection.find().sort("timestamp", -1).limit(300))
+    by_model: dict[str, list[dict]] = defaultdict(list)
+    for d in model_info_docs:
+        by_model[str(d.get("model_version", "unknown"))].append(d)
+
+    models = []
+    for idx, (model_name, rows) in enumerate(by_model.items()):
+        latest = rows[0]
+        drift = float(latest.get("drift_score", 0.0) or 0.0)
+        conf_values = [float(x.get("probability", 0.5) or 0.5) for x in rows[:30]]
+        calibration = sum(conf_values) / max(1, len(conf_values))
+        vote = max(0.0, min(100.0, base_risk + ((idx - 1) * 1.8)))
+        models.append({
+            "name": model_name,
+            "latencyMs": int(latest.get("latency_ms", 0) or 0),
+            "calibration": round(calibration, 4),
+            "driftHint": "watch" if drift >= 0.35 else "stable",
+            "vote": round(vote, 2),
+            "confidence": round(calibration, 4),
+        })
+
+    if not models:
+        models = [{
+            "name": "production",
+            "latencyMs": 0,
+            "calibration": 0.0,
+            "driftHint": "stable",
+            "vote": round(base_risk, 2),
+            "confidence": 0.0,
+        }]
+
+    disagreement = []
+    for i in range(len(models)):
+        for j in range(i + 1, len(models)):
+            disagreement.append({
+                "left": models[i]["name"],
+                "right": models[j]["name"],
+                "value": round(abs(models[i]["vote"] - models[j]["vote"]), 2),
+            })
+
+    cal_trend_source = list(prediction_collection.find().sort("timestamp", -1).limit(50))
+    calibration_trend = [
+        {"timestamp": str(d.get("timestamp")), "value": float(d.get("probability", 0.0))}
+        for d in reversed(cal_trend_source)
+    ]
+
+    return {
+        "models": models,
+        "disagreement": disagreement,
+        "calibrationTrend": calibration_trend,
+    }
+
+
+@app.post("/dashboard/alerts/action")
+@limiter.limit("30/minute")
+def dashboard_alert_action(request: Request, payload: AlertActionRequest, role: str = Depends(check_role)):
+    operator_events_collection.insert_one({
+        "country": payload.country,
+        "action": payload.action,
+        "owner": payload.owner or role,
+        "comment": payload.comment or "",
+        "timestamp": datetime.utcnow().isoformat(),
+    })
+    return {"ok": True}
+
+
+@app.post("/dashboard/scenario/run")
+@limiter.limit("20/minute")
+def dashboard_scenario_run(request: Request, payload: ScenarioRunRequest, role: str = Depends(check_role)):
+    base_doc = get_latest_global_doc("online")
+    base = float(base_doc.get("features", {}).get("global_risk_score", 50.0))
+    horizon = 24
+    scenario = []
+    baseline = []
+    now = datetime.utcnow()
+    for i in range(horizon):
+        step = payload.steps[min(i, len(payload.steps) - 1)] if payload.steps else ScenarioStep(
+            label="baseline", marketShock=0.0, sentimentShock=0.0, weatherShock=0.0
+        )
+        impulse = (step.marketShock * 0.45) + (step.sentimentShock * 0.35) + (step.weatherShock * 0.2)
+        decay = 1 / (1 + i * 0.16)
+        value = max(0.0, min(100.0, base + impulse * decay))
+        scenario.append(round(value, 3))
+        baseline.append(round(base, 3))
+
+    return {
+        "baseline": baseline,
+        "scenario": scenario,
+        "timestamps": [(now + timedelta(hours=i)).isoformat() for i in range(horizon)],
+    }
+
+
+# =====================================================
+# ANALYTICS ENDPOINTS
+# =====================================================
+@app.get("/analytics/sentiment-forecast")
+@limiter.limit("15/minute")
+def analytics_sentiment_forecast(request: Request, role: str = Depends(check_role)):
+    history = get_global_history(mode="online", limit=24)
+    if not history:
+        raise HTTPException(status_code=404, detail="No historical features available")
+
+    sentiments = [float((d.get("features", {}) or {}).get("news_sentiment", 0.0)) * 100 for d in history]
+    current = sentiments[-1]
+    slope = 0.0 if len(sentiments) < 2 else (sentiments[-1] - sentiments[0]) / max(1, len(sentiments) - 1)
+
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "current_sentiment": round(current, 3),
+        "forecast_1h": round(current + slope * 1, 3),
+        "forecast_6h": round(current + slope * 6, 3),
+        "forecast_24h": round(current + slope * 24, 3),
+        "confidence": 0.75 if len(sentiments) >= 6 else 0.55,
+    }
+
+
+@app.get("/analytics/market-reactions")
+@limiter.limit("15/minute")
+def analytics_market_reactions(request: Request, role: str = Depends(check_role), limit: int = Query(20, ge=1, le=200)):
+    history = get_global_history(mode="online", limit=limit + 1)
+    rows = []
+    for prev, curr in zip(history, history[1:]):
+        pf = prev.get("features", {})
+        cf = curr.get("features", {})
+        rows.append({
+            "timestamp": str(curr.get("timestamp", datetime.utcnow().isoformat())),
+            "event_type": "Feature shift",
+            "sentiment_impact": round((float(cf.get("news_sentiment", 0.0)) - float(pf.get("news_sentiment", 0.0))) * 100, 4),
+            "crypto_reaction": round((float(cf.get("crypto_return", 0.0)) - float(pf.get("crypto_return", 0.0))) * 100, 4),
+            "stock_reaction": round((float(cf.get("stock_return", 0.0)) - float(pf.get("stock_return", 0.0))) * 100, 4),
+            "correlation_strength": round(min(1.0, abs(float(cf.get("crypto_return", 0.0)) + float(cf.get("stock_return", 0.0)))), 4),
+        })
+    return list(reversed(rows))
+
+
+@app.get("/analytics/event-predictions")
+@limiter.limit("15/minute")
+def analytics_event_predictions(request: Request, role: str = Depends(check_role), limit: int = Query(10, ge=1, le=100)):
+    country_docs = list(db.country_features.find({"mode": "online"}).sort("timestamp", -1).limit(limit))
+    events = []
+    for idx, d in enumerate(country_docs):
+        f = d.get("features", {})
+        risk = float(f.get("global_risk_score", 50.0))
+        sev = max(1, min(10, int(risk / 10)))
+        events.append({
+            "event_id": str(d.get("_id")),
+            "event_type": "Country risk signal",
+            "severity": sev,
+            "predicted_risk_increase": round(max(0.0, risk - 50.0), 2),
+            "affected_regions": [str(d.get("country", "unknown"))],
+            "confidence": round(min(0.99, 0.5 + (risk / 200)), 4),
+            "timestamp": str(d.get("timestamp", datetime.utcnow().isoformat())),
+        })
+    return events
+
+
+@app.get("/analytics/export")
+@limiter.limit("10/minute")
+def analytics_export(
+    request: Request,
+    role: str = Depends(check_role),
+    format: str = Query("csv"),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+):
+    start_dt = parse_iso_dt(start_date)
+    end_dt = parse_iso_dt(end_date)
+    rows = get_global_history_api(request=request, role=role, start_date=start_date, end_date=end_date, mode="online", limit=10000)
+
+    if format == "json":
+        return rows
+
+    if format != "csv":
+        raise HTTPException(status_code=400, detail="Supported formats: csv, json")
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()) if rows else ["timestamp", "risk_score"])
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    return {"format": "csv", "content": output.getvalue(), "rows": len(rows), "start_date": str(start_dt), "end_date": str(end_dt)}
+
+
+@app.post("/analytics/compare-events")
+@limiter.limit("10/minute")
+def analytics_compare_events(request: Request, payload: dict, role: str = Depends(check_role)):
+    event_ids = payload.get("event_ids") or []
+    if not isinstance(event_ids, list):
+        raise HTTPException(status_code=400, detail="event_ids must be a list")
+
+    docs = []
+    if event_ids:
+        candidates = list(db.country_features.find().sort("timestamp", -1).limit(500))
+        docs = [d for d in candidates if str(d.get("_id")) in event_ids]
+
+    events = []
+    for d in docs:
+        f = d.get("features", {})
+        events.append({
+            "event_id": str(d.get("_id")),
+            "event_type": "Country risk signal",
+            "severity": max(1, min(10, int(float(f.get("global_risk_score", 50.0)) / 10))),
+            "predicted_risk_increase": round(max(0.0, float(f.get("global_risk_score", 50.0)) - 50.0), 2),
+            "affected_regions": [str(d.get("country", "unknown"))],
+            "confidence": 0.7,
+            "timestamp": str(d.get("timestamp", datetime.utcnow().isoformat())),
+        })
+
+    if not events:
+        return {"events": [], "comparison": {"avg_risk": 0.0, "avg_severity": 0.0}}
+
+    comparison = {
+        "avg_risk": round(sum(e["predicted_risk_increase"] for e in events) / len(events), 4),
+        "avg_severity": round(sum(e["severity"] for e in events) / len(events), 4),
+    }
+    return {"events": events, "comparison": comparison}
 
 # =====================================================
 # MODEL REGISTRY ENDPOINTS
@@ -590,7 +983,7 @@ def predict(request: Request, payload: PredictionRequest, role: str = Depends(ch
 # =====================================================
 @app.get("/prediction_logs")
 @limiter.limit("5/minute")
-def get_prediction_logs(request: Request, limit: int = Query(50, ge=1), role: str = Depends(require_admin)):
+def get_prediction_logs(request: Request, limit: int = Query(50, ge=1), role: str = Depends(check_role)):
     logs = list(prediction_collection.find().sort("timestamp", -1).limit(limit))
     return [serialize_doc(log) for log in logs]
 
@@ -626,8 +1019,8 @@ password_reset_tokens = {}
 
 @app.post("/auth/register")
 def register(data: RegisterRequest):
-    # Check if user already exists
-    if data.email in fake_users_db:
+    existing = users_collection.find_one({"email": data.email})
+    if existing:
         raise HTTPException(status_code=400, detail="User already exists")
 
     # Validate role
@@ -635,13 +1028,14 @@ def register(data: RegisterRequest):
     if data.role not in valid_roles:
         raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}")
 
-    # Create new user
-    fake_users_db[data.email] = {
+    users_collection.insert_one({
+        "email": data.email,
         "password": pwd_context.hash(data.password),
         "role": data.role,
         "name": data.name,
-        "organization": data.organization
-    }
+        "organization": data.organization,
+        "created_at": datetime.utcnow().isoformat(),
+    })
 
     # Create access token
     access_token = create_access_token({
@@ -658,8 +1052,7 @@ def register(data: RegisterRequest):
 
 @app.post("/auth/forgot-password")
 def forgot_password(data: ForgotPasswordRequest):
-    # Check if user exists
-    user = fake_users_db.get(data.email)
+    user = users_collection.find_one({"email": data.email})
     if not user:
         # Return success even if user doesn't exist (security best practice)
         return {"message": "If the email exists, a reset link has been sent"}
@@ -693,12 +1086,14 @@ def reset_password(data: ResetPasswordRequest):
 
     # Get user email from token
     email = token_data["email"]
-    user = fake_users_db.get(email)
+    user = users_collection.find_one({"email": email})
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
 
-    # Update password
-    user["password"] = pwd_context.hash(data.new_password)
+    users_collection.update_one(
+        {"email": email},
+        {"$set": {"password": pwd_context.hash(data.new_password), "updated_at": datetime.utcnow().isoformat()}},
+    )
 
     # Remove used token
     del password_reset_tokens[data.token]
@@ -708,23 +1103,22 @@ def reset_password(data: ResetPasswordRequest):
 
 @app.post("/auth/login")
 def login(data: LoginRequest):
-
-    user = fake_users_db.get(data.email)
+    user = users_collection.find_one({"email": data.email})
 
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if not pwd_context.verify(data.password, user["password"]):
+    if not pwd_context.verify(data.password, str(user.get("password", ""))):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     access_token = create_access_token({
         "sub": data.email,
-        "role": user["role"]
+        "role": str(user.get("role", "user"))
     })
 
     return {
         "access_token": access_token,
-        "role": user["role"]
+        "role": str(user.get("role", "user"))
     }
 
 # =====================================================
@@ -820,23 +1214,20 @@ async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(...)):
 
 @app.on_event("startup")
 def load_test_users():
-    global fake_users_db
-
-    fake_users_db = {
-        "admin@wp.com": {
-            "password": pwd_context.hash("admin123"),
-            "role": "admin"
-        },
-        "researcher@wp.com": {
-            "password": pwd_context.hash("research123"),
-            "role": "researcher"
-        },
-        "policy@wp.com": {
-            "password": pwd_context.hash("policy123"),
-            "role": "policy"
-        },
-        "student@wp.com": {
-            "password": pwd_context.hash("student123"),
-            "role": "student"
-        }
-    }
+    bootstrap_users = [
+        {"email": "admin@wp.com", "password": "admin123", "role": "admin", "name": "Admin User"},
+        {"email": "researcher@wp.com", "password": "research123", "role": "researcher", "name": "Researcher User"},
+        {"email": "policy@wp.com", "password": "policy123", "role": "policy", "name": "Policy User"},
+        {"email": "student@wp.com", "password": "student123", "role": "student", "name": "Student User"},
+    ]
+    for user in bootstrap_users:
+        existing = users_collection.find_one({"email": user["email"]})
+        if existing:
+            continue
+        users_collection.insert_one({
+            "email": user["email"],
+            "password": pwd_context.hash(user["password"]),
+            "role": user["role"],
+            "name": user["name"],
+            "created_at": datetime.utcnow().isoformat(),
+        })

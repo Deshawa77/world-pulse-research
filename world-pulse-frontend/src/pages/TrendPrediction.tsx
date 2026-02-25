@@ -7,7 +7,7 @@ import predictionService, {
   type EventPrediction,
 } from "../services/predictionService";
 
-import API, { API_HEADERS } from "../services/api";
+import API, { API_HEADERS, getGovernanceData } from "../services/api";
 
 type MLModel = {
   name: string;
@@ -73,7 +73,7 @@ export default function TrendPrediction() {
       return;
     }
     loadData();
-  }, [token, navigate]);
+  }, [token, navigate, selectedTimeframe]);
 
   async function loadPlotly() {
     if (plotlyRef.current) return plotlyRef.current;
@@ -96,8 +96,13 @@ export default function TrendPrediction() {
     setError("");
 
     try {
-      // Fetch prediction logs
-      const logs = await predictionService.getPredictionLogs(100);
+      const logLimits: Record<"1h" | "6h" | "24h" | "7d", number> = {
+        "1h": 24,
+        "6h": 120,
+        "24h": 240,
+        "7d": 1000,
+      };
+      const logs = await predictionService.getPredictionLogs(logLimits[selectedTimeframe]);
       setPredictionLogs(logs);
 
       // Fetch latest global features for prediction
@@ -129,84 +134,25 @@ export default function TrendPrediction() {
           features: featureVector,
         });
 
-        // Simulate ensemble models (in production, these would come from backend)
-        const baseRisk = normalizeRisk(features.global_risk_score ?? 50);
-        setModelEnsemble([
-          { name: "Gradient Boosting", vote: normalizeRisk(baseRisk + 2.3), confidence: 0.86, color: "#22d3ee" },
-          { name: "Random Forest", vote: normalizeRisk(baseRisk - 1.1), confidence: 0.81, color: "#a3e635" },
-          { name: "Logistic Regression", vote: normalizeRisk(baseRisk + 0.4), confidence: 0.74, color: "#60a5fa" },
-          { name: "Neural Network", vote: normalizeRisk(baseRisk + 1.8), confidence: 0.79, color: "#f472b6" },
-        ]);
       }
 
-      // Fetch sentiment forecast (mock data for now, replace with actual API)
-      setSentimentForecast({
-        timestamp: new Date().toISOString(),
-        current_sentiment: safeN(features?.news_sentiment, 0) * 100,
-        forecast_1h: safeN(features?.news_sentiment, 0) * 100 + Math.random() * 10 - 5,
-        forecast_6h: safeN(features?.news_sentiment, 0) * 100 + Math.random() * 20 - 10,
-        forecast_24h: safeN(features?.news_sentiment, 0) * 100 + Math.random() * 30 - 15,
-        confidence: 0.82,
-      });
-
-      // Fetch market reactions (mock data for now)
-      setMarketReactions([
-        {
-          timestamp: new Date(Date.now() - 3600000).toISOString(),
-          event_type: "News Sentiment Shift",
-          sentiment_impact: 15,
-          crypto_reaction: -2.3,
-          stock_reaction: -0.8,
-          correlation_strength: 0.73,
-        },
-        {
-          timestamp: new Date(Date.now() - 7200000).toISOString(),
-          event_type: "Weather Anomaly",
-          sentiment_impact: -8,
-          crypto_reaction: 0.5,
-          stock_reaction: -1.2,
-          correlation_strength: 0.61,
-        },
-        {
-          timestamp: new Date(Date.now() - 10800000).toISOString(),
-          event_type: "Economic Report",
-          sentiment_impact: 22,
-          crypto_reaction: 3.1,
-          stock_reaction: 1.5,
-          correlation_strength: 0.85,
-        },
+      const [forecast, reactions, events, governance] = await Promise.all([
+        predictionService.getSentimentForecast(),
+        predictionService.getMarketReactions(30),
+        predictionService.getEventPredictions(),
+        getGovernanceData(),
       ]);
-
-      // Fetch event predictions (mock data for now)
-      setEventPredictions([
-        {
-          event_id: "evt-001",
-          event_type: "Geopolitical Tension",
-          severity: 7,
-          predicted_risk_increase: 12,
-          affected_regions: ["Middle East", "Europe"],
-          confidence: 0.78,
-          timestamp: new Date(Date.now() + 86400000).toISOString(),
-        },
-        {
-          event_id: "evt-002",
-          event_type: "Economic Announcement",
-          severity: 5,
-          predicted_risk_increase: 8,
-          affected_regions: ["North America", "Asia"],
-          confidence: 0.71,
-          timestamp: new Date(Date.now() + 172800000).toISOString(),
-        },
-        {
-          event_id: "evt-003",
-          event_type: "Natural Disaster Risk",
-          severity: 6,
-          predicted_risk_increase: 15,
-          affected_regions: ["Asia Pacific"],
-          confidence: 0.65,
-          timestamp: new Date(Date.now() + 259200000).toISOString(),
-        },
-      ]);
+      setSentimentForecast(forecast);
+      setMarketReactions(reactions);
+      setEventPredictions(events);
+      setModelEnsemble(
+        governance.models.map((m, idx) => ({
+          name: m.name,
+          vote: normalizeRisk(m.vote ?? 50),
+          confidence: safeN(m.confidence, m.calibration),
+          color: ["#22d3ee", "#a3e635", "#60a5fa", "#f472b6"][idx % 4],
+        })),
+      );
     } catch (err: any) {
       setError(err?.message || "Failed to load prediction data");
     } finally {
@@ -678,7 +624,11 @@ export default function TrendPrediction() {
             </div>
             <div className="insight-item">
               <span className="insight-label">Market Correlation</span>
-              <strong className="insight-value">{(0.65 + Math.random() * 0.2).toFixed(2)}</strong>
+              <strong className="insight-value">
+                {marketReactions.length
+                  ? (marketReactions.reduce((acc, row) => acc + row.correlation_strength, 0) / marketReactions.length).toFixed(2)
+                  : "0.00"}
+              </strong>
             </div>
             <div className="insight-item">
               <span className="insight-label">Volatility Trend</span>
