@@ -151,9 +151,33 @@ export type ScenarioResult = {
   timestamps: string[];
 };
 
+export type SentinelDriver = {
+  feature: string;
+  impact: number;
+  display_name?: string;
+};
+
+export type SentinelData = {
+  timestamp: string;
+  risk_score: number;
+  risk_delta: number;
+  risk_trend: "increasing" | "decreasing" | "stable";
+  threat_level: "stable" | "guarded" | "elevated" | "critical";
+  top_drivers: SentinelDriver[];
+  multi_domain_signal: boolean;
+  active_domains?: string[];
+  confidence: number;
+  analysis_text: string;
+};
+
 export async function runScenarioSimulation(steps: ScenarioStep[]): Promise<ScenarioResult> {
   const res = await API.post("/dashboard/scenario/run", { steps }, { headers: API_HEADERS });
   return res.data as ScenarioResult;
+}
+
+export async function getSentinelData(): Promise<SentinelData> {
+  const res = await API.get("/api/sentinel/latest", { headers: API_HEADERS });
+  return res.data as SentinelData;
 }
 
 export default API;

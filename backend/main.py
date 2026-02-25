@@ -50,7 +50,9 @@ def hash_password(password: str):
 
 
 from processing.global_risk import compute_global_risk
+from processing.sentinel_analysis import compute_sentinel_analysis, get_sentinel_history
 from feature_store.model_registry import get_production_model, list_models
+
 from backend.observability import (
     build_logger,
     RuntimeMetrics,
@@ -869,6 +871,48 @@ def dashboard_scenario_run(request: Request, payload: ScenarioRunRequest, role: 
         "scenario": scenario,
         "timestamps": [(now + timedelta(hours=i)).isoformat() for i in range(horizon)],
     }
+
+
+# =====================================================
+# SENTINEL AI ENDPOINTS
+# =====================================================
+@app.get("/api/sentinel/latest")
+@limiter.limit("60/minute")
+def get_sentinel_latest(request: Request, role: str = Depends(check_role)):
+    """
+    Get latest SENTINEL AI analysis including:
+    - Risk score and delta
+    - Threat level assessment
+    - Top contributing factors
+    - Multi-domain signal detection
+    - Confidence level
+    - Generated analysis text
+    """
+    try:
+        analysis = compute_sentinel_analysis()
+        return analysis
+    except Exception as e:
+        logger.error("sentinel_analysis_failed", extra={"error": str(e)})
+        raise HTTPException(status_code=500, detail="Failed to compute sentinel analysis")
+
+
+@app.get("/api/sentinel/history")
+@limiter.limit("30/minute")
+def get_sentinel_history_api(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(10, ge=1, le=100)
+):
+    """
+    Get historical sentinel analysis data for trend analysis.
+    """
+    try:
+        history = get_sentinel_history(limit=limit)
+        return {"history": history}
+    except Exception as e:
+        logger.error("sentinel_history_failed", extra={"error": str(e)})
+        raise HTTPException(status_code=500, detail="Failed to retrieve sentinel history")
+
 
 
 # =====================================================

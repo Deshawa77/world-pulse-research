@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import "../components/futuristic-dashboard.css";
 import CommandCenterHeader from "../components/CommandCenterHeader";
+
 import CountryDrilldown from "../components/CountryDrilldown";
 import EventLog, { type OperatorEvent } from "../components/EventLog";
 import ModelGovernance from "../components/ModelGovernance";
-import TimeSeriesChart from "../components/TimeSeriesChart";
+import AdvancedStreamingTrends from "../components/AdvancedStreamingTrends";
+import SentinelAI from "../components/SentinelAI";
 import API, {
   API_HEADERS,
   getCountryDrilldown,
@@ -17,6 +20,7 @@ import API, {
   type LiveCommandFeed,
   type RiskMapPoint,
 } from "../services/api";
+
 
 type Features = {
   news_sentiment: number;
@@ -112,6 +116,7 @@ export default function Dashboard() {
   const [lastKnownGood, setLastKnownGood] = useState<Snapshot | null>(null);
   const [retries, setRetries] = useState(0);
   const [activePreset, setActivePreset] = useState<"analyst" | "ops" | "executive">("analyst");
+  const [sentinelEnabled, setSentinelEnabled] = useState(true);
 
   // Cache for API responses to reduce 429 errors
   interface CacheEntry<T> {
@@ -126,24 +131,22 @@ export default function Dashboard() {
     riskMap: CacheEntry<RiskMapPoint[]>;
     global: CacheEntry<any>;
   }>({
-    liveFeed: { data: null, timestamp: 0, ttl: 3000 }, // 3s TTL
-    governance: { data: null, timestamp: 0, ttl: 10000 }, // 10s TTL
-    riskMap: { data: null, timestamp: 0, ttl: 5000 }, // 5s TTL
-    global: { data: null, timestamp: 0, ttl: 2000 }, // 2s TTL
+    liveFeed: { data: null, timestamp: 0, ttl: 3000 },
+    governance: { data: null, timestamp: 0, ttl: 10000 },
+    riskMap: { data: null, timestamp: 0, ttl: 5000 },
+    global: { data: null, timestamp: 0, ttl: 2000 },
   });
 
-
-  // Track in-flight requests to prevent duplicates
   const inFlightRef = useRef<Set<string>>(new Set());
 
   const panelUpdated = useRef<Record<PanelKey, number>>({
-
     risk: Date.now(),
     map: Date.now(),
     stream: Date.now(),
     ops: Date.now(),
     governance: Date.now(),
   });
+  
   const retriesRef = useRef(0);
   const mapRef = useRef<HTMLDivElement | null>(null);
   const mapMounted = useRef(false);
@@ -153,11 +156,9 @@ export default function Dashboard() {
   const rotationRafRef = useRef<number | null>(null);
   const isRotatingRef = useRef<boolean>(false);
 
-
-
-
   const active = history[history.length - 1] ?? null;
   const riskDelta = active && lastKnownGood ? active.score - lastKnownGood.score : 0;
+  
   const panelStale = useMemo(() => {
     const now = Date.now();
     return {
@@ -169,20 +170,47 @@ export default function Dashboard() {
     };
   }, [history.length, operatorEvents.length, governance.calibrationTrend.length, riskMap.length]);
 
+
   const topTopics = active?.topics?.slice(0, 5) ?? [];
-  const riskSeries = useMemo(
+  
+      // Enhanced streaming trends series with multiple data streams
+  const streamingSeries = useMemo(
     () => [
       {
-        name: "Global risk",
+        name: "Global Risk",
         points: history.slice(-120).map((h) => ({ timestamp: h.timestamp, value: h.score })),
+        color: "#00f5ff",
+        width: 3,
       },
       {
-        name: "Sentiment",
-        points: history.slice(-120).map((h) => ({ timestamp: h.timestamp, value: (h.features.news_sentiment + 1) * 40 })),
+        name: "News Sentiment",
+        points: history.slice(-120).map((h) => ({ timestamp: h.timestamp, value: Math.min(100, Math.max(0, (h.features.news_sentiment + 1) * 40)) })),
+        color: "#ff00ff",
+        width: 2,
+        dash: "dash",
+      },
+      {
+        name: "Crypto Volatility",
+        points: history.slice(-120).map((h) => ({ 
+          timestamp: h.timestamp, 
+          value: Math.min(100, Math.max(0, h.features.crypto_volatility * 500 + 50)) 
+        })),
+        color: "#39ff14",
+        width: 3,
+      },
+
+      {
+        name: "Weather Anomaly",
+        points: history.slice(-120).map((h) => ({ timestamp: h.timestamp, value: Math.min(100, Math.max(0, h.features.weather_anomaly * 100)) })),
+        color: "#ffaa00",
+        width: 2,
+        dash: "dot",
       },
     ],
     [history],
   );
+
+  
   const anomalyMarks = useMemo(
     () => history.slice(-120).filter((h) => h.score > 75 || h.score < 25).map((h) => ({ timestamp: h.timestamp, value: h.score })),
     [history],
@@ -230,14 +258,11 @@ export default function Dashboard() {
       fetchFn: () => Promise<T>,
       transform?: (data: any) => T
     ): Promise<T> => {
-      // Check cache first
       if (isCacheValid(key)) {
         return cacheRef.current[key].data as T;
       }
 
-      // Prevent duplicate in-flight requests
       if (inFlightRef.current.has(key)) {
-        // Wait for existing request to complete
         while (inFlightRef.current.has(key) && !stop) {
           await new Promise(r => setTimeout(r, 50));
         }
@@ -260,7 +285,6 @@ export default function Dashboard() {
       }
     };
 
-
     const pull = async () => {
       if (stop) return;
       setConnectionState(retriesRef.current > 0 ? "reconnecting" : "connecting");
@@ -273,7 +297,6 @@ export default function Dashboard() {
             API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } })
           ),
         ]);
-
 
         const features = global.data?.features;
         if (features) {
@@ -303,23 +326,19 @@ export default function Dashboard() {
         setConnectionState(retriesRef.current > 3 ? "disconnected" : "reconnecting");
         setErrorText(String(e?.message ?? "Failed to refresh dashboard feed"));
         
-        // Clear cache on error to force fresh fetch on retry
         if (e?.response?.status === 429) {
-          // On 429, back off more aggressively
           cacheRef.current.liveFeed.timestamp = 0;
           cacheRef.current.governance.timestamp = 0;
           cacheRef.current.riskMap.timestamp = 0;
           cacheRef.current.global.timestamp = 0;
         }
       } finally {
-        // Adaptive polling: longer delays when stale, shorter when fresh
         const baseDelay = retriesRef.current > 0 ? Math.min(15000, 2000 * (retriesRef.current + 1)) : 3000;
-        // Add jitter to prevent thundering herd
         const jitter = Math.random() * 500;
         timer = window.setTimeout(pull, baseDelay + jitter);
       }
-
     };
+    
     pull();
     return () => {
       stop = true;
@@ -386,41 +405,30 @@ export default function Dashboard() {
             setSelectedCountry(String(p.location));
           });
           (mapRef.current as any).on?.("plotly_unhover", () => setMapHover(null));
-          
         }
-
       } catch {
         setErrorText("Unable to render map");
       }
     };
+    
     drawMap();
     return () => {
       stopped = true;
     };
   }, [riskMap]);
 
-
-
   const startAutoRotation = (Plotly: any) => {
     if (isRotatingRef.current || !mapRef.current) return;
-    
     isRotatingRef.current = true;
     
     const rotate = () => {
       if (!isRotatingRef.current || !mapRef.current || selectedCountry) return;
-      
-      // Continuous rotation without modulo to avoid stopping at 360
       rotationRef.current = rotationRef.current + 0.5;
-      
       Plotly.relayout(mapRef.current, {
         "geo.projection.rotation.lon": rotationRef.current,
-      }).catch(() => {
-        // Ignore rotation errors
-      });
-      
+      }).catch(() => {});
       rotationRafRef.current = requestAnimationFrame(rotate);
     };
-    
     rotationRafRef.current = requestAnimationFrame(rotate);
   };
 
@@ -432,27 +440,23 @@ export default function Dashboard() {
     }
   };
 
-  // Separate effect to manage rotation lifecycle independent of riskMap updates
   useEffect(() => {
     if (!mapMounted.current || !plotlyRef.current) return;
-    
     if (selectedCountry) {
       stopAutoRotation();
     } else {
       startAutoRotation(plotlyRef.current);
     }
-    
     return () => {
       stopAutoRotation();
     };
   }, [mapMounted.current, selectedCountry]);
 
-
   useEffect(() => {
     if (!selectedCountry) return;
     let closed = false;
-
     setCountryLoading(true);
+    
     getCountryDrilldown(selectedCountry)
       .then((data) => {
         if (closed) return;
@@ -465,6 +469,7 @@ export default function Dashboard() {
       .finally(() => {
         if (!closed) setCountryLoading(false);
       });
+      
     return () => {
       closed = true;
     };
@@ -546,39 +551,88 @@ export default function Dashboard() {
       </section>
 
       <section className="dashboard-grid-layout">
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`}>
-          <div className="panel-head"><h3>Map Intelligence</h3></div>
+        {/* Map + Sentinel AI Row */}
+        <article className={`wp-card panel-frame map-sentinel-panel ${fpsLow ? "" : "panel-animated"}`} style={{ gridColumn: "span 2" }}>
+          <div className="panel-head"><h3>Map Intelligence & Sentinel AI</h3></div>
           {panelStale.map ? <div className="panel-stale">stale</div> : null}
-          <div className="wp-map-surface">
-            <div ref={mapRef} className="echart-map" />
-            {mapHover ? (
-              <div className="map-hover-box">
-                <strong>{mapHover.country}</strong>
-                <span>Risk {mapHover.risk.toFixed(1)}</span>
-              </div>
-            ) : null}
+          <div className="map-sentinel-container" style={{ display: "flex", gap: "16px", height: "100%" }}>
+            <div className="wp-map-surface" style={{ flex: 2 }}>
+              <div ref={mapRef} className="echart-map" />
+              {mapHover ? (
+                <div className="map-hover-box">
+                  <strong>{mapHover.country}</strong>
+                  <span>Risk {mapHover.risk.toFixed(1)}</span>
+                </div>
+              ) : null}
+              <p style={{ marginTop: 8, fontSize: 12, color: "#888" }}>Click country on map for drilldown.</p>
+            </div>
+            <div style={{ flex: 1, minWidth: 280, maxWidth: 350 }}>
+              <SentinelAI />
+            </div>
+
           </div>
-          <p>Click country on map for drilldown.</p>
         </article>
 
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`}>
-          <div className="panel-head"><h3>Streaming Trends</h3></div>
-          {panelStale.stream ? <div className="panel-stale">stale</div> : null}
-          <TimeSeriesChart title="Real-time feature stream" series={riskSeries} anomalies={anomalyMarks} thresholdBand={{ low: 35, high: 75 }} />
-          <div className="wp-mini-meta"><span>Top topics</span><span>{topTopics.join(", ") || "none"}</span></div>
+        {/* Streaming Trends - NOW ABOVE Operator Workflow and Model Governance */}
+        <article className={`wp-card panel-frame streaming-trends-panel ${fpsLow ? "" : "panel-animated"}`} style={{ gridColumn: "span 2", minHeight: "420px" }}>
+          <div className="panel-head futuristic-panel-header">
+            <div className="header-glow"></div>
+            <h3>
+              <span className="header-icon">◈</span>
+              Neural Stream Analytics
+              <span className="header-badge">LIVE</span>
+            </h3>
+            {panelStale.stream ? <div className="panel-stale">stale</div> : null}
+          </div>
+          <AdvancedStreamingTrends 
+            title="Multi-Dimensional Risk Stream" 
+            series={streamingSeries} 
+            anomalies={anomalyMarks} 
+            thresholdBand={{ low: 35, high: 75 }}
+            height={380}
+            showLegend={true}
+            animated={!fpsLow}
+          />
+
+          <div className="streaming-topics-bar">
+            <span className="topics-label">Active Intelligence Topics:</span>
+            <div className="topics-chips">
+              {topTopics.map((topic, i) => (
+                <span key={i} className="topic-chip" style={{ animationDelay: `${i * 0.1}s` }}>
+                  {topic}
+                </span>
+              ))}
+              {topTopics.length === 0 && <span className="topic-chip empty">Scanning...</span>}
+            </div>
+          </div>
         </article>
 
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`}>
-          <div className="panel-head"><h3>Operator Workflow</h3></div>
+        <article className={`wp-card panel-frame operator-panel ${fpsLow ? "" : "panel-animated"}`}>
+          <div className="panel-head futuristic-panel-header">
+            <div className="header-glow orange"></div>
+            <h3>
+              <span className="header-icon">⚡</span>
+              Operator Workflow
+              <span className="header-badge">OPS</span>
+            </h3>
+          </div>
           {panelStale.ops ? <div className="panel-stale">stale</div> : null}
           <EventLog events={operatorEvents} />
         </article>
 
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`}>
-          <div className="panel-head"><h3>Model Governance</h3></div>
+        <article className={`wp-card panel-frame governance-panel ${fpsLow ? "" : "panel-animated"}`}>
+          <div className="panel-head futuristic-panel-header">
+            <div className="header-glow purple"></div>
+            <h3>
+              <span className="header-icon">◈</span>
+              Model Governance
+              <span className="header-badge">AI</span>
+            </h3>
+          </div>
           {panelStale.governance ? <div className="panel-stale">stale</div> : null}
           <ModelGovernance data={governance} />
         </article>
+
       </section>
 
       <CountryDrilldown
@@ -597,6 +651,23 @@ export default function Dashboard() {
           void addEvent("assign", comment, owner);
         }}
       />
+
+      {/* Sentinel AI Toggle Button */}
+      <button
+        onClick={() => setSentinelEnabled(!sentinelEnabled)}
+        className="fixed bottom-4 left-4 z-40 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-300"
+        style={{
+          background: sentinelEnabled 
+            ? "rgba(255, 105, 180, 0.3)" 
+            : "rgba(100, 100, 100, 0.2)",
+          border: `1px solid ${sentinelEnabled ? "rgba(255, 105, 180, 0.5)" : "rgba(100, 100, 100, 0.3)"}`,
+          color: sentinelEnabled ? "#ff69b4" : "#888",
+          backdropFilter: "blur(8px)",
+        }}
+      >
+        {sentinelEnabled ? "🤖 Sentinel AI ON" : "🤖 Sentinel AI OFF"}
+      </button>
+
     </main>
   );
 }
