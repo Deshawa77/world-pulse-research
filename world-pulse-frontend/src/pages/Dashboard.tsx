@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../components/futuristic-dashboard.css";
+import "./Dashboard.css";
 import CommandCenterHeader from "../components/CommandCenterHeader";
 
 import CountryDrilldown from "../components/CountryDrilldown";
@@ -10,8 +11,7 @@ import AdvancedStreamingTrends from "../components/AdvancedStreamingTrends";
 import SentinelAI from "../components/SentinelAI";
 import DataBurstModal from "../components/DataBurstModal";
 import LiveDataStreams from "../components/LiveDataStreams";
-import SystemMetrics from "../components/SystemMetrics";
-
+import GlobalIntelligenceFeed from "../components/GlobalIntelligenceFeed";
 
 import API, {
   API_HEADERS,
@@ -25,7 +25,6 @@ import API, {
   type LiveCommandFeed,
   type RiskMapPoint,
 } from "../services/api";
-
 
 type Features = {
   news_sentiment: number;
@@ -113,7 +112,13 @@ export default function Dashboard() {
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [fpsLow, setFpsLow] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
+  
+  useEffect(() => {
+    selectedCountryRef.current = selectedCountry;
+  }, [selectedCountry]);
+  
   const [countryData, setCountryData] = useState<CountryDrilldownData | null>(null);
+
   const [countryLoading, setCountryLoading] = useState(false);
   const [operatorEvents, setOperatorEvents] = useState<OperatorEvent[]>(() => readJson(EVENTS_KEY, [] as OperatorEvent[]));
   const [mapHover, setMapHover] = useState<{ country: string; risk: number } | null>(null);
@@ -127,18 +132,11 @@ export default function Dashboard() {
   const [activePreset, setActivePreset] = useState<"analyst" | "ops" | "executive">("analyst");
   const [sentinelEnabled, setSentinelEnabled] = useState(true);
 
-  // Cache for API responses to reduce 429 errors
-  interface CacheEntry<T> {
-    data: T | null;
-    timestamp: number;
-    ttl: number;
-  }
-  
   const cacheRef = useRef<{
-    liveFeed: CacheEntry<LiveCommandFeed>;
-    governance: CacheEntry<GovernanceData>;
-    riskMap: CacheEntry<RiskMapPoint[]>;
-    global: CacheEntry<any>;
+    liveFeed: { data: LiveCommandFeed | null; timestamp: number; ttl: number };
+    governance: { data: GovernanceData | null; timestamp: number; ttl: number };
+    riskMap: { data: RiskMapPoint[] | null; timestamp: number; ttl: number };
+    global: { data: any | null; timestamp: number; ttl: number };
   }>({
     liveFeed: { data: null, timestamp: 0, ttl: 3000 },
     governance: { data: null, timestamp: 0, ttl: 10000 },
@@ -164,6 +162,8 @@ export default function Dashboard() {
   const rotationRef = useRef<number>(0);
   const rotationRafRef = useRef<number | null>(null);
   const isRotatingRef = useRef<boolean>(false);
+  const selectedCountryRef = useRef<string | null>(null);
+
 
   const active = history[history.length - 1] ?? null;
   const riskDelta = active && lastKnownGood ? active.score - lastKnownGood.score : 0;
@@ -179,10 +179,8 @@ export default function Dashboard() {
     };
   }, [history.length, operatorEvents.length, governance.calibrationTrend.length, riskMap.length]);
 
-
   const topTopics = active?.topics?.slice(0, 5) ?? [];
   
-      // Enhanced streaming trends series with multiple data streams
   const streamingSeries = useMemo(
     () => [
       {
@@ -207,7 +205,6 @@ export default function Dashboard() {
         color: "#39ff14",
         width: 3,
       },
-
       {
         name: "Weather Anomaly",
         points: history.slice(-120).map((h) => ({ timestamp: h.timestamp, value: Math.min(100, Math.max(0, h.features.weather_anomaly * 100)) })),
@@ -219,7 +216,6 @@ export default function Dashboard() {
     [history],
   );
 
-  
   const anomalyMarks = useMemo(
     () => history.slice(-120).filter((h) => h.score > 75 || h.score < 25).map((h) => ({ timestamp: h.timestamp, value: h.score })),
     [history],
@@ -264,8 +260,7 @@ export default function Dashboard() {
 
     const getCachedOrFetch = async <T,>(
       key: keyof typeof cacheRef.current,
-      fetchFn: () => Promise<T>,
-      transform?: (data: any) => T
+      fetchFn: () => Promise<T>
     ): Promise<T> => {
       if (isCacheValid(key)) {
         return cacheRef.current[key].data as T;
@@ -282,12 +277,8 @@ export default function Dashboard() {
       inFlightRef.current.add(key);
       try {
         const data = await fetchFn();
-        const cacheEntry: CacheEntry<T> = {
-          data: transform ? transform(data) : data,
-          timestamp: Date.now(),
-          ttl: cacheRef.current[key].ttl,
-        };
-        (cacheRef.current[key] as CacheEntry<T>) = cacheEntry;
+        cacheRef.current[key].data = data as any;
+        cacheRef.current[key].timestamp = Date.now();
         return data;
       } finally {
         inFlightRef.current.delete(key);
@@ -303,11 +294,11 @@ export default function Dashboard() {
           getCachedOrFetch("governance", getGovernanceData),
           getCachedOrFetch("riskMap", getRiskMap),
           getCachedOrFetch("global", () => 
-            API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } })
+            API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } }).then(r => r.data)
           ),
         ]);
 
-        const features = global.data?.features;
+        const features = global?.features;
         if (features) {
           const snap = buildSnapshot({ features } as GlobalDoc);
           setHistory((prev) => {
@@ -403,7 +394,12 @@ export default function Dashboard() {
 
         if (!mapMounted.current) {
           mapMounted.current = true;
+          // Start auto-rotation once map is mounted
+          if (plotlyRef.current && !selectedCountry) {
+            startAutoRotation(plotlyRef.current);
+          }
           (mapRef.current as any).on?.("plotly_hover", (e: any) => {
+
             const p = e?.points?.[0];
             if (!p) return;
             setMapHover({ country: String(p.location), risk: Number(p.z) });
@@ -417,7 +413,6 @@ export default function Dashboard() {
             setDataBurstRisk(risk);
             setDataBurstOpen(true);
           });
-
           (mapRef.current as any).on?.("plotly_unhover", () => setMapHover(null));
         }
       } catch {
@@ -436,8 +431,11 @@ export default function Dashboard() {
     isRotatingRef.current = true;
     
     const rotate = () => {
-      if (!isRotatingRef.current || !mapRef.current || selectedCountry) return;
+      if (!isRotatingRef.current || !mapRef.current || selectedCountryRef.current) return;
       rotationRef.current = rotationRef.current + 0.5;
+
+
+
       Plotly.relayout(mapRef.current, {
         "geo.projection.rotation.lon": rotationRef.current,
       }).catch(() => {});
@@ -445,6 +443,7 @@ export default function Dashboard() {
     };
     rotationRafRef.current = requestAnimationFrame(rotate);
   };
+
 
   const stopAutoRotation = () => {
     isRotatingRef.current = false;
@@ -464,7 +463,8 @@ export default function Dashboard() {
     return () => {
       stopAutoRotation();
     };
-  }, [mapMounted.current, selectedCountry]);
+  }, [selectedCountry, riskMap.length]);
+
 
   useEffect(() => {
     if (!selectedCountry) return;
@@ -534,8 +534,6 @@ export default function Dashboard() {
             Logout
           </button>
         </div>
-
-
       </header>
 
       <CommandCenterHeader
@@ -577,49 +575,72 @@ export default function Dashboard() {
         </article>
       </section>
 
-      <section className="dashboard-grid-layout">
-        {/* Map + Sentinel AI Row */}
-        <article className={`wp-card panel-frame map-sentinel-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`} style={{ gridColumn: "span 2" }}>
-          <div className="panel-head">
-            <h3>Map Intelligence & Sentinel AI</h3>
-          </div>
-          {panelStale.map ? <div className="panel-stale">stale</div> : null}
-          <div className="map-sentinel-container" style={{ display: "flex", gap: "16px", height: "100%" }}>
-            <div className="wp-map-surface map-surface-advanced" style={{ flex: 2, position: "relative" }}>
-              {/* Live Data Streams - Background Effect */}
-              <div style={{ position: "absolute", inset: 0, zIndex: 0, opacity: 0.6 }}>
-                <LiveDataStreams 
-                  isActive={true} 
-                  threatLevel={active && active.score > 75 ? "critical" : active && active.score > 50 ? "elevated" : "stable"}
-                  streamCount={5}
-                />
+      {/* Unified Intelligence Panel - Map + Global Intelligence (left) | Sentinel AI (right) */}
+      <section className="dashboard-layout">
+        <div className="left-column">
+            {/* Map Intelligence - Top Left */}
+            <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`}>
+              <div className="panel-head">
+                <h3>Map Intelligence</h3>
               </div>
-
-              <div ref={mapRef} className="echart-map" style={{ position: "relative", zIndex: 1 }} />
-              {mapHover ? (
-                <div className="map-hover-box map-hover-card">
-                  <strong className="map-hover-title">{mapHover.country}</strong>
-                  <span className="map-hover-risk">Risk Score: {mapHover.risk.toFixed(1)}</span>
+              {panelStale.map ? <div className="panel-stale">stale</div> : null}
+              <div className="panel-content wp-map-surface map-surface-advanced" style={{ position: "relative" }}>
+                <div style={{ position: "absolute", inset: 0, zIndex: 0, opacity: 0.6 }}>
+                  <LiveDataStreams 
+                    isActive={true} 
+                    threatLevel={active && active.score > 75 ? "critical" : active && active.score > 50 ? "elevated" : "stable"}
+                    streamCount={5}
+                  />
                 </div>
-              ) : null}
-              <p style={{ marginTop: 8, fontSize: 12, color: "#888", position: "relative", zIndex: 1 }}>Click country for deep dive analysis.</p>
-              
-              {/* System Metrics - CPU, Memory, WiFi, GPU */}
-              <div style={{ marginTop: "12px", position: "relative", zIndex: 1 }}>
-                <SystemMetrics />
+                <div ref={mapRef} className="echart-map" style={{ position: "relative", zIndex: 1, height: "100%" }} />
+                {mapHover ? (
+                  <div className="map-hover-box map-hover-card">
+                    <strong className="map-hover-title">{mapHover.country}</strong>
+                    <span className="map-hover-risk">Risk Score: {mapHover.risk.toFixed(1)}</span>
+                  </div>
+                ) : null}
+                <p style={{ marginTop: 8, fontSize: 12, color: "#888", position: "relative", zIndex: 1, flexShrink: 0 }}>Click country for deep dive analysis.</p>
               </div>
-            </div>
+            </article>
 
-            <div className="sentinel-advanced-container" style={{ flex: 1, minWidth: 280, maxWidth: 350 }}>
+            {/* Global Intelligence Feed - Bottom Left */}
+            <article className={`wp-card panel-frame global-intelligence-panel ${fpsLow ? "" : "panel-animated"}`}>
+              <div className="panel-head futuristic-panel-header">
+                <div className="header-glow cyan"></div>
+                <h3>
+                  <span className="header-icon">🌍</span>
+                  Global Intelligence Feed
+                  <span className="header-badge">LIVE</span>
+                </h3>
+              </div>
+              <div className="panel-content">
+                <GlobalIntelligenceFeed maxRows={3} refreshInterval={5000} />
+              </div>
+            </article>
+        </div>
 
-              <SentinelAI />
-            </div>
+        <div className="right-column">
+            {/* Sentinel AI - Right Side */}
+            <article className={`wp-card panel-frame sentinel-ai-panel ${fpsLow ? "" : "panel-animated"}`}>
+              <div className="panel-head futuristic-panel-header">
+                <div className="header-glow pink"></div>
+                <h3>
+                  <span className="header-icon">🤖</span>
+                  Sentinel AI
+                  <span className="header-badge">AI</span>
+                </h3>
+              </div>
+              <div className="panel-content sentinel-advanced-container">
+                <SentinelAI />
+              </div>
+            </article>
+        </div>
+      </section>
 
 
-          </div>
-        </article>
-
-        {/* Streaming Trends - NOW ABOVE Operator Workflow and Model Governance */}
+      {/* Bottom Section: Streaming Trends, Operator Workflow, Model Governance */}
+      <section className="dashboard-grid-layout">
+        {/* Streaming Trends */}
         <article className={`wp-card panel-frame streaming-trends-panel ${fpsLow ? "" : "panel-animated"}`} style={{ gridColumn: "span 2", minHeight: "420px" }}>
           <div className="panel-head futuristic-panel-header">
             <div className="header-glow"></div>
@@ -639,7 +660,6 @@ export default function Dashboard() {
             showLegend={true}
             animated={!fpsLow}
           />
-
           <div className="streaming-topics-bar">
             <span className="topics-label">Active Intelligence Topics:</span>
             <div className="topics-chips">
@@ -653,6 +673,7 @@ export default function Dashboard() {
           </div>
         </article>
 
+        {/* Operator Workflow */}
         <article className={`wp-card panel-frame operator-panel ${fpsLow ? "" : "panel-animated"}`}>
           <div className="panel-head futuristic-panel-header">
             <div className="header-glow orange"></div>
@@ -666,6 +687,7 @@ export default function Dashboard() {
           <EventLog events={operatorEvents} />
         </article>
 
+        {/* Model Governance */}
         <article className={`wp-card panel-frame governance-panel ${fpsLow ? "" : "panel-animated"}`}>
           <div className="panel-head futuristic-panel-header">
             <div className="header-glow purple"></div>
@@ -678,7 +700,6 @@ export default function Dashboard() {
           {panelStale.governance ? <div className="panel-stale">stale</div> : null}
           <ModelGovernance data={governance} />
         </article>
-
       </section>
 
       <CountryDrilldown
@@ -698,7 +719,6 @@ export default function Dashboard() {
         }}
       />
 
-      {/* Data Burst Modal - Click-activated Deep Dive */}
       <DataBurstModal
         isOpen={dataBurstOpen}
         onClose={() => setDataBurstOpen(false)}
@@ -726,8 +746,6 @@ export default function Dashboard() {
         }}
       />
 
-
-      {/* Sentinel AI Toggle Button */}
       <button
         onClick={() => setSentinelEnabled(!sentinelEnabled)}
         className="fixed bottom-4 left-4 z-40 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-300"
@@ -742,7 +760,6 @@ export default function Dashboard() {
       >
         {sentinelEnabled ? "🤖 Sentinel AI ON" : "🤖 Sentinel AI OFF"}
       </button>
-
     </main>
   );
 }

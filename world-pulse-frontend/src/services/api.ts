@@ -175,6 +175,26 @@ export async function runScenarioSimulation(steps: ScenarioStep[]): Promise<Scen
   return res.data as ScenarioResult;
 }
 
+export type IntelligenceFeedItem = {
+
+  id: string;
+  country: string;
+  country_name: string;
+  headline: string;
+  summary: string;
+  full_article: string;
+  source: string;
+  source_url: string;
+  risk_score: number;
+  timestamp: string;
+  category: string;
+};
+
+export async function getGlobalIntelligenceFeed(): Promise<IntelligenceFeedItem[]> {
+  const res = await API.get("/dashboard/global-intelligence-feed", { headers: API_HEADERS });
+  return Array.isArray(res.data) ? (res.data as IntelligenceFeedItem[]) : [];
+}
+
 export async function getSentinelData(): Promise<SentinelData> {
   const res = await API.get("/api/sentinel/latest", { headers: API_HEADERS });
   return res.data as SentinelData;
