@@ -393,14 +393,21 @@ export default function TrendPrediction() {
           <p>ML-Powered Risk Forecasting & Market Intelligence</p>
         </div>
         <div className="wp-actions-inline">
-          <span className="top-icon pulse-dot" onClick={() => navigate("/dashboard")}>
-            📊 Dashboard
-          </span>
-          <span className="top-icon float-icon" onClick={() => navigate("/historical-trends")}>
-            📈 Historical
-          </span>
-          <span className="top-icon blink-icon">👤 Admin</span>
+          <button onClick={() => navigate("/dashboard")}>Dashboard</button>
+          <button onClick={() => navigate("/historical-trends")}>Historical</button>
+          <button onClick={() => navigate("/about")}>About</button>
+          <button onClick={() => navigate("/contact")}>Contact</button>
+          <button 
+            onClick={() => {
+              localStorage.removeItem("token");
+              navigate("/login");
+            }}
+            style={{ color: "#ff6b6b" }}
+          >
+            Logout
+          </button>
         </div>
+
       </header>
 
       {/* Timeframe Selector */}

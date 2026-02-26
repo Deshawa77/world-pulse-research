@@ -25,7 +25,20 @@ export default function ScenarioStudio() {
           <p>Multi-step what-if simulation</p>
         </div>
         <div className="wp-actions-inline">
-          <button onClick={() => navigate("/dashboard")}>Back to Dashboard</button>
+          <button onClick={() => navigate("/dashboard")}>Dashboard</button>
+          <button onClick={() => navigate("/trend-prediction")}>Predictions</button>
+          <button onClick={() => navigate("/historical-trends")}>Historical</button>
+          <button onClick={() => navigate("/about")}>About</button>
+          <button onClick={() => navigate("/contact")}>Contact</button>
+          <button 
+            onClick={() => {
+              localStorage.removeItem("token");
+              navigate("/login");
+            }}
+            style={{ color: "#ff6b6b" }}
+          >
+            Logout
+          </button>
         </div>
       </header>
       <section className="wp-grid">

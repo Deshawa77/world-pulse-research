@@ -419,14 +419,21 @@ export default function HistoricalTrends() {
           <p>Deep Dive into Past Events & Sentiment Patterns</p>
         </div>
         <div className="wp-actions-inline">
-          <span className="top-icon pulse-dot" onClick={() => navigate("/dashboard")}>
-            📊 Dashboard
-          </span>
-          <span className="top-icon float-icon" onClick={() => navigate("/trend-prediction")}>
-            🔮 Predictions
-          </span>
-          <span className="top-icon blink-icon">👤 Admin</span>
+          <button onClick={() => navigate("/dashboard")}>Dashboard</button>
+          <button onClick={() => navigate("/trend-prediction")}>Predictions</button>
+          <button onClick={() => navigate("/about")}>About</button>
+          <button onClick={() => navigate("/contact")}>Contact</button>
+          <button 
+            onClick={() => {
+              localStorage.removeItem("token");
+              navigate("/login");
+            }}
+            style={{ color: "#ff6b6b" }}
+          >
+            Logout
+          </button>
         </div>
+
       </header>
 
       {/* Date Range & Stats */}

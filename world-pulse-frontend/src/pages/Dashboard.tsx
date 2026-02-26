@@ -522,7 +522,20 @@ export default function Dashboard() {
           <button onClick={() => navigate("/trend-prediction")}>Predictions</button>
           <button onClick={() => navigate("/historical-trends")}>Historical</button>
           <button onClick={() => navigate("/scenario")}>Scenario Studio</button>
+          <button onClick={() => navigate("/about")}>About</button>
+          <button onClick={() => navigate("/contact")}>Contact</button>
+          <button 
+            onClick={() => {
+              localStorage.removeItem("token");
+              navigate("/login");
+            }}
+            style={{ color: "#ff6b6b" }}
+          >
+            Logout
+          </button>
         </div>
+
+
       </header>
 
       <CommandCenterHeader
