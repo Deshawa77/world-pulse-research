@@ -14,6 +14,7 @@ import LiveDataStreams from "../components/LiveDataStreams";
 import GlobalIntelligenceFeed from "../components/GlobalIntelligenceFeed";
 
 import API, {
+
   API_HEADERS,
   getCountryDrilldown,
   getGovernanceData,
@@ -537,12 +538,17 @@ export default function Dashboard() {
       </header>
 
       <CommandCenterHeader
-        incidents={liveFeed.incidents}
+        incidents={liveFeed.incidents || []}
         ingestionHeartbeatSec={liveFeed.ingestionHeartbeatSec}
         modelDrift={liveFeed.modelDrift}
         connectionState={connectionState}
         lastUpdated={liveFeed.lastUpdated}
       />
+
+
+
+
+
 
       <section className="wp-strip">
         <article className="wp-card">

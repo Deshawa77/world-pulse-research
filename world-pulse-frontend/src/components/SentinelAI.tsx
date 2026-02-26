@@ -1,22 +1,50 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Volume2, VolumeX, Maximize2, Minimize2, Mic, ThumbsUp, ThumbsDown, Flag } from "lucide-react";
+import { 
+  Volume2, VolumeX, Maximize2, Minimize2, Mic, ThumbsUp, ThumbsDown, Flag,
+  Send, Download, Settings, Bell, TrendingUp, TrendingDown, Minus, 
+  MessageSquare, X, Wifi, WifiOff, History,
+  Globe, AlertTriangle
+} from "lucide-react";
+
 import TypewriterText from "./TypewriterText";
 import PulseIndicator from "./PulseIndicator";
 import HolographicAvatar from "./HolographicAvatar";
 import MoodIndicator from "./MoodIndicator";
 import useSentinel from "./useSentinel";
+import TimeSeriesChart from "./TimeSeriesChart";
 import "./components.css";
 import "./sentinel-hologram.css";
 
 
+
 interface SentinelAIProps {
   className?: string;
+  onCountryQuery?: (country: string) => void;
 }
 
 export default function SentinelAI({ 
-  className = ""
+  className = "",
+  onCountryQuery
 }: SentinelAIProps) {
-  const { data, isLoading, error, isActive, submitFeedback } = useSentinel({ threshold: 0.1 });
+  const { 
+    data, isLoading, error, isActive, submitFeedback,
+    // Q&A
+    qaHistory, isProcessingQA, askQuestion, clearQAHistory,
+    // WebSocket
+    wsConnected, wsReconnecting,
+    // Voice
+    isListening, startVoiceListening, stopVoiceListening,
+    // Alerts
+    alerts, activeAlerts, addAlert, removeAlert, toggleAlert, dismissAlert,
+    // Export
+    exportAnalysis,
+    // Historical
+    fetchHistoricalData,
+    // Sensitivity
+    sensitivity, customThreshold, updateSensitivity, updateCustomThreshold,
+    // Memory
+    conversationMemory
+  } = useSentinel({ threshold: 0.1, enableWebSocket: true });
 
   const [expanded, setExpanded] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -25,6 +53,23 @@ export default function SentinelAI({
   const [feedbackState, setFeedbackState] = useState<"none" | "important" | "false">("none");
   const [reactivePulse, setReactivePulse] = useState(false);
   const prevThreatLevel = useRef<string | null>(null);
+  
+  // Q&A State
+  const [questionInput, setQuestionInput] = useState("");
+  const [showQA, setShowQA] = useState(false);
+  const qaScrollRef = useRef<HTMLDivElement>(null);
+  
+  // Historical Data State
+  const [historicalData, setHistoricalData] = useState<any>(null);
+  const [showHistorical, setShowHistorical] = useState(false);
+  
+  // Settings State
+  const [showSettings, setShowSettings] = useState(false);
+  const [newAlertThreshold, setNewAlertThreshold] = useState(75);
+  
+  // Country Query State
+  const [countryInput, setCountryInput] = useState("");
+
 
 
   // Voice synthesis with AI persona
@@ -87,6 +132,21 @@ export default function SentinelAI({
     prevThreatLevel.current = data?.threat_level || null;
   }, [data?.threat_level]);
 
+  // Auto-scroll Q&A to bottom
+  useEffect(() => {
+    if (qaScrollRef.current && showQA) {
+      qaScrollRef.current.scrollTop = qaScrollRef.current.scrollHeight;
+    }
+  }, [qaHistory, showQA]);
+
+  // Load historical data when expanded
+  useEffect(() => {
+    if (expanded && !historicalData) {
+      fetchHistoricalData(7).then(setHistoricalData);
+    }
+  }, [expanded, historicalData, fetchHistoricalData]);
+
+
   // Handle feedback submission
   const handleFeedback = async (type: "important" | "false") => {
     if (!data) return;
@@ -103,9 +163,60 @@ export default function SentinelAI({
       });
     }
     
-    // Reset after 3 seconds
     setTimeout(() => setFeedbackState("none"), 3000);
   };
+
+  // Handle Q&A submission
+  const handleAskQuestion = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!questionInput.trim() || isProcessingQA) return;
+    
+    const question = questionInput.trim();
+    setQuestionInput("");
+    await askQuestion(question);
+  };
+
+  // Handle country query
+  const handleCountryQuery = async () => {
+    if (!countryInput.trim()) return;
+    const country = countryInput.trim();
+    setCountryInput("");
+    
+    if (onCountryQuery) {
+      onCountryQuery(country);
+    }
+    
+    await askQuestion(`What's happening in ${country}?`, { country });
+  };
+
+  // Handle voice command with visual feedback
+  const handleVoiceCommand = () => {
+    if (isListening) {
+      stopVoiceListening();
+    } else {
+      startVoiceListening();
+    }
+  };
+
+  // Add new alert
+  const handleAddAlert = () => {
+    addAlert({
+      threshold: newAlertThreshold,
+      condition: "above",
+      enabled: true,
+    });
+    setNewAlertThreshold(75);
+  };
+
+  // Get trend icon
+  const getTrendIcon = (trend: string) => {
+    switch (trend) {
+      case "increasing": return <TrendingUp size={16} className="trend-up" />;
+      case "decreasing": return <TrendingDown size={16} className="trend-down" />;
+      default: return <Minus size={16} className="trend-stable" />;
+    }
+  };
+
 
 
   if (isLoading) {
@@ -123,15 +234,40 @@ export default function SentinelAI({
     return null;
   }
 
-  const threatColor = getThreatColor(data.threat_level);
+  const threatColor = getThreatColor(data?.threat_level || "stable");
+
 
   return (
     <>
+      {/* Active Alerts Toast */}
+      {activeAlerts.length > 0 && (
+        <div className="sentinel-alerts-container">
+          {activeAlerts.map(alert => (
+            <div key={alert.id} className="sentinel-alert-toast" style={{ borderColor: threatColor }}>
+              <AlertTriangle size={16} style={{ color: threatColor }} />
+              <span>Risk alert: {alert.condition} {alert.threshold}</span>
+              <button onClick={() => dismissAlert(alert.id)}><X size={14} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className={`sentinel-hologram ${isActive ? "active" : ""} ${reactivePulse ? "reactive-pulse" : ""} ${className}`}>
+        {/* Connection Status */}
+        <div className="sentinel-connection-status">
+          {wsConnected ? (
+            <Wifi size={12} className="status-connected" />
+          ) : wsReconnecting ? (
+            <WifiOff size={12} className="status-reconnecting" />
+          ) : (
+            <WifiOff size={12} className="status-disconnected" />
+          )}
+        </div>
+
         {/* Mood Indicator - Holographic Badge */}
         <div className="mood-indicator-container" style={{ marginBottom: "8px" }}>
           <MoodIndicator 
-            threatLevel={data.threat_level} 
+            threatLevel={data?.threat_level || "stable"} 
             size="medium"
             showAnimation={true}
           />
@@ -140,17 +276,20 @@ export default function SentinelAI({
         {/* Holographic Avatar - JARVIS Style */}
         <div className="hologram-container">
           <HolographicAvatar 
-            isSpeaking={isSpeaking} 
-            threatLevel={data.threat_level}
+            isSpeaking={isSpeaking || isListening} 
+            threatLevel={data?.threat_level || "stable"}
           />
+
           
           {/* Voice indicator */}
-          {voiceEnabled && (
-            <div className={`voice-indicator ${isSpeaking ? "speaking" : ""}`}>
+          {(voiceEnabled || isListening) && (
+            <div className={`voice-indicator ${isSpeaking || isListening ? "speaking" : ""}`}>
               <Mic size={12} />
+              {isListening && <span className="listening-pulse" />}
             </div>
           )}
         </div>
+
 
 
         {/* Analysis Panel */}
@@ -162,6 +301,13 @@ export default function SentinelAI({
           <div className="hologram-header">
             <span className="hologram-label">SENTINEL AI</span>
             <div className="hologram-controls">
+              <button 
+                onClick={() => setShowQA(!showQA)}
+                className={`hologram-btn ${showQA ? "active" : ""}`}
+                title="Ask a question"
+              >
+                <MessageSquare size={14} />
+              </button>
               <button 
                 onClick={() => setVoiceEnabled(!voiceEnabled)}
                 className={`hologram-btn ${voiceEnabled ? "active" : ""}`}
@@ -178,18 +324,19 @@ export default function SentinelAI({
             </div>
           </div>
 
+
           {/* Analysis Text */}
           <div className="hologram-body">
             <TypewriterText 
-              text={data.analysis_text} 
+              text={data?.analysis_text || ""} 
               speed={35}
               className="hologram-analysis"
             />
             
-            {showPredictive && data.risk_trend !== "stable" && (
+            {showPredictive && data?.risk_trend !== "stable" && (
               <div className="hologram-predictive">
                 <TypewriterText 
-                  text={`If current trajectory persists, systemic risk may remain ${data.threat_level} over the next 48–72 hours.`}
+                  text={`If current trajectory persists, systemic risk may remain ${data?.threat_level || "stable"} over the next 48–72 hours.`}
                   speed={35}
                   className="predictive-text"
                 />
@@ -197,18 +344,54 @@ export default function SentinelAI({
             )}
           </div>
 
+
+          {/* Quick Actions */}
+          <div className="hologram-quick-actions">
+            <button 
+              className="quick-action-btn"
+              onClick={() => setShowQA(true)}
+            >
+              <MessageSquare size={12} />
+              Ask
+            </button>
+            <button 
+              className="quick-action-btn"
+              onClick={handleVoiceCommand}
+              style={{ color: isListening ? "#ff3366" : undefined }}
+            >
+              <Mic size={12} />
+              {isListening ? "Listening..." : "Voice"}
+            </button>
+            <button 
+              className="quick-action-btn"
+              onClick={() => exportAnalysis("json")}
+            >
+              <Download size={12} />
+              Export
+            </button>
+            <button 
+              className="quick-action-btn"
+              onClick={() => setShowSettings(true)}
+            >
+              <Settings size={12} />
+              Settings
+            </button>
+          </div>
+
+
           {/* Footer */}
           <div className="hologram-footer">
             <div className="hologram-status">
-              <PulseIndicator threatLevel={data.threat_level} size="small" />
+              <PulseIndicator threatLevel={data?.threat_level || "stable"} size="small" />
               <span style={{ color: threatColor }}>
-                {data.threat_level.toUpperCase()}
+                {(data?.threat_level || "stable").toUpperCase()}
               </span>
             </div>
             <span className="hologram-confidence">
-              {(data.confidence * 100).toFixed(0)}% confidence
+              {((data?.confidence || 0) * 100).toFixed(0)}% confidence
             </span>
           </div>
+
 
           {/* Predictive Toggle */}
           <button 
@@ -248,86 +431,368 @@ export default function SentinelAI({
               </div>
             )}
           </div>
+
+          {/* Memory Indicator */}
+          {conversationMemory.length > 0 && (
+            <div className="memory-indicator">
+              <History size={10} />
+              <span>{conversationMemory.length} interactions remembered</span>
+            </div>
+          )}
         </div>
       </div>
 
+      {/* Q&A Panel */}
+      {showQA && (
+        <div className="sentinel-qa-panel">
+          <div className="qa-header">
+            <h4>Ask Sentinel</h4>
+            <button onClick={() => setShowQA(false)}><X size={14} /></button>
+          </div>
+          <div className="qa-messages" ref={qaScrollRef}>
+            {qaHistory.length === 0 ? (
+              <div className="qa-empty">
+                <p>Ask me about global risk, specific countries, or trends.</p>
+                <div className="qa-suggestions">
+                  <button onClick={() => askQuestion("What's driving the current risk score?")}>
+                    What's driving risk?
+                  </button>
+                  <button onClick={() => askQuestion("Show me historical trends")}>
+                    Historical trends
+                  </button>
+                  <button onClick={() => askQuestion("Which domains are most active?")}>
+                    Active domains
+                  </button>
+                </div>
+              </div>
+            ) : (
+              qaHistory.map((msg) => (
+                <div key={msg.id} className={`qa-message ${msg.role}`}>
+                  <div className="qa-bubble">
+                    {msg.content}
+                  </div>
+                  <span className="qa-timestamp">
+                    {new Date(msg.timestamp).toLocaleTimeString()}
+                  </span>
+                </div>
+              ))
+            )}
+            {isProcessingQA && (
+              <div className="qa-message sentinel">
+                <div className="qa-bubble processing">
+                  <span className="processing-dot" />
+                  <span className="processing-dot" />
+                  <span className="processing-dot" />
+                </div>
+              </div>
+            )}
+          </div>
+          <form className="qa-input-form" onSubmit={handleAskQuestion}>
+            <input
+              type="text"
+              value={questionInput}
+              onChange={(e) => setQuestionInput(e.target.value)}
+              placeholder="Ask a question..."
+              disabled={isProcessingQA}
+            />
+            <button type="submit" disabled={!questionInput.trim() || isProcessingQA}>
+              <Send size={14} />
+            </button>
+          </form>
+        </div>
+      )}
+
+
 
       {/* Expanded Modal */}
-      {expanded && (
+      {expanded && data && (
         <div className="sentinel-modal-overlay" onClick={() => setExpanded(false)}>
           <div className="sentinel-modal holographic" onClick={e => e.stopPropagation()}>
             <div className="sentinel-modal-header">
               <div className="modal-avatar">
-                <HolographicAvatar isSpeaking={isSpeaking} threatLevel={data.threat_level} />
+                <HolographicAvatar isSpeaking={isSpeaking} threatLevel={data?.threat_level || "stable"} />
               </div>
               <h2>Sentinel Analysis</h2>
-              <button onClick={() => setExpanded(false)} className="hologram-btn">
-                <Minimize2 size={18} />
-              </button>
+              <div className="modal-header-actions">
+                <button 
+                  onClick={() => exportAnalysis("json")} 
+                  className="hologram-btn"
+                  title="Export analysis"
+                >
+                  <Download size={16} />
+                </button>
+                <button onClick={() => setExpanded(false)} className="hologram-btn">
+                  <Minimize2 size={18} />
+                </button>
+              </div>
             </div>
             
             <div className="sentinel-modal-content">
-              <div className="analysis-section">
-                <h3>Current Assessment</h3>
-                <p className="analysis-text">{data.analysis_text}</p>
+              {/* Tab Navigation */}
+              <div className="modal-tabs">
+                <button 
+                  className={!showHistorical ? "active" : ""} 
+                  onClick={() => setShowHistorical(false)}
+                >
+                  Current
+                </button>
+                <button 
+                  className={showHistorical ? "active" : ""} 
+                  onClick={() => setShowHistorical(true)}
+                >
+                  Historical
+                </button>
               </div>
 
-              <div className="drivers-section">
-                <h3>Contributing Factors</h3>
-                <div className="drivers-chart">
-                  {data.top_drivers.map((driver) => (
-                    <div key={driver.feature} className="driver-bar-holo">
-                      <span className="driver-name">{driver.display_name || driver.feature}</span>
-                      <div className="driver-progress">
-                        <div 
-                          className="driver-fill" 
-                          style={{ 
-                            width: `${Math.min(driver.impact * 20, 100)}%`,
-                            background: `linear-gradient(90deg, ${threatColor}88, ${threatColor})`
-                          }}
-                        />
-                      </div>
-                      <span className="driver-value">+{driver.impact.toFixed(1)}</span>
+              {!showHistorical ? (
+                <>
+                  <div className="analysis-section">
+                    <h3>Current Assessment</h3>
+                    <p className="analysis-text">{data?.analysis_text || ""}</p>
+                  </div>
+
+                  {/* Country Query Section */}
+                  <div className="country-query-section">
+                    <h3>Country Analysis</h3>
+                    <div className="country-query-input">
+                      <Globe size={14} />
+                      <input
+                        type="text"
+                        value={countryInput}
+                        onChange={(e) => setCountryInput(e.target.value)}
+                        placeholder="Enter country code (e.g., USA, CHN)..."
+                      />
+                      <button onClick={handleCountryQuery}>Analyze</button>
                     </div>
-                  ))}
-                </div>
-              </div>
+                  </div>
 
-              <div className="domains-section">
-                <h3>Active Domains</h3>
-                <div className="domain-pills">
-                  {["Geopolitical", "Financial", "Behavioral", "Environmental", "Health"].map((domain) => (
-                    <span 
-                      key={domain}
-                      className={`domain-pill ${data.active_domains?.includes(domain.toLowerCase()) ? "active" : ""}`}
-                      style={{
-                        borderColor: data.active_domains?.includes(domain.toLowerCase()) ? threatColor : undefined,
-                        background: data.active_domains?.includes(domain.toLowerCase()) ? `${threatColor}22` : undefined
-                      }}
+                  <div className="drivers-section">
+                    <h3>Contributing Factors</h3>
+                    <div className="drivers-chart">
+                      {(data?.top_drivers || []).map((driver) => (
+                        <div key={driver.feature} className="driver-bar-holo">
+                          <span className="driver-name">{driver.display_name || driver.feature}</span>
+                          <div className="driver-progress">
+                            <div 
+                              className="driver-fill" 
+                              style={{ 
+                                width: `${Math.min(driver.impact * 20, 100)}%`,
+                                background: `linear-gradient(90deg, ${threatColor}88, ${threatColor})`
+                              }}
+                            />
+                          </div>
+                          <span className="driver-value">+{driver.impact.toFixed(1)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="domains-section">
+                    <h3>Active Domains</h3>
+                    <div className="domain-pills">
+                      {["Geopolitical", "Financial", "Behavioral", "Environmental", "Health"].map((domain) => (
+                        <span 
+                          key={domain}
+                          className={`domain-pill ${data?.active_domains?.includes(domain.toLowerCase()) ? "active" : ""}`}
+                          style={{
+                            borderColor: data?.active_domains?.includes(domain.toLowerCase()) ? threatColor : undefined,
+                            background: data?.active_domains?.includes(domain.toLowerCase()) ? `${threatColor}22` : undefined
+                          }}
+                        >
+                          {domain}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="metrics-section">
+                    <div className="holo-metric">
+                      <span className="metric-label">Risk Score</span>
+                      <span className="metric-value" style={{ color: threatColor }}>
+                        {(data?.risk_score || 0).toFixed(1)}
+                      </span>
+                    </div>
+                    <div className="holo-metric">
+                      <span className="metric-label">24h Change</span>
+                      <span className={`metric-value ${(data?.risk_delta || 0) > 0 ? "negative" : "positive"}`}>
+                        {getTrendIcon(data?.risk_trend || "stable")}
+                        {(data?.risk_delta || 0) > 0 ? "+" : ""}{(data?.risk_delta || 0).toFixed(1)}
+                      </span>
+                    </div>
+                    <div className="holo-metric">
+                      <span className="metric-label">Confidence</span>
+                      <span className="metric-value">{((data?.confidence || 0) * 100).toFixed(0)}%</span>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="historical-section">
+                  <h3>Historical Comparison</h3>
+                  {historicalData ? (
+                    <div className="historical-comparison">
+                      <div className="comparison-stats">
+                        <div className="comparison-item">
+                          <span className="comparison-label">Current</span>
+                          <span className="comparison-value" style={{ color: threatColor }}>
+                            {(data?.risk_score || 0).toFixed(1)}
+                          </span>
+                        </div>
+                        <div className="comparison-item">
+                          <span className="comparison-label">7 Days Ago</span>
+                          <span className="comparison-value">
+                            {historicalData.week_ago?.toFixed(1) || "N/A"}
+                          </span>
+                          {historicalData.week_change_pct !== undefined && (
+                            <span className={`comparison-change ${historicalData.week_change_pct > 0 ? "negative" : "positive"}`}>
+                              {historicalData.week_change_pct > 0 ? "+" : ""}{historicalData.week_change_pct.toFixed(1)}%
+                            </span>
+                          )}
+                        </div>
+                        <div className="comparison-item">
+                          <span className="comparison-label">30 Days Ago</span>
+                          <span className="comparison-value">
+                            {historicalData.month_ago?.toFixed(1) || "N/A"}
+                          </span>
+                          {historicalData.month_change_pct !== undefined && (
+                            <span className={`comparison-change ${historicalData.month_change_pct > 0 ? "negative" : "positive"}`}>
+                              {historicalData.month_change_pct > 0 ? "+" : ""}{historicalData.month_change_pct.toFixed(1)}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {/* Sentiment Trend Chart */}
+                      {historicalData.trend_data && (
+                        <div className="sentiment-trend-chart">
+                          <h4>Risk Trend (30 Days)</h4>
+                          <TimeSeriesChart
+                            title="Risk Score Trend"
+                            series={[{
+                              name: "Risk Score",
+                              points: historicalData.trend_data.map((d: any) => ({
+                                timestamp: d.timestamp,
+                                value: d.risk_score
+                              })),
+                              color: threatColor
+                            }]}
+                            className="sentinel-trend-chart"
+                          />
+                        </div>
+                      )}
+
+                    </div>
+                  ) : (
+                    <div className="historical-loading">Loading historical data...</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="sentinel-settings-overlay" onClick={() => setShowSettings(false)}>
+          <div className="sentinel-settings-modal" onClick={e => e.stopPropagation()}>
+            <div className="settings-header">
+              <h3>Sentinel Settings</h3>
+              <button onClick={() => setShowSettings(false)}><X size={18} /></button>
+            </div>
+            
+            <div className="settings-content">
+              {/* Sensitivity Settings */}
+              <div className="settings-section">
+                <h4>Alert Sensitivity</h4>
+                <div className="sensitivity-options">
+                  {(["low", "medium", "high"] as const).map((level) => (
+                    <button
+                      key={level}
+                      className={`sensitivity-btn ${sensitivity === level ? "active" : ""}`}
+                      onClick={() => updateSensitivity(level)}
                     >
-                      {domain}
-                    </span>
+                      {level.charAt(0).toUpperCase() + level.slice(1)}
+                    </button>
                   ))}
+                </div>
+                <p className="sensitivity-desc">
+                  {sensitivity === "low" && "Fewer alerts, only significant changes"}
+                  {sensitivity === "medium" && "Balanced alert frequency"}
+                  {sensitivity === "high" && "More alerts, detect subtle changes"}
+                </p>
+              </div>
+
+              {/* Custom Threshold */}
+              <div className="settings-section">
+                <h4>Custom Threshold</h4>
+                <div className="threshold-input">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={customThreshold}
+                    onChange={(e) => updateCustomThreshold(Number(e.target.value))}
+                  />
+                  <span>risk points</span>
                 </div>
               </div>
 
-              <div className="metrics-section">
-                <div className="holo-metric">
-                  <span className="metric-label">Risk Score</span>
-                  <span className="metric-value" style={{ color: threatColor }}>
-                    {data.risk_score.toFixed(1)}
-                  </span>
+              {/* Alert Management */}
+              <div className="settings-section">
+                <h4>Active Alerts</h4>
+                <div className="alerts-list">
+                  {alerts.length === 0 ? (
+                    <p className="no-alerts">No alerts configured</p>
+                  ) : (
+                    alerts.map(alert => (
+                      <div key={alert.id} className={`alert-item ${alert.enabled ? "enabled" : "disabled"}`}>
+                        <div className="alert-info">
+                          <Bell size={14} />
+                          <span>{alert.condition} {alert.threshold}</span>
+                        </div>
+                        <div className="alert-actions">
+                          <button onClick={() => toggleAlert(alert.id)}>
+                            {alert.enabled ? "Disable" : "Enable"}
+                          </button>
+                          <button onClick={() => removeAlert(alert.id)} className="remove-btn">
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
-                <div className="holo-metric">
-                  <span className="metric-label">24h Change</span>
-                  <span className={`metric-value ${data.risk_delta > 0 ? "negative" : "positive"}`}>
-                    {data.risk_delta > 0 ? "+" : ""}{data.risk_delta.toFixed(1)}
-                  </span>
+                
+                {/* Add New Alert */}
+                <div className="add-alert-form">
+                  <h5>Add New Alert</h5>
+                  <div className="add-alert-inputs">
+                    <span>Alert when risk is</span>
+                    <select 
+                      value={newAlertThreshold} 
+                      onChange={(e) => setNewAlertThreshold(Number(e.target.value))}
+                    >
+                      <option value={25}>above 25 (Low)</option>
+                      <option value={50}>above 50 (Medium)</option>
+                      <option value={75}>above 75 (High)</option>
+                      <option value={90}>above 90 (Critical)</option>
+                    </select>
+                    <button onClick={handleAddAlert}>Add Alert</button>
+                  </div>
                 </div>
-                <div className="holo-metric">
-                  <span className="metric-label">Trend</span>
-                  <span className="metric-value">{data.risk_trend}</span>
-                </div>
+              </div>
+
+              {/* Memory Management */}
+              <div className="settings-section">
+                <h4>Conversation Memory</h4>
+                <p>{conversationMemory.length} interactions stored</p>
+                <button 
+                  className="clear-memory-btn"
+                  onClick={clearQAHistory}
+                >
+                  Clear History
+                </button>
               </div>
             </div>
           </div>

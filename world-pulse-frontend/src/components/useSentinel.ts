@@ -1,6 +1,52 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import API, { API_HEADERS } from "../services/api";
 
+// Type declarations for Web Speech API
+declare global {
+  interface Window {
+    SpeechRecognition: new () => SpeechRecognition;
+    webkitSpeechRecognition: new () => SpeechRecognition;
+  }
+}
+
+
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+}
+
+interface SpeechRecognitionResultList {
+  [index: number]: SpeechRecognitionResult;
+  length: number;
+}
+
+interface SpeechRecognitionResult {
+  [index: number]: SpeechRecognitionAlternative;
+  length: number;
+  isFinal: boolean;
+}
+
+interface SpeechRecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+}
+
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  start(): void;
+  stop(): void;
+}
+
+
 export interface SentinelDriver {
   feature: string;
   impact: number;
@@ -18,6 +64,16 @@ export interface SentinelData {
   active_domains?: string[];
   confidence: number;
   analysis_text: string;
+  historical_comparison?: HistoricalComparison;
+}
+
+export interface HistoricalComparison {
+  current: number;
+  week_ago: number;
+  month_ago: number;
+  week_change_pct: number;
+  month_change_pct: number;
+  trend_direction: "improving" | "worsening" | "stable";
 }
 
 export interface FeedbackData {
@@ -29,15 +85,50 @@ export interface FeedbackData {
   notes?: string;
 }
 
+export interface QAMessage {
+  id: string;
+  role: "user" | "sentinel";
+  content: string;
+  timestamp: string;
+  context?: {
+    country?: string;
+    topic?: string;
+  };
+}
+
+export interface AlertConfig {
+  id: string;
+  threshold: number;
+  condition: "above" | "below";
+  enabled: boolean;
+  triggered?: boolean;
+  lastTriggered?: string;
+}
+
+export interface VoiceCommand {
+  command: string;
+  action: string;
+  confidence: number;
+}
 
 interface UseSentinelOptions {
-  threshold?: number; // Risk delta threshold to trigger activation
-  pollInterval?: number; // Polling interval in ms
-  enableVoice?: boolean; // Enable voice synthesis
+  threshold?: number;
+  pollInterval?: number;
+  enableVoice?: boolean;
+  enableWebSocket?: boolean;
+  webSocketUrl?: string;
+  maxHistory?: number;
 }
 
 export function useSentinel(options: UseSentinelOptions = {}) {
-  const { threshold = 2.0, pollInterval = 5000, enableVoice = false } = options;
+  const { 
+    threshold = 2.0, 
+    pollInterval = 5000, 
+    enableVoice = false,
+    enableWebSocket = true,
+    webSocketUrl = "ws://localhost:8000/ws/sentinel",
+    maxHistory = 50
+  } = options;
 
   const [data, setData] = useState<SentinelData | null>(null);
   const [isActive, setIsActive] = useState(false);
@@ -45,8 +136,63 @@ export function useSentinel(options: UseSentinelOptions = {}) {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<string>("");
   
+  // Q&A State
+  const [qaHistory, setQaHistory] = useState<QAMessage[]>([]);
+  const [isProcessingQA, setIsProcessingQA] = useState(false);
+  
+  // WebSocket State
+  const [wsConnected, setWsConnected] = useState(false);
+  const [wsReconnecting, setWsReconnecting] = useState(false);
+  
+  // Alert State
+  const [alerts, setAlerts] = useState<AlertConfig[]>([]);
+  const [activeAlerts, setActiveAlerts] = useState<AlertConfig[]>([]);
+  
+  // Voice Command State
+  const [isListening, setIsListening] = useState(false);
+  const [voiceCommands, setVoiceCommands] = useState<VoiceCommand[]>([]);
+  const [lastVoiceCommand, setLastVoiceCommand] = useState<VoiceCommand | null>(null);
+  
+  // Sensitivity Settings
+  const [sensitivity, setSensitivity] = useState<"low" | "medium" | "high">("medium");
+  const [customThreshold, setCustomThreshold] = useState<number>(threshold);
+  
+  // Memory/History
+  const [conversationMemory, setConversationMemory] = useState<QAMessage[]>([]);
+  
   const prevRiskRef = useRef<number | null>(null);
   const voiceSynthesisRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+
+
+  // Load saved preferences
+  useEffect(() => {
+    const saved = localStorage.getItem("sentinel_preferences");
+    if (saved) {
+      try {
+        const prefs = JSON.parse(saved);
+        if (prefs.sensitivity) setSensitivity(prefs.sensitivity);
+        if (prefs.customThreshold) setCustomThreshold(prefs.customThreshold);
+        if (prefs.alerts) setAlerts(prefs.alerts);
+        if (prefs.conversationMemory) setConversationMemory(prefs.conversationMemory);
+      } catch (e) {
+        console.error("Failed to load sentinel preferences:", e);
+      }
+    }
+  }, []);
+
+  // Save preferences
+  useEffect(() => {
+    const prefs = {
+      sensitivity,
+      customThreshold,
+      alerts,
+      conversationMemory: conversationMemory.slice(-20), // Keep last 20
+    };
+    localStorage.setItem("sentinel_preferences", JSON.stringify(prefs));
+  }, [sensitivity, customThreshold, alerts, conversationMemory]);
 
   const fetchSentinelData = useCallback(async () => {
     try {
@@ -65,15 +211,21 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       
       if (prevRisk !== null) {
         const delta = Math.abs(currentRisk - prevRisk);
-        if (delta >= threshold) {
+        const effectiveThreshold = sensitivity === "low" ? customThreshold * 1.5 : 
+                                   sensitivity === "high" ? customThreshold * 0.5 : 
+                                   customThreshold;
+        
+        if (delta >= effectiveThreshold) {
           setIsActive(true);
           
-          // Voice synthesis if enabled
           if (enableVoice && window.speechSynthesis) {
             speakAnalysis(sentinelData.analysis_text);
           }
         }
       }
+      
+      // Check alerts
+      checkAlerts(sentinelData.risk_score);
       
       prevRiskRef.current = currentRisk;
     } catch (err: any) {
@@ -82,20 +234,37 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     } finally {
       setIsLoading(false);
     }
-  }, [threshold, enableVoice]);
+  }, [customThreshold, sensitivity, enableVoice]);
+
+  const checkAlerts = useCallback((riskScore: number) => {
+    const triggered = alerts.filter(alert => {
+      if (!alert.enabled) return false;
+      const shouldTrigger = alert.condition === "above" ? riskScore > alert.threshold : riskScore < alert.threshold;
+      if (shouldTrigger && !alert.triggered) {
+        return true;
+      }
+      return false;
+    });
+    
+    if (triggered.length > 0) {
+      setActiveAlerts(triggered);
+      // Update triggered status
+      setAlerts(prev => prev.map(a => 
+        triggered.find(t => t.id === a.id) ? { ...a, triggered: true, lastTriggered: new Date().toISOString() } : a
+      ));
+    }
+  }, [alerts]);
 
   const speakAnalysis = useCallback((text: string) => {
     if (!window.speechSynthesis) return;
     
-    // Cancel any ongoing speech
     window.speechSynthesis.cancel();
     
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.9; // Slightly slower for clarity
+    utterance.rate = 0.9;
     utterance.pitch = 1.0;
     utterance.volume = 0.8;
     
-    // Try to find a calm, neutral voice
     const voices = window.speechSynthesis.getVoices();
     const preferredVoice = voices.find(v => 
       v.name.includes("Google US English") || 
@@ -110,9 +279,284 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     window.speechSynthesis.speak(utterance);
   }, []);
 
+  // WebSocket Connection
+  const connectWebSocket = useCallback(() => {
+    if (!enableWebSocket || wsRef.current?.readyState === WebSocket.OPEN) return;
+
+    try {
+      const ws = new WebSocket(webSocketUrl);
+      
+      ws.onopen = () => {
+        setWsConnected(true);
+        setWsReconnecting(false);
+        console.log("Sentinel WebSocket connected");
+      };
+      
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === "sentinel_update") {
+            setData(message.data);
+            setLastUpdate(new Date().toISOString());
+            checkAlerts(message.data.risk_score);
+          } else if (message.type === "alert") {
+            setActiveAlerts(prev => [...prev, message.alert]);
+          }
+        } catch (e) {
+          console.error("WebSocket message error:", e);
+        }
+      };
+      
+      ws.onclose = () => {
+        setWsConnected(false);
+        // Attempt reconnect
+        if (enableWebSocket) {
+          setWsReconnecting(true);
+          reconnectTimeoutRef.current = setTimeout(connectWebSocket, 5000);
+        }
+      };
+      
+      ws.onerror = (error) => {
+        console.error("WebSocket error:", error);
+        ws.close();
+      };
+      
+      wsRef.current = ws;
+    } catch (err) {
+      console.error("Failed to connect WebSocket:", err);
+    }
+  }, [enableWebSocket, webSocketUrl, checkAlerts]);
+
+  const disconnectWebSocket = useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setWsConnected(false);
+  }, []);
+
+  // Q&A Functions
+  const askQuestion = useCallback(async (question: string, context?: { country?: string; topic?: string }) => {
+    setIsProcessingQA(true);
+    
+    const userMessage: QAMessage = {
+      id: `${Date.now()}-user`,
+      role: "user",
+      content: question,
+      timestamp: new Date().toISOString(),
+      context,
+    };
+    
+    setQaHistory(prev => [...prev, userMessage]);
+    setConversationMemory(prev => [...prev, userMessage].slice(-maxHistory));
+    
+    try {
+      const response = await API.post("/api/sentinel/qa", {
+        question,
+        context,
+        conversation_history: conversationMemory.slice(-10),
+        current_risk: data?.risk_score,
+      }, { headers: API_HEADERS });
+      
+      const sentinelMessage: QAMessage = {
+        id: `${Date.now()}-sentinel`,
+        role: "sentinel",
+        content: response.data.answer || "I'm analyzing that for you...",
+        timestamp: new Date().toISOString(),
+        context,
+      };
+      
+      setQaHistory(prev => [...prev, sentinelMessage]);
+      setConversationMemory(prev => [...prev, sentinelMessage].slice(-maxHistory));
+      
+      if (enableVoice && response.data.answer) {
+        speakAnalysis(response.data.answer);
+      }
+      
+      return response.data;
+    } catch (err: any) {
+      const errorMessage: QAMessage = {
+        id: `${Date.now()}-error`,
+        role: "sentinel",
+        content: "I'm having trouble processing your question. Please try again.",
+        timestamp: new Date().toISOString(),
+      };
+      setQaHistory(prev => [...prev, errorMessage]);
+      throw err;
+    } finally {
+      setIsProcessingQA(false);
+    }
+  }, [conversationMemory, data?.risk_score, enableVoice, maxHistory, speakAnalysis]);
+
+  const clearQAHistory = useCallback(() => {
+    setQaHistory([]);
+  }, []);
+
+  // Voice Commands
+  const startVoiceListening = useCallback(() => {
+    if (!("webkitSpeechRecognition" in window) && !("SpeechRecognition" in window)) {
+      console.error("Speech recognition not supported");
+      return;
+    }
+    
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+    
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      const transcript = event.results[0][0].transcript;
+      const confidence = event.results[0][0].confidence;
+
+      
+      const command: VoiceCommand = {
+        command: transcript,
+        action: parseVoiceCommand(transcript),
+        confidence,
+      };
+      
+      setVoiceCommands(prev => [...prev, command].slice(-20));
+      setLastVoiceCommand(command);
+      
+      // Execute command
+      executeVoiceCommand(command);
+    };
+    
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      console.error("Speech recognition error:", event.error);
+      setIsListening(false);
+    };
+
+    
+    recognitionRef.current = recognition;
+    recognition.start();
+  }, []);
+
+  const stopVoiceListening = useCallback(() => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    setIsListening(false);
+  }, []);
+
+  const parseVoiceCommand = (transcript: string): string => {
+    const lower = transcript.toLowerCase();
+    if (lower.includes("what's happening in") || lower.includes("what is happening in")) {
+      return "country_query";
+    }
+    if (lower.includes("show me") && lower.includes("trend")) {
+      return "show_trends";
+    }
+    if (lower.includes("export") || lower.includes("save")) {
+      return "export_analysis";
+    }
+    if (lower.includes("alert") || lower.includes("notify")) {
+      return "set_alert";
+    }
+    if (lower.includes("refresh") || lower.includes("update")) {
+      return "refresh";
+    }
+    return "unknown";
+  };
+
+  const executeVoiceCommand = (command: VoiceCommand) => {
+    switch (command.action) {
+      case "refresh":
+        refresh();
+        break;
+      case "export_analysis":
+        exportAnalysis();
+        break;
+      // Other commands handled by component
+    }
+  };
+
+  // Alert Management
+  const addAlert = useCallback((config: Omit<AlertConfig, "id" | "triggered" | "lastTriggered">) => {
+    const newAlert: AlertConfig = {
+      ...config,
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      triggered: false,
+    };
+    setAlerts(prev => [...prev, newAlert]);
+  }, []);
+
+  const removeAlert = useCallback((id: string) => {
+    setAlerts(prev => prev.filter(a => a.id !== id));
+  }, []);
+
+  const toggleAlert = useCallback((id: string) => {
+    setAlerts(prev => prev.map(a => 
+      a.id === id ? { ...a, enabled: !a.enabled, triggered: false } : a
+    ));
+  }, []);
+
+  const dismissAlert = useCallback((id: string) => {
+    setActiveAlerts(prev => prev.filter(a => a.id !== id));
+    setAlerts(prev => prev.map(a => 
+      a.id === id ? { ...a, triggered: false } : a
+    ));
+  }, []);
+
+  // Export Function
+  const exportAnalysis = useCallback(async (format: "json" | "pdf" = "json") => {
+    if (!data) return null;
+    
+    const exportData = {
+      timestamp: new Date().toISOString(),
+      analysis: data,
+      qa_history: qaHistory,
+      conversation_memory: conversationMemory,
+      export_format: format,
+    };
+    
+    if (format === "json") {
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `sentinel-analysis-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return { success: true, format: "json" };
+    }
+    
+    // PDF export would require additional library
+    return { success: false, format: "pdf", error: "PDF export not implemented" };
+  }, [data, qaHistory, conversationMemory]);
+
+  // Historical Data
+  const fetchHistoricalData = useCallback(async (days: 7 | 30 = 7) => {
+    try {
+      const response = await API.get(`/api/sentinel/history?days=${days}`, {
+        headers: API_HEADERS,
+      });
+      return response.data;
+    } catch (err) {
+      console.error("Failed to fetch historical data:", err);
+      return null;
+    }
+  }, []);
+
+  // Sensitivity
+  const updateSensitivity = useCallback((newSensitivity: "low" | "medium" | "high") => {
+    setSensitivity(newSensitivity);
+  }, []);
+
+  const updateCustomThreshold = useCallback((newThreshold: number) => {
+    setCustomThreshold(newThreshold);
+  }, []);
+
   const dismiss = useCallback(() => {
     setIsActive(false);
-    // Stop any voice synthesis
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
@@ -122,23 +566,6 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     setIsLoading(true);
     fetchSentinelData();
   }, [fetchSentinelData]);
-
-  // Initial fetch and polling
-  useEffect(() => {
-    fetchSentinelData();
-    
-    const interval = setInterval(fetchSentinelData, pollInterval);
-    return () => clearInterval(interval);
-  }, [fetchSentinelData, pollInterval]);
-
-  // Load voices when available
-  useEffect(() => {
-    if (enableVoice && window.speechSynthesis) {
-      window.speechSynthesis.onvoiceschanged = () => {
-        // Voices loaded
-      };
-    }
-  }, [enableVoice]);
 
   const submitFeedback = useCallback(async (feedback: FeedbackData) => {
     try {
@@ -152,6 +579,32 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     }
   }, []);
 
+  // Effects
+  useEffect(() => {
+    fetchSentinelData();
+    
+    // Use WebSocket if enabled, otherwise polling
+    if (!enableWebSocket) {
+      const interval = setInterval(fetchSentinelData, pollInterval);
+      return () => clearInterval(interval);
+    }
+  }, [fetchSentinelData, pollInterval, enableWebSocket]);
+
+  useEffect(() => {
+    if (enableWebSocket) {
+      connectWebSocket();
+      return () => disconnectWebSocket();
+    }
+  }, [enableWebSocket, connectWebSocket, disconnectWebSocket]);
+
+  useEffect(() => {
+    if (enableVoice && window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = () => {
+        // Voices loaded
+      };
+    }
+  }, [enableVoice]);
+
   return {
     data,
     isActive,
@@ -161,8 +614,49 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     dismiss,
     refresh,
     submitFeedback,
+    
+    // Q&A
+    qaHistory,
+    isProcessingQA,
+    askQuestion,
+    clearQAHistory,
+    
+    // WebSocket
+    wsConnected,
+    wsReconnecting,
+    connectWebSocket,
+    disconnectWebSocket,
+    
+    // Voice
+    isListening,
+    voiceCommands,
+    lastVoiceCommand,
+    startVoiceListening,
+    stopVoiceListening,
+    
+    // Alerts
+    alerts,
+    activeAlerts,
+    addAlert,
+    removeAlert,
+    toggleAlert,
+    dismissAlert,
+    
+    // Export
+    exportAnalysis,
+    
+    // Historical
+    fetchHistoricalData,
+    
+    // Sensitivity
+    sensitivity,
+    customThreshold,
+    updateSensitivity,
+    updateCustomThreshold,
+    
+    // Memory
+    conversationMemory,
   };
 }
-
 
 export default useSentinel;
