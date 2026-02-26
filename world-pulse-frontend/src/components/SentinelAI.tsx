@@ -1,11 +1,13 @@
-import { useState, useEffect, useCallback } from "react";
-import { Volume2, VolumeX, Maximize2, Minimize2, Mic } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Volume2, VolumeX, Maximize2, Minimize2, Mic, ThumbsUp, ThumbsDown, Flag } from "lucide-react";
 import TypewriterText from "./TypewriterText";
 import PulseIndicator from "./PulseIndicator";
 import HolographicAvatar from "./HolographicAvatar";
+import MoodIndicator from "./MoodIndicator";
 import useSentinel from "./useSentinel";
 import "./components.css";
 import "./sentinel-hologram.css";
+
 
 interface SentinelAIProps {
   className?: string;
@@ -14,12 +16,16 @@ interface SentinelAIProps {
 export default function SentinelAI({ 
   className = ""
 }: SentinelAIProps) {
-  const { data, isLoading, error, isActive } = useSentinel({ threshold: 0.1 });
+  const { data, isLoading, error, isActive, submitFeedback } = useSentinel({ threshold: 0.1 });
 
   const [expanded, setExpanded] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [showPredictive, setShowPredictive] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [feedbackState, setFeedbackState] = useState<"none" | "important" | "false">("none");
+  const [reactivePulse, setReactivePulse] = useState(false);
+  const prevThreatLevel = useRef<string | null>(null);
+
 
   // Voice synthesis with AI persona
   const speak = useCallback((text: string) => {
@@ -69,6 +75,39 @@ export default function SentinelAI({
     }
   };
 
+  // Reactive expressions - trigger pulse when threat level changes
+  useEffect(() => {
+    if (data?.threat_level && prevThreatLevel.current !== null) {
+      if (prevThreatLevel.current !== data.threat_level) {
+        setReactivePulse(true);
+        const timer = setTimeout(() => setReactivePulse(false), 800);
+        return () => clearTimeout(timer);
+      }
+    }
+    prevThreatLevel.current = data?.threat_level || null;
+  }, [data?.threat_level]);
+
+  // Handle feedback submission
+  const handleFeedback = async (type: "important" | "false") => {
+    if (!data) return;
+    
+    setFeedbackState(type);
+    
+    if (submitFeedback) {
+      await submitFeedback({
+        eventId: data.timestamp,
+        feedbackType: type,
+        threatLevel: data.threat_level,
+        riskScore: data.risk_score,
+        timestamp: new Date().toISOString(),
+      });
+    }
+    
+    // Reset after 3 seconds
+    setTimeout(() => setFeedbackState("none"), 3000);
+  };
+
+
   if (isLoading) {
     return (
       <div className={`sentinel-hologram ${className}`}>
@@ -88,7 +127,16 @@ export default function SentinelAI({
 
   return (
     <>
-      <div className={`sentinel-hologram ${isActive ? "active" : ""} ${className}`}>
+      <div className={`sentinel-hologram ${isActive ? "active" : ""} ${reactivePulse ? "reactive-pulse" : ""} ${className}`}>
+        {/* Mood Indicator - Holographic Badge */}
+        <div className="mood-indicator-container" style={{ marginBottom: "8px" }}>
+          <MoodIndicator 
+            threatLevel={data.threat_level} 
+            size="medium"
+            showAnimation={true}
+          />
+        </div>
+
         {/* Holographic Avatar - JARVIS Style */}
         <div className="hologram-container">
           <HolographicAvatar 
@@ -103,6 +151,7 @@ export default function SentinelAI({
             </div>
           )}
         </div>
+
 
         {/* Analysis Panel */}
         <div 
@@ -168,8 +217,40 @@ export default function SentinelAI({
           >
             {showPredictive ? "Hide Outlook" : "Show Outlook"}
           </button>
+
+          {/* Learning Feedback Loop */}
+          <div className="feedback-panel">
+            <div className="feedback-header">
+              <Flag size={12} />
+              <span>Was this analysis helpful?</span>
+            </div>
+            <div className="feedback-buttons">
+              <button
+                className={`feedback-btn ${feedbackState === "important" ? "active-important" : ""}`}
+                onClick={() => handleFeedback("important")}
+                disabled={feedbackState !== "none"}
+              >
+                <ThumbsUp size={14} />
+                Important
+              </button>
+              <button
+                className={`feedback-btn ${feedbackState === "false" ? "active-false" : ""}`}
+                onClick={() => handleFeedback("false")}
+                disabled={feedbackState !== "none"}
+              >
+                <ThumbsDown size={14} />
+                False Alert
+              </button>
+            </div>
+            {feedbackState !== "none" && (
+              <div className="feedback-status">
+                Feedback recorded. Sentinel AI will learn from this input.
+              </div>
+            )}
+          </div>
         </div>
       </div>
+
 
       {/* Expanded Modal */}
       {expanded && (

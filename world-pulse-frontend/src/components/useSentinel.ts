@@ -20,6 +20,16 @@ export interface SentinelData {
   analysis_text: string;
 }
 
+export interface FeedbackData {
+  eventId: string;
+  feedbackType: "important" | "false";
+  threatLevel: string;
+  riskScore: number;
+  timestamp: string;
+  notes?: string;
+}
+
+
 interface UseSentinelOptions {
   threshold?: number; // Risk delta threshold to trigger activation
   pollInterval?: number; // Polling interval in ms
@@ -130,6 +140,18 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     }
   }, [enableVoice]);
 
+  const submitFeedback = useCallback(async (feedback: FeedbackData) => {
+    try {
+      await API.post("/api/sentinel/feedback", feedback, {
+        headers: API_HEADERS,
+      });
+      return true;
+    } catch (err) {
+      console.error("Failed to submit feedback:", err);
+      return false;
+    }
+  }, []);
+
   return {
     data,
     isActive,
@@ -138,7 +160,9 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     lastUpdate,
     dismiss,
     refresh,
+    submitFeedback,
   };
 }
+
 
 export default useSentinel;

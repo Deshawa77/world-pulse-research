@@ -8,6 +8,11 @@ import EventLog, { type OperatorEvent } from "../components/EventLog";
 import ModelGovernance from "../components/ModelGovernance";
 import AdvancedStreamingTrends from "../components/AdvancedStreamingTrends";
 import SentinelAI from "../components/SentinelAI";
+import DataBurstModal from "../components/DataBurstModal";
+import LiveDataStreams from "../components/LiveDataStreams";
+import SystemMetrics from "../components/SystemMetrics";
+
+
 import API, {
   API_HEADERS,
   getCountryDrilldown,
@@ -112,7 +117,11 @@ export default function Dashboard() {
   const [countryLoading, setCountryLoading] = useState(false);
   const [operatorEvents, setOperatorEvents] = useState<OperatorEvent[]>(() => readJson(EVENTS_KEY, [] as OperatorEvent[]));
   const [mapHover, setMapHover] = useState<{ country: string; risk: number } | null>(null);
+  const [dataBurstOpen, setDataBurstOpen] = useState(false);
+  const [dataBurstCountry, setDataBurstCountry] = useState<string>("");
+  const [dataBurstRisk, setDataBurstRisk] = useState<number>(0);
   const [errorText, setErrorText] = useState("");
+
   const [lastKnownGood, setLastKnownGood] = useState<Snapshot | null>(null);
   const [retries, setRetries] = useState(0);
   const [activePreset, setActivePreset] = useState<"analyst" | "ops" | "executive">("analyst");
@@ -402,8 +411,13 @@ export default function Dashboard() {
           (mapRef.current as any).on?.("plotly_click", (e: any) => {
             const p = e?.points?.[0];
             if (!p?.location) return;
-            setSelectedCountry(String(p.location));
+            const country = String(p.location);
+            const risk = Number(p.z);
+            setDataBurstCountry(country);
+            setDataBurstRisk(risk);
+            setDataBurstOpen(true);
           });
+
           (mapRef.current as any).on?.("plotly_unhover", () => setMapHover(null));
         }
       } catch {
@@ -558,18 +572,33 @@ export default function Dashboard() {
           </div>
           {panelStale.map ? <div className="panel-stale">stale</div> : null}
           <div className="map-sentinel-container" style={{ display: "flex", gap: "16px", height: "100%" }}>
-            <div className="wp-map-surface map-surface-advanced" style={{ flex: 2 }}>
+            <div className="wp-map-surface map-surface-advanced" style={{ flex: 2, position: "relative" }}>
+              {/* Live Data Streams - Background Effect */}
+              <div style={{ position: "absolute", inset: 0, zIndex: 0, opacity: 0.6 }}>
+                <LiveDataStreams 
+                  isActive={true} 
+                  threatLevel={active && active.score > 75 ? "critical" : active && active.score > 50 ? "elevated" : "stable"}
+                  streamCount={5}
+                />
+              </div>
 
-              <div ref={mapRef} className="echart-map" />
+              <div ref={mapRef} className="echart-map" style={{ position: "relative", zIndex: 1 }} />
               {mapHover ? (
-                <div className="map-hover-box">
-                  <strong>{mapHover.country}</strong>
-                  <span>Risk {mapHover.risk.toFixed(1)}</span>
+                <div className="map-hover-box map-hover-card">
+                  <strong className="map-hover-title">{mapHover.country}</strong>
+                  <span className="map-hover-risk">Risk Score: {mapHover.risk.toFixed(1)}</span>
                 </div>
               ) : null}
-              <p style={{ marginTop: 8, fontSize: 12, color: "#888" }}>Click country on map for drilldown.</p>
+              <p style={{ marginTop: 8, fontSize: 12, color: "#888", position: "relative", zIndex: 1 }}>Click country for deep dive analysis.</p>
+              
+              {/* System Metrics - CPU, Memory, WiFi, GPU */}
+              <div style={{ marginTop: "12px", position: "relative", zIndex: 1 }}>
+                <SystemMetrics />
+              </div>
             </div>
+
             <div className="sentinel-advanced-container" style={{ flex: 1, minWidth: 280, maxWidth: 350 }}>
+
               <SentinelAI />
             </div>
 
@@ -655,6 +684,35 @@ export default function Dashboard() {
           void addEvent("assign", comment, owner);
         }}
       />
+
+      {/* Data Burst Modal - Click-activated Deep Dive */}
+      <DataBurstModal
+        isOpen={dataBurstOpen}
+        onClose={() => setDataBurstOpen(false)}
+        region={dataBurstCountry}
+        riskScore={dataBurstRisk}
+        threatLevel={dataBurstRisk > 75 ? "critical" : dataBurstRisk > 50 ? "elevated" : dataBurstRisk > 25 ? "guarded" : "stable"}
+        countryData={{
+          alerts: [
+            { id: "1", title: "Geopolitical tension rising", severity: "high", timestamp: new Date().toISOString(), source: "GDELT" },
+            { id: "2", title: "Market volatility detected", severity: "medium", timestamp: new Date().toISOString(), source: "Financial" },
+          ],
+          news: [
+            { id: "1", headline: "Regional stability concerns emerge", sentiment: -0.4, source: "Reuters", timestamp: new Date().toISOString() },
+            { id: "2", headline: "Economic indicators show mixed signals", sentiment: 0.1, source: "Bloomberg", timestamp: new Date().toISOString() },
+          ],
+          metrics: {
+            riskHistory: Array.from({ length: 24 }, (_, i) => ({
+              timestamp: new Date(Date.now() - i * 3600000).toISOString(),
+              value: Math.max(0, Math.min(100, dataBurstRisk + (Math.random() - 0.5) * 20)),
+            })).reverse(),
+            sentimentTrend: [],
+            volatilityIndex: Math.random() * 0.5 + 0.2,
+            eventCount: Math.floor(Math.random() * 10) + 1,
+          },
+        }}
+      />
+
 
       {/* Sentinel AI Toggle Button */}
       <button
