@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+
 import { useNavigate } from "react-router-dom";
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
@@ -12,6 +13,12 @@ import SentinelAI from "../components/SentinelAI";
 import DataBurstModal from "../components/DataBurstModal";
 import LiveDataStreams from "../components/LiveDataStreams";
 import GlobalIntelligenceFeed from "../components/GlobalIntelligenceFeed";
+import CryptoMarketPulse from "../components/CryptoMarketPulse";
+import GlobalDisasterMonitor from "../components/GlobalDisasterMonitor";
+import EconomicIndicatorsFeed from "../components/EconomicIndicatorsFeed";
+import HealthAlertStream from "../components/HealthAlertStream";
+import GoogleTrendsRadar from "../components/GoogleTrendsRadar";
+
 
 import API, {
 
@@ -644,69 +651,131 @@ export default function Dashboard() {
       </section>
 
 
-      {/* Bottom Section: Streaming Trends, Operator Workflow, Model Governance */}
-      <section className="dashboard-grid-layout">
-        {/* Streaming Trends */}
-        <article className={`wp-card panel-frame streaming-trends-panel ${fpsLow ? "" : "panel-animated"}`} style={{ gridColumn: "span 2", minHeight: "420px" }}>
-          <div className="panel-head futuristic-panel-header">
-            <div className="header-glow"></div>
+      {/* Real-Time Intelligence Grid - 2 Columns */}
+      <section style={{ margin: "16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+        {/* Crypto Market Pulse */}
+        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "500px", display: "flex", flexDirection: "column" }}>
+
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(245,158,11,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(245,158,11,0.4) 0%, transparent 70%)" }}></div>
             <h3>
-              <span className="header-icon">◈</span>
-              Neural Stream Analytics
-              <span className="header-badge">LIVE</span>
+              <span className="header-icon">₿</span>
+              Crypto Market Pulse
+              <span className="header-badge" style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.4)" }}>LIVE</span>
             </h3>
-            {panelStale.stream ? <div className="panel-stale">stale</div> : null}
           </div>
-          <AdvancedStreamingTrends 
-            title="Multi-Dimensional Risk Stream" 
-            series={streamingSeries} 
-            anomalies={anomalyMarks} 
-            thresholdBand={{ low: 35, high: 75 }}
-            height={380}
-            showLegend={true}
-            animated={!fpsLow}
-          />
-          <div className="streaming-topics-bar">
-            <span className="topics-label">Active Intelligence Topics:</span>
-            <div className="topics-chips">
-              {topTopics.map((topic, i) => (
-                <span key={i} className="topic-chip" style={{ animationDelay: `${i * 0.1}s` }}>
-                  {topic}
-                </span>
-              ))}
-              {topTopics.length === 0 && <span className="topic-chip empty">Scanning...</span>}
-            </div>
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            <CryptoMarketPulse maxItems={5} refreshInterval={15000} />
           </div>
         </article>
 
-        {/* Operator Workflow */}
-        <article className={`wp-card panel-frame operator-panel ${fpsLow ? "" : "panel-animated"}`}>
-          <div className="panel-head futuristic-panel-header">
-            <div className="header-glow orange"></div>
+        {/* Global Disaster Monitor */}
+        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "500px", display: "flex", flexDirection: "column" }}>
+
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(239,68,68,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(239,68,68,0.4) 0%, transparent 70%)" }}></div>
             <h3>
-              <span className="header-icon">⚡</span>
-              Operator Workflow
-              <span className="header-badge">OPS</span>
+              <span className="header-icon">🌋</span>
+              Global Disaster Monitor
+              <span className="header-badge" style={{ background: "rgba(239,68,68,0.2)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.4)" }}>LIVE</span>
             </h3>
           </div>
-          {panelStale.ops ? <div className="panel-stale">stale</div> : null}
-          <EventLog events={operatorEvents} />
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            <GlobalDisasterMonitor maxItems={6} refreshInterval={20000} />
+          </div>
         </article>
 
+        {/* Economic Indicators Feed */}
+        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "500px", display: "flex", flexDirection: "column" }}>
+
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(34,197,94,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(34,197,94,0.4) 0%, transparent 70%)" }}></div>
+            <h3>
+              <span className="header-icon">📊</span>
+              Economic Indicators
+              <span className="header-badge" style={{ background: "rgba(34,197,94,0.2)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.4)" }}>LIVE</span>
+            </h3>
+          </div>
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            <EconomicIndicatorsFeed refreshInterval={30000} />
+          </div>
+        </article>
+
+        {/* Health Alert Stream */}
+        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "500px", display: "flex", flexDirection: "column" }}>
+
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(236,72,153,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(236,72,153,0.4) 0%, transparent 70%)" }}></div>
+            <h3>
+              <span className="header-icon">🏥</span>
+              Health Alert Stream
+              <span className="header-badge" style={{ background: "rgba(236,72,153,0.2)", color: "#ec4899", border: "1px solid rgba(236,72,153,0.4)" }}>LIVE</span>
+            </h3>
+          </div>
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            <HealthAlertStream maxItems={6} refreshInterval={25000} />
+          </div>
+        </article>
+
+        {/* Google Trends Radar - Full Width */}
+        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "500px", display: "flex", flexDirection: "column", gridColumn: "span 2" }}>
+
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(139,92,246,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(139,92,246,0.4) 0%, transparent 70%)" }}></div>
+            <h3>
+              <span className="header-icon">📈</span>
+              Google Trends Radar
+              <span className="header-badge" style={{ background: "rgba(139,92,246,0.2)", color: "#8b5cf6", border: "1px solid rgba(139,92,246,0.4)" }}>LIVE</span>
+            </h3>
+          </div>
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            <GoogleTrendsRadar maxItems={8} refreshInterval={30000} />
+          </div>
+        </article>
+      </section>
+
+      {/* Model Governance - 2 Column Grid */}
+      <section style={{ margin: "0 16px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
         {/* Model Governance */}
-        <article className={`wp-card panel-frame governance-panel ${fpsLow ? "" : "panel-animated"}`}>
-          <div className="panel-head futuristic-panel-header">
-            <div className="header-glow purple"></div>
+        <article className={`wp-card panel-frame governance-panel ${fpsLow ? "" : "panel-animated"}`} style={{ height: "850px", display: "flex", flexDirection: "column", gridColumn: "span 2" }}>
+
+
+
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(168,85,247,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(168,85,247,0.4) 0%, transparent 70%)" }}></div>
             <h3>
               <span className="header-icon">◈</span>
               Model Governance
-              <span className="header-badge">AI</span>
+              <span className="header-badge" style={{ background: "rgba(168,85,247,0.2)", color: "#a855f7", border: "1px solid rgba(168,85,247,0.4)" }}>AI</span>
             </h3>
           </div>
-          {panelStale.governance ? <div className="panel-stale">stale</div> : null}
-          <ModelGovernance data={governance} />
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            {panelStale.governance ? <div className="panel-stale">stale</div> : null}
+            <ModelGovernance data={governance} />
+          </div>
         </article>
       </section>
+
+      {/* Operator Workflow - Full Width */}
+      <section style={{ margin: "0 16px 16px" }}>
+        <article className={`wp-card panel-frame operator-panel ${fpsLow ? "" : "panel-animated"}`} style={{ height: "350px", display: "flex", flexDirection: "column" }}>
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(249,115,22,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(249,115,22,0.4) 0%, transparent 70%)" }}></div>
+            <h3>
+              <span className="header-icon">⚡</span>
+              Operator Workflow
+              <span className="header-badge" style={{ background: "rgba(249,115,22,0.2)", color: "#f97316", border: "1px solid rgba(249,115,22,0.4)" }}>OPS</span>
+            </h3>
+          </div>
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            {panelStale.ops ? <div className="panel-stale">stale</div> : null}
+            <EventLog events={operatorEvents} />
+          </div>
+        </article>
+      </section>
+
+
+
 
       <CountryDrilldown
         open={Boolean(selectedCountry)}

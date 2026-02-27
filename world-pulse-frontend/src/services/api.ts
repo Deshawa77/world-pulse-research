@@ -200,4 +200,177 @@ export async function getSentinelData(): Promise<SentinelData> {
   return res.data as SentinelData;
 }
 
+// =====================================================
+// REAL-TIME FEATURES API
+// =====================================================
+
+export type CryptoItem = {
+  id: string;
+  coin_id: string;
+  name: string;
+  symbol: string;
+  price_usd: number;
+  change_24h: number;
+  change_percent: number;
+  volume_24h: number;
+  market_cap: number;
+  timestamp: string;
+  sparkline: number[];
+};
+
+export type CryptoPulseData = {
+  items: CryptoItem[];
+  last_updated: string;
+  total_count: number;
+};
+
+export type DisasterItem = {
+  id: string;
+  type: "earthquake" | "weather";
+  title: string;
+  location: string;
+  coordinates?: {
+    lat: number;
+    lon: number;
+  };
+  magnitude?: number;
+  severity: "critical" | "elevated" | "guarded";
+  depth_km?: number;
+  tsunami_risk?: boolean;
+  description?: string;
+  temperature?: number;
+  wind_speed?: number;
+  timestamp: string;
+  source: string;
+};
+
+export type DisasterMonitorData = {
+  items: DisasterItem[];
+  last_updated: string;
+  total_count: number;
+};
+
+export type CurrencyRate = {
+  pair: string;
+  rate: number;
+  change_24h: number;
+  change_percent: number;
+};
+
+export type EconomicRelease = {
+  id: string;
+  indicator: string;
+  value: number;
+  date: string;
+  timestamp: string;
+};
+
+export type KeyIndicator = {
+  value: number;
+  change: number;
+  source: string;
+};
+
+export type EconomicIndicatorsData = {
+  currency_rates: CurrencyRate[];
+  economic_releases: EconomicRelease[];
+  key_indicators: {
+    interest_rate: KeyIndicator;
+    inflation_rate: KeyIndicator;
+    unemployment: KeyIndicator;
+  };
+  last_updated: string;
+};
+
+export type HealthAlert = {
+  id: string;
+  disease: string;
+  type: string;
+  severity: "critical" | "elevated" | "guarded";
+  location: string;
+  cases: number;
+  deaths: number;
+  status: "active" | "monitoring";
+  timestamp: string;
+  source: string;
+  description: string;
+};
+
+export type VaccinationData = {
+  global_coverage: number;
+  target_coverage: number;
+  doses_administered: number;
+  campaigns_active: number;
+};
+
+export type HealthAlertsData = {
+  outbreaks: HealthAlert[];
+  vaccination: VaccinationData;
+  last_updated: string;
+  total_active: number;
+};
+
+export type TrendItem = {
+  id: string;
+  topic: string;
+  category: string;
+  search_volume: number;
+  interest_score: number;
+  velocity: number;
+  trend_direction: "rising" | "stable" | "falling";
+  breakout: boolean;
+  timestamp: string;
+  related_queries: string[];
+};
+
+export type TrendsSummary = {
+  total_trending: number;
+  rising_topics: number;
+  breakout_topics: number;
+  top_category: string;
+};
+
+export type TrendsRadarData = {
+  trends: TrendItem[];
+  summary: TrendsSummary;
+  last_updated: string;
+};
+
+export async function getCryptoPulse(limit: number = 10): Promise<CryptoPulseData> {
+  const res = await API.get("/dashboard/crypto-pulse", { 
+    headers: API_HEADERS, 
+    params: { limit } 
+  });
+  return res.data as CryptoPulseData;
+}
+
+export async function getDisasterMonitor(limit: number = 20): Promise<DisasterMonitorData> {
+  const res = await API.get("/dashboard/disaster-monitor", { 
+    headers: API_HEADERS, 
+    params: { limit } 
+  });
+  return res.data as DisasterMonitorData;
+}
+
+export async function getEconomicIndicators(): Promise<EconomicIndicatorsData> {
+  const res = await API.get("/dashboard/economic-indicators", { headers: API_HEADERS });
+  return res.data as EconomicIndicatorsData;
+}
+
+export async function getHealthAlerts(limit: number = 10): Promise<HealthAlertsData> {
+  const res = await API.get("/dashboard/health-alerts", { 
+    headers: API_HEADERS, 
+    params: { limit } 
+  });
+  return res.data as HealthAlertsData;
+}
+
+export async function getTrendsRadar(limit: number = 20): Promise<TrendsRadarData> {
+  const res = await API.get("/dashboard/trends-radar", { 
+    headers: API_HEADERS, 
+    params: { limit } 
+  });
+  return res.data as TrendsRadarData;
+}
+
 export default API;
