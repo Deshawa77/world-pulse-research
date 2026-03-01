@@ -373,4 +373,90 @@ export async function getTrendsRadar(limit: number = 20): Promise<TrendsRadarDat
   return res.data as TrendsRadarData;
 }
 
+// =====================================================
+// ADVANCED ANALYTICS API
+// =====================================================
+
+export type MLPrediction = {
+  horizon: string;
+  risk_score: number;
+  confidence: number;
+};
+
+export type MLPredictionsData = {
+  predictions: MLPrediction[];
+  model_type: string;
+};
+
+export type AnomalyData = {
+  timestamp: string;
+  anomaly_score: number;
+  features: Record<string, number>;
+  severity: "low" | "medium" | "high" | "critical";
+};
+
+export type CausalLink = {
+  source: string;
+  target: string;
+  strength: number;
+};
+
+export type SentimentMomentumData = {
+  velocity: number;
+  acceleration: number;
+  trend: "accelerating" | "decelerating" | "stable";
+  rsi: number;
+  macd_signal: string;
+};
+
+export type AIReportData = {
+  title: string;
+  summary: string;
+  key_findings: string[];
+  recommendations: string[];
+  risk_level: string;
+};
+
+export type AdvancedInsightsData = {
+  timestamp: string;
+  predictions: MLPredictionsData;
+  anomalies: AnomalyData[];
+  causal_graph: CausalLink[];
+  sentiment_momentum: SentimentMomentumData;
+  ai_report: AIReportData;
+};
+
+export async function getMLPredictions(): Promise<MLPredictionsData> {
+  const res = await API.get("/analytics/advanced/ml-predictions", { headers: API_HEADERS });
+  return res.data as MLPredictionsData;
+}
+
+export async function getAnomalies(): Promise<AnomalyData[]> {
+  const res = await API.get("/analytics/advanced/anomalies", { headers: API_HEADERS });
+  return res.data as AnomalyData[];
+}
+
+export async function getCausalGraph(): Promise<CausalLink[]> {
+  const res = await API.get("/analytics/advanced/causal", { headers: API_HEADERS });
+  return res.data as CausalLink[];
+}
+
+export async function getSentimentMomentum(): Promise<SentimentMomentumData> {
+  const res = await API.get("/analytics/advanced/sentiment-momentum", { headers: API_HEADERS });
+  return res.data as SentimentMomentumData;
+}
+
+export async function getAIReport(reportType: string = "brief"): Promise<AIReportData> {
+  const res = await API.get("/analytics/advanced/report", { 
+    headers: API_HEADERS,
+    params: { report_type: reportType }
+  });
+  return res.data as AIReportData;
+}
+
+export async function getAdvancedInsights(): Promise<AdvancedInsightsData> {
+  const res = await API.get("/analytics/advanced/insights", { headers: API_HEADERS });
+  return res.data as AdvancedInsightsData;
+}
+
 export default API;

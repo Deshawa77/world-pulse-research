@@ -18,6 +18,7 @@ import GlobalDisasterMonitor from "../components/GlobalDisasterMonitor";
 import EconomicIndicatorsFeed from "../components/EconomicIndicatorsFeed";
 import HealthAlertStream from "../components/HealthAlertStream";
 import GoogleTrendsRadar from "../components/GoogleTrendsRadar";
+import AdvancedAnalyticsPanel from "../components/AdvancedAnalyticsPanel";
 
 
 import API, {
@@ -770,6 +771,23 @@ export default function Dashboard() {
           <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
             {panelStale.ops ? <div className="panel-stale">stale</div> : null}
             <EventLog events={operatorEvents} />
+          </div>
+        </article>
+      </section>
+
+      {/* Advanced Analytics Panel - Full Width */}
+      <section style={{ margin: "0 16px 16px" }}>
+        <article className={`wp-card panel-frame advanced-analytics-panel ${fpsLow ? "" : "panel-animated"}`} style={{ display: "flex", flexDirection: "column" }}>
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(0,212,255,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(0,212,255,0.4) 0%, transparent 70%)" }}></div>
+            <h3>
+              <span className="header-icon">🔮</span>
+              Advanced Analytics
+              <span className="header-badge" style={{ background: "rgba(0,212,255,0.2)", color: "#00d4ff", border: "1px solid rgba(0,212,255,0.4)" }}>ML</span>
+            </h3>
+          </div>
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            <AdvancedAnalyticsPanel />
           </div>
         </article>
       </section>

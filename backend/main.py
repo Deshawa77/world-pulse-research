@@ -1891,7 +1891,102 @@ async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(...)):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-        # =====================================================
+
+# =====================================================
+# ADVANCED ML FEATURES ENDPOINTS
+# =====================================================
+
+@app.get("/analytics/advanced/ml-predictions")
+@limiter.limit("10/minute")
+def analytics_ml_predictions(request: Request, role: str = Depends(check_role)):
+    """
+    Get LSTM/Transformer multi-step ahead predictions (1h, 6h, 24h, 7d horizons)
+    """
+    try:
+        from machine_learning.lstm_predictor import get_lstm_predictions
+        predictions = get_lstm_predictions()
+        return predictions
+    except Exception as e:
+        logger.error(f"ML predictions failed: {e}")
+        raise HTTPException(status_code=500, detail=f"ML predictions error: {str(e)}")
+
+
+@app.get("/analytics/advanced/anomalies")
+@limiter.limit("10/minute")
+def analytics_anomalies(request: Request, role: str = Depends(check_role)):
+    """
+    Get autoencoder-based anomaly detection results
+    """
+    try:
+        from machine_learning.anomaly_detector import detect_anomalies_api
+        anomalies = detect_anomalies_api()
+        return anomalies
+    except Exception as e:
+        logger.error(f"Anomaly detection failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Anomaly detection error: {str(e)}")
+
+
+@app.get("/analytics/advanced/causal")
+@limiter.limit("10/minute")
+def analytics_causal(request: Request, role: str = Depends(check_role)):
+    """
+    Get causal inference / causal discovery results
+    """
+    try:
+        from machine_learning.causal_discovery import discover_causal_structure
+        causal = discover_causal_structure()
+        return causal
+    except Exception as e:
+        logger.error(f"Causal discovery failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Causal discovery error: {str(e)}")
+
+
+@app.get("/analytics/advanced/report")
+@limiter.limit("10/minute")
+def analytics_report(request: Request, role: str = Depends(check_role), report_type: str = Query("brief")):
+    """
+    Generate AI-powered crisis reports (brief, detailed, executive, comparison)
+    """
+    try:
+        from processing.ai_report_generator import generate_report_api
+        report = generate_report_api(report_type=report_type)
+        return report
+    except Exception as e:
+        logger.error(f"Report generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Report generation error: {str(e)}")
+
+
+@app.get("/analytics/advanced/sentiment-momentum")
+@limiter.limit("10/minute")
+def analytics_sentiment_momentum(request: Request, role: str = Depends(check_role)):
+    """
+    Get sentiment trend analysis with momentum indicators
+    """
+    try:
+        from processing.sentiment_momentum import analyze_sentiment_momentum
+        momentum = analyze_sentiment_momentum()
+        return momentum
+    except Exception as e:
+        logger.error(f"Sentiment momentum analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Sentiment momentum error: {str(e)}")
+
+
+@app.get("/analytics/advanced/insights")
+@limiter.limit("10/minute")
+def analytics_advanced_insights(request: Request, role: str = Depends(check_role)):
+    """
+    Get unified advanced analytics insights combining all 5 ML features
+    """
+    try:
+        from machine_learning.advanced_analytics import run_advanced_analytics
+        insights = run_advanced_analytics()
+        return insights
+    except Exception as e:
+        logger.error(f"Advanced analytics failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Advanced analytics error: {str(e)}")
+
+
+# =====================================================
 # STARTUP TEST USERS (ADD AT VERY BOTTOM OF FILE)
 # =====================================================
 
