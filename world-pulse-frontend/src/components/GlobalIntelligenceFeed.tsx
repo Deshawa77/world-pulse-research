@@ -157,61 +157,72 @@ export default function GlobalIntelligenceFeed({
 
         {/* Feed Rows */}
         <div style={feedContainerStyle}>
-          {feedItems.map((item, index) => (
-            <div
-              key={item.id}
-              onClick={() => handleRowClick(item)}
-              style={{
-                ...rowStyle,
-                ...(animatingItems.has(item.id) ? animatingRowStyle : {}),
-                animationDelay: `${index * 200}ms`,
-                borderLeftColor: getRiskColor(item.risk_score),
-              }}
-              className="intelligence-row"
-            >
-              {/* Country Flag & Code */}
-              <div style={countrySectionStyle}>
-                <div style={flagContainerStyle}>
-                  <span style={flagStyle}>{getCountryFlag(item.country)}</span>
+          {feedItems.map((item, index) => {
+            const isAnimating = animatingItems.has(item.id);
+            const delay = `${index * 200}ms`;
+            
+            // Combine animation with delay inline when animating to avoid React conflict
+            const rowAnimationStyle: React.CSSProperties = isAnimating
+              ? {
+                  animation: `hologramPop 0.6s ${delay} cubic-bezier(0.34, 1.56, 0.64, 1) forwards, glowPulse 2s ${delay} ease-in-out`,
+                }
+              : {};
+            
+            return (
+              <div
+                key={item.id}
+                onClick={() => handleRowClick(item)}
+                style={{
+                  ...rowStyle,
+                  ...(isAnimating ? rowAnimationStyle : {}),
+                  borderLeftColor: getRiskColor(item.risk_score),
+                }}
+                className="intelligence-row"
+              >
+                {/* Country Flag & Code */}
+                <div style={countrySectionStyle}>
+                  <div style={flagContainerStyle}>
+                    <span style={flagStyle}>{getCountryFlag(item.country)}</span>
+                  </div>
+                  <div style={countryInfoStyle}>
+                    <span style={countryCodeStyle}>{item.country}</span>
+                    <span style={countryNameStyle}>{item.country_name}</span>
+                  </div>
                 </div>
-                <div style={countryInfoStyle}>
-                  <span style={countryCodeStyle}>{item.country}</span>
-                  <span style={countryNameStyle}>{item.country_name}</span>
-                </div>
-              </div>
 
-              {/* News Content */}
-              <div style={contentSectionStyle}>
-                <div style={headlineStyle}>
-                  <span style={categoryIconStyle} title={item.category}>
-                    {categoryIcons[item.category] || <Newspaper className="w-4 h-4" />}
-                  </span>
-                  <span style={headlineTextStyle}>{item.headline}</span>
+                {/* News Content */}
+                <div style={contentSectionStyle}>
+                  <div style={headlineStyle}>
+                    <span style={categoryIconStyle} title={item.category}>
+                      {categoryIcons[item.category] || <Newspaper className="w-4 h-4" />}
+                    </span>
+                    <span style={headlineTextStyle}>{item.headline}</span>
+                  </div>
+                  <p style={summaryStyle}>{item.summary}</p>
                 </div>
-                <p style={summaryStyle}>{item.summary}</p>
-              </div>
 
-              {/* Meta Info */}
-              <div style={metaSectionStyle}>
-                <div style={riskBadgeStyle(getRiskColor(item.risk_score))}>
-                  <span style={riskScoreStyle}>{Math.round(item.risk_score)}</span>
-                  <span style={riskLabelStyle}>{getRiskLabel(item.risk_score)}</span>
+                {/* Meta Info */}
+                <div style={metaSectionStyle}>
+                  <div style={riskBadgeStyle(getRiskColor(item.risk_score))}>
+                    <span style={riskScoreStyle}>{Math.round(item.risk_score)}</span>
+                    <span style={riskLabelStyle}>{getRiskLabel(item.risk_score)}</span>
+                  </div>
+                  <div style={timeStyle}>
+                    <Clock className="w-3 h-3" />
+                    <span>{formatTime(item.timestamp)}</span>
+                  </div>
+                  <div style={sourceStyle}>
+                    <span>via {item.source}</span>
+                  </div>
                 </div>
-                <div style={timeStyle}>
-                  <Clock className="w-3 h-3" />
-                  <span>{formatTime(item.timestamp)}</span>
-                </div>
-                <div style={sourceStyle}>
-                  <span>via {item.source}</span>
-                </div>
-              </div>
 
-              {/* Click Indicator */}
-              <div style={clickIndicatorStyle}>
-                <ChevronRight className="w-4 h-4" />
+                {/* Click Indicator */}
+                <div style={clickIndicatorStyle}>
+                  <ChevronRight className="w-4 h-4" />
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Footer */}

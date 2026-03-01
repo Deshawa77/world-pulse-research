@@ -19,6 +19,11 @@ import EconomicIndicatorsFeed from "../components/EconomicIndicatorsFeed";
 import HealthAlertStream from "../components/HealthAlertStream";
 import GoogleTrendsRadar from "../components/GoogleTrendsRadar";
 import AdvancedAnalyticsPanel from "../components/AdvancedAnalyticsPanel";
+import RiskCorrelationMatrix from "../components/RiskCorrelationMatrix";
+import SentimentTrendAnalyzer from "../components/SentimentTrendAnalyzer";
+import WorldGlobe3D from "../components/WorldGlobe3D";
+import HistoricalPlayback from "../components/HistoricalPlayback";
+import CountryComparison from "../components/CountryComparison";
 
 
 import API, {
@@ -792,8 +797,52 @@ export default function Dashboard() {
         </article>
       </section>
 
+      {/* Visualization Enhancements - 2x2 Grid */}
+      <section style={{ margin: "0 16px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+        {/* 3D WebGL Globe */}
+        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "550px", display: "flex", flexDirection: "column" }}>
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(0,212,255,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(0,212,255,0.4) 0%, transparent 70%)" }}></div>
+            <h3><span className="header-icon">🌐</span>3D Risk Globe<span className="header-badge" style={{ background: "rgba(0,212,255,0.2)", color: "#00d4ff" }}>WEBGL</span></h3>
+          </div>
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            <WorldGlobe3D data={riskMap.map(r => ({ country: r.country, countryCode: r.country, risk: r.risk, lat: 0, lng: 0 }))} autoRotate={true} height={480} />
+          </div>
+        </article>
 
+        {/* Risk Correlation Matrix */}
+        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "550px", display: "flex", flexDirection: "column" }}>
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(168,85,247,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(168,85,247,0.4) 0%, transparent 70%)" }}></div>
+            <h3><span className="header-icon">🔗</span>Correlation Matrix<span className="header-badge" style={{ background: "rgba(168,85,247,0.2)", color: "#a855f7" }}>ML</span></h3>
+          </div>
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            <RiskCorrelationMatrix data={history.map(h => ({ features: { news_sentiment: h.features.news_sentiment, gdelt_sentiment: h.features.gdelt_sentiment, crypto_return: h.features.crypto_return, crypto_volatility: h.features.crypto_volatility, stock_return: h.features.stock_return, stock_volatility: h.features.stock_volatility, weather_anomaly: h.features.weather_anomaly, global_risk_score: h.score }, timestamp: h.timestamp }))} height={480} />
+          </div>
+        </article>
 
+        {/* Historical Playback */}
+        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "550px", display: "flex", flexDirection: "column" }}>
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(245,158,11,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(245,158,11,0.4) 0%, transparent 70%)" }}></div>
+            <h3><span className="header-icon">⏮️</span>Historical Playback<span className="header-badge" style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}>TIME</span></h3>
+          </div>
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            <HistoricalPlayback data={history} height={480} />
+          </div>
+        </article>
+
+        {/* Country Comparison */}
+        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "550px", display: "flex", flexDirection: "column" }}>
+          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(34,197,94,0.3)" }}>
+            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(34,197,94,0.4) 0%, transparent 70%)" }}></div>
+            <h3><span className="header-icon">⚖️</span>Country Comparison<span className="header-badge" style={{ background: "rgba(34,197,94,0.2)", color: "#22c55e" }}>COMPARE</span></h3>
+          </div>
+          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+            <CountryComparison countries={riskMap.map(r => ({ country: r.country, countryCode: r.country, risk: r.risk, features: { news_sentiment: 0, gdelt_sentiment: 0, crypto_return: 0, crypto_volatility: 0, stock_return: 0, stock_volatility: 0, weather_anomaly: 0 }, timestamp: new Date().toISOString() }))} height={480} />
+          </div>
+        </article>
+      </section>
 
       <CountryDrilldown
         open={Boolean(selectedCountry)}

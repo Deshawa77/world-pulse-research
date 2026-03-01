@@ -1,0 +1,33 @@
+# ===============================
+# World Pulse Research - Advanced ML Features
+# Install this file in addition to requirements.txt
+# ===============================
+
+# Deep Learning for LSTM/Transformer models
+tensorflow>=2.15.0
+torch>=2.1.0
+torchvision>=0.16.0
+tensorboard>=2.15.0
+
+# Anomaly Detection
+pyod>=1.1.0
+
+# Causal Inference
+causalnex>=0.1.0
+
+# NLP & Language Models
+transformers>=4.35.0
+tokenizers>=0.15.0
+sentencepiece>=0.1.99
+
+# Explainable AI
+shap>=0.43.0
+lime>=0.2.0
+
+# Advanced Time Series Forecasting
+Prophet>=1.1.5
+NeuralProphet>=0.4.0
+
+# Additional utilities
+plotly>=5.18.0
+kaleido>=0.2.1
