@@ -58,6 +58,47 @@ FEATURE_COLUMNS = [
 ]
 
 
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def derive_baseline_risk(data: Optional[pd.DataFrame]) -> float:
+    """Use latest observed global risk when available."""
+    try:
+        if data is None or len(data) == 0:
+            return 50.0
+        if "global_risk_score" in data.columns:
+            latest = float(data["global_risk_score"].iloc[-1])
+            if np.isfinite(latest):
+                return clamp(latest, 0.0, 100.0)
+        return 50.0
+    except Exception:
+        return 50.0
+
+
+def build_statistical_fallback_predictions(baseline_risk: float) -> Dict[str, Any]:
+    """
+    Build conservative fallback predictions anchored to current observed risk.
+    Confidence is intentionally low because this path is non-neural fallback.
+    """
+    base = clamp(float(baseline_risk), 0.0, 100.0)
+    # Mild mean-reversion toward neutral risk (50) over longer horizons.
+    deltas = [0.0, -0.08, -0.15, -0.22]
+    horizons = ["1h", "6h", "24h", "7d"]
+    preds = []
+    for idx, horizon in enumerate(horizons):
+        adjusted = base + (base - 50.0) * deltas[idx]
+        preds.append({
+            "horizon": horizon,
+            "risk_score": round(clamp(adjusted, 0.0, 100.0), 2),
+            "confidence": round(max(0.2, 0.45 - (idx * 0.07)), 2),
+        })
+    return {
+        "predictions": preds,
+        "model_type": "statistical_fallback"
+    }
+
+
 def load_features_from_mongodb(limit=500, mode="online") -> pd.DataFrame:
     """Load features from MongoDB global_features collection."""
     try:
@@ -208,16 +249,7 @@ def get_lstm_predictions(data: pd.DataFrame) -> Dict[str, Any]:
         }
     except Exception as e:
         log_event(f"⚠️ LSTM module error: {e}")
-        # Return fallback predictions
-        return {
-            "predictions": [
-                {"horizon": "1h", "risk_score": 48.5, "confidence": 0.90},
-                {"horizon": "6h", "risk_score": 51.2, "confidence": 0.80},
-                {"horizon": "24h", "risk_score": 53.8, "confidence": 0.70},
-                {"horizon": "7d", "risk_score": 56.5, "confidence": 0.55}
-            ],
-            "model_type": "statistical_fallback"
-        }
+        return build_statistical_fallback_predictions(derive_baseline_risk(data))
 
 
 def get_anomaly_detection(data: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -652,15 +684,7 @@ def run_advanced_analytics() -> Dict[str, Any]:
 
 def get_fallback_predictions() -> Dict[str, Any]:
     """Get fallback predictions"""
-    return {
-        "predictions": [
-            {"horizon": "1h", "risk_score": 48.5, "confidence": 0.90},
-            {"horizon": "6h", "risk_score": 51.2, "confidence": 0.80},
-            {"horizon": "24h", "risk_score": 53.8, "confidence": 0.70},
-            {"horizon": "7d", "risk_score": 56.5, "confidence": 0.55}
-        ],
-        "model_type": "statistical_fallback"
-    }
+    return build_statistical_fallback_predictions(50.0)
 
 
 def get_fallback_analytics_response() -> Dict[str, Any]:

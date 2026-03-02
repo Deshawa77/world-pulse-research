@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import API from "../services/api";
+import { getAdvancedInsights } from "../services/api";
 
 // Types for the advanced analytics data
 interface MLPredictions {
@@ -65,8 +65,8 @@ export default function AdvancedAnalyticsPanel() {
     setLoading(true);
     setError(null);
     try {
-      const response = await API.get("/analytics/advanced/insights");
-      setData(response.data);
+      const response = await getAdvancedInsights();
+      setData(response);
     } catch (err) {
       console.error("Failed to fetch advanced insights:", err);
       setError("Failed to load advanced analytics data");

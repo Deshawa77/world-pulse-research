@@ -1,6 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
-import * as THREE from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 interface CountryRisk {
   country: string;
@@ -17,41 +15,15 @@ interface WorldGlobe3DProps {
   height?: number;
 }
 
-// Country coordinates mapping (ISO3 code to lat/lng)
-const COUNTRY_COORDS: Record<string, [number, number]> = {
-  USA: [37.0902, -95.7129],
-  CHN: [35.8617, 104.1954],
-  RUS: [61.524, 105.3188],
-  IND: [20.5937, 78.9629],
-  BRA: [-14.235, -51.9253],
-  CAN: [56.1304, -106.3468],
-  AUS: [-25.2744, 133.7751],
-  GBR: [55.3781, -3.436],
-  FRA: [46.2276, 2.2137],
-  DEU: [51.1657, 10.4515],
-  ITA: [41.8719, 12.5674],
-  ESP: [40.4637, -3.7492],
-  JPN: [36.2048, 138.2529],
-  KOR: [35.9078, 127.7669],
-  MEX: [23.6345, -102.5528],
-  IDN: [-0.7893, 113.9213],
-  SAU: [23.8859, 45.0792],
-  ZAF: [-30.5595, 22.9375],
-  NGA: [9.082, 8.6753],
-  EGY: [26.8206, 30.8025],
-  TUR: [38.9637, 35.2433],
-  IRN: [32.4279, 53.688],
-  PAK: [30.3753, 69.3451],
-  BGD: [23.685, 90.3563],
-  RWA: [-1.9403, 29.8739],
-  UKR: [48.3794, 31.1656],
-  SYR: [34.8021, 38.9968],
-  YEM: [15.5527, 48.5164],
-  ET: [9.145, 40.4897],
-};
+function clamp(value: number, low: number, high: number): number {
+  return Math.max(low, Math.min(high, value));
+}
 
-function getCountryCoords(countryCode: string): [number, number] {
-  return COUNTRY_COORDS[countryCode] || [0, 0];
+function getRiskColor(score: number): string {
+  if (score >= 75) return "#ef4444";
+  if (score >= 50) return "#fb923c";
+  if (score >= 25) return "#facc15";
+  return "#22c55e";
 }
 
 export default function WorldGlobe3D({
@@ -60,336 +32,219 @@ export default function WorldGlobe3D({
   autoRotate = true,
   height = 500,
 }: WorldGlobe3DProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const sceneRef = useRef<THREE.Scene | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const controlsRef = useRef<OrbitControls | null>(null);
-  const markersRef = useRef<THREE.Group | null>(null);
-  const globeRef = useRef<THREE.Mesh | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const plotlyRef = useRef<any>(null);
+  const plotlyLoadingRef = useRef<Promise<any> | null>(null);
+  const rotationRafRef = useRef<number | null>(null);
+  const rotationLonRef = useRef(0);
   const [hoveredCountry, setHoveredCountry] = useState<CountryRisk | null>(null);
-  const animationRef = useRef<number>(0);
+  const [renderError, setRenderError] = useState<string | null>(null);
 
-  // Create risk color gradient
-  const getRiskColor = (risk: number): THREE.Color => {
-    const normalizedRisk = Math.max(0, Math.min(100, risk)) / 100;
-    if (normalizedRisk < 0.4) {
-      return new THREE.Color(0x22c55e); // Green
-    } else if (normalizedRisk < 0.7) {
-      return new THREE.Color(0xfacc15); // Yellow
-    } else {
-      return new THREE.Color(0xef4444); // Red
-    }
-  };
+  const plotted = useMemo(() => {
+    return data.map((item) => {
+      const safeRisk = clamp(Number(item.risk) || 0, 0, 100);
+      const iso3 = (item.countryCode || item.country || "").toUpperCase().trim();
 
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    // Scene setup
-    const scene = new THREE.Scene();
-    sceneRef.current = scene;
-    scene.background = new THREE.Color(0x0a0a0f);
-
-    // Camera
-    const camera = new THREE.PerspectiveCamera(
-      60,
-      containerRef.current.clientWidth / height,
-      0.1,
-      1000
-    );
-    camera.position.z = 2.5;
-    cameraRef.current = camera;
-
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      alpha: true,
-    });
-    renderer.setSize(containerRef.current.clientWidth, height);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    containerRef.current.appendChild(renderer.domElement);
-    rendererRef.current = renderer;
-
-    // Controls
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
-    controls.enablePan = false;
-    controls.minDistance = 1.5;
-    controls.maxDistance = 5;
-    controlsRef.current = controls;
-
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
-    scene.add(ambientLight);
-
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-    directionalLight.position.set(5, 3, 5);
-    scene.add(directionalLight);
-
-    const pointLight = new THREE.PointLight(0x00d4ff, 0.5, 10);
-    pointLight.position.set(-2, 1, 2);
-    scene.add(pointLight);
-
-    // Create Globe (sphere with wireframe)
-    const globeGeometry = new THREE.SphereGeometry(1, 64, 64);
-    const globeMaterial = new THREE.MeshPhongMaterial({
-      color: 0x1a1a2e,
-      emissive: 0x0a0a1a,
-      specular: 0x111111,
-      shininess: 30,
-      transparent: true,
-      opacity: 0.9,
-    });
-    const globe = new THREE.Mesh(globeGeometry, globeMaterial);
-    scene.add(globe);
-    globeRef.current = globe;
-
-    // Add wireframe overlay
-    const wireframeGeometry = new THREE.SphereGeometry(1.002, 32, 32);
-    const wireframeMaterial = new THREE.MeshBasicMaterial({
-      color: 0x00d4ff,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.1,
-    });
-    const wireframe = new THREE.Mesh(wireframeGeometry, wireframeMaterial);
-    scene.add(wireframe);
-
-    // Add atmosphere glow
-    const atmosphereGeometry = new THREE.SphereGeometry(1.05, 32, 32);
-    const atmosphereMaterial = new THREE.ShaderMaterial({
-      vertexShader: `
-        varying vec3 vNormal;
-        void main() {
-          vNormal = normalize(normalMatrix * normal);
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        varying vec3 vNormal;
-        void main() {
-          float intensity = pow(0.7 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 2.0);
-          gl_FragColor = vec4(0.0, 0.8, 1.0, 1.0) * intensity;
-        }
-      `,
-      blending: THREE.AdditiveBlending,
-      side: THREE.BackSide,
-      transparent: true,
-    });
-    const atmosphere = new THREE.Mesh(atmosphereGeometry, atmosphereMaterial);
-    scene.add(atmosphere);
-
-    // Markers group
-    const markersGroup = new THREE.Group();
-    scene.add(markersGroup);
-    markersRef.current = markersGroup;
-
-    // Animation loop
-    const animate = () => {
-      animationRef.current = requestAnimationFrame(animate);
-
-      if (autoRotate && globeRef.current) {
-        globeRef.current.rotation.y += 0.001;
-        wireframe.rotation.y += 0.001;
-        atmosphere.rotation.y += 0.001;
-      }
-
-      controls.update();
-      renderer.render(scene, camera);
-    };
-    animate();
-
-    // Handle resize
-    const handleResize = () => {
-      if (!containerRef.current) return;
-      const width = containerRef.current.clientWidth;
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
-      renderer.setSize(width, height);
-    };
-    window.addEventListener("resize", handleResize);
-
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      cancelAnimationFrame(animationRef.current);
-      renderer.dispose();
-      if (containerRef.current && renderer.domElement) {
-        containerRef.current.removeChild(renderer.domElement);
-      }
-    };
-  }, [autoRotate, height]);
-
-  // Update markers when data changes
-  useEffect(() => {
-    if (!markersRef.current || !sceneRef.current) return;
-
-    // Clear existing markers
-    while (markersRef.current.children.length > 0) {
-      const child = markersRef.current.children[0];
-      markersRef.current.remove(child);
-      if (child instanceof THREE.Mesh) {
-        child.geometry.dispose();
-        if (child.material instanceof THREE.Material) {
-          child.material.dispose();
-        }
-      }
-    }
-
-    // Add new markers
-    data.forEach((country) => {
-      const [lat, lng] = getCountryCoords(country.countryCode);
-      if (lat === 0 && lng === 0) return;
-
-      // Convert lat/lng to 3D coordinates
-      const phi = (90 - lat) * (Math.PI / 180);
-      const theta = (lng + 180) * (Math.PI / 180);
-      const radius = 1.01;
-
-      const x = -radius * Math.sin(phi) * Math.cos(theta);
-      const y = radius * Math.cos(phi);
-      const z = radius * Math.sin(phi) * Math.sin(theta);
-
-      // Create marker
-      const markerGeometry = new THREE.SphereGeometry(0.02 + (country.risk / 100) * 0.03, 16, 16);
-      const markerMaterial = new THREE.MeshBasicMaterial({
-        color: getRiskColor(country.risk),
-        transparent: true,
-        opacity: 0.8,
-      });
-      const marker = new THREE.Mesh(markerGeometry, markerMaterial);
-      marker.position.set(x, y, z);
-      marker.userData = country;
-
-      // Add glow effect
-      const glowGeometry = new THREE.SphereGeometry(0.04 + (country.risk / 100) * 0.04, 16, 16);
-      const glowMaterial = new THREE.MeshBasicMaterial({
-        color: getRiskColor(country.risk),
-        transparent: true,
-        opacity: 0.3,
-      });
-      const glow = new THREE.Mesh(glowGeometry, glowMaterial);
-      marker.add(glow);
-
-      markersRef.current?.add(marker);
-    });
+      return {
+        ...item,
+        risk: safeRisk,
+        countryCode: iso3,
+      };
+    }).filter((item) => item.countryCode.length === 3);
   }, [data]);
 
-  // Raycaster for hover detection
-  const handleMouseMove = (event: React.MouseEvent) => {
-    if (!containerRef.current || !cameraRef.current || !sceneRef.current) return;
+  useEffect(() => {
+    let stopped = false;
 
-    const rect = containerRef.current.getBoundingClientRect();
-    const mouse = new THREE.Vector2(
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      -((event.clientY - rect.top) / rect.height) * 2 + 1
-    );
-
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(mouse, cameraRef.current);
-
-    if (markersRef.current) {
-      const intersects = raycaster.intersectObjects(markersRef.current.children);
-      if (intersects.length > 0) {
-        const country = intersects[0].object.userData as CountryRisk;
-        setHoveredCountry(country);
-      } else {
-        setHoveredCountry(null);
+    const loadPlotly = async () => {
+      if (plotlyRef.current) return plotlyRef.current;
+      if (!plotlyLoadingRef.current) {
+        plotlyLoadingRef.current = import("plotly.js-dist-min").then((mod) => {
+          plotlyRef.current = (mod as any).default ?? mod;
+          return plotlyRef.current;
+        });
       }
-    }
-  };
+      return plotlyLoadingRef.current;
+    };
 
-  const handleClick = (event: React.MouseEvent) => {
-    if (!containerRef.current || !cameraRef.current || !sceneRef.current || !onCountryClick) return;
+    const draw = async () => {
+      if (!containerRef.current) return;
+      try {
+        const Plotly = await loadPlotly();
+        if (stopped || !containerRef.current) return;
 
-    const rect = containerRef.current.getBoundingClientRect();
-    const mouse = new THREE.Vector2(
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      -((event.clientY - rect.top) / rect.height) * 2 + 1
-    );
+        const locations = plotted.map((p) => p.countryCode);
+        const sizes = plotted.map((p) => 3 + (p.risk / 100) * 8);
+        const colors = plotted.map((p) => getRiskColor(p.risk));
+        const texts = plotted.map((p) => `${p.country} | Risk ${p.risk.toFixed(1)}`);
 
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(mouse, cameraRef.current);
+        const trace = {
+          type: "scattergeo",
+          mode: "markers",
+          locationmode: "ISO-3",
+          locations,
+          text: texts,
+          customdata: plotted,
+          hovertemplate: "%{text}<extra></extra>",
+          marker: {
+            size: sizes,
+            sizemode: "diameter",
+            color: colors,
+            opacity: 0.85,
+            line: { color: "rgba(0,0,0,0.35)", width: 1 },
+          },
+        };
 
-    if (markersRef.current) {
-      const intersects = raycaster.intersectObjects(markersRef.current.children);
-      if (intersects.length > 0) {
-        const country = intersects[0].object.userData as CountryRisk;
-        onCountryClick(country);
+        await Plotly.react(
+          containerRef.current,
+          [trace] as any,
+          {
+            margin: { l: 0, r: 0, b: 0, t: 0 },
+            paper_bgcolor: "rgba(0,0,0,0)",
+            plot_bgcolor: "rgba(0,0,0,0)",
+            geo: {
+              projection: { type: "orthographic", rotation: { lon: rotationLonRef.current, lat: 0, roll: 0 } },
+              showland: true,
+              landcolor: "#1f3559",
+              showocean: true,
+              oceancolor: "#091321",
+              showcountries: true,
+              countrycolor: "rgba(149, 197, 255, 0.35)",
+              showcoastlines: true,
+              coastlinecolor: "rgba(134, 195, 255, 0.5)",
+              bgcolor: "rgba(0,0,0,0)",
+              showframe: false,
+            },
+          } as any,
+          { displayModeBar: false, responsive: true }
+        );
+
+        setRenderError(null);
+
+        (containerRef.current as any).on?.("plotly_hover", (evt: any) => {
+          const point = evt?.points?.[0];
+          if (!point?.customdata) return;
+          setHoveredCountry(point.customdata as CountryRisk);
+        });
+
+        (containerRef.current as any).on?.("plotly_unhover", () => {
+          setHoveredCountry(null);
+        });
+
+        (containerRef.current as any).on?.("plotly_click", (evt: any) => {
+          const point = evt?.points?.[0];
+          if (!point?.customdata || !onCountryClick) return;
+          onCountryClick(point.customdata as CountryRisk);
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to render globe";
+        setRenderError(message);
       }
-    }
-  };
+    };
+
+    draw();
+
+    return () => {
+      stopped = true;
+    };
+  }, [plotted, onCountryClick]);
+
+  useEffect(() => {
+    const step = async () => {
+      if (!autoRotate || !plotlyRef.current || !containerRef.current) {
+        rotationRafRef.current = requestAnimationFrame(step);
+        return;
+      }
+
+      rotationLonRef.current = rotationLonRef.current + 0.25;
+      try {
+        await plotlyRef.current.relayout(containerRef.current, {
+          "geo.projection.rotation.lon": rotationLonRef.current,
+        });
+      } catch {
+        // Ignore transient relayout failures.
+      }
+      rotationRafRef.current = requestAnimationFrame(step);
+    };
+
+    rotationRafRef.current = requestAnimationFrame(step);
+
+    return () => {
+      if (rotationRafRef.current) {
+        cancelAnimationFrame(rotationRafRef.current);
+        rotationRafRef.current = null;
+      }
+      if (plotlyRef.current && containerRef.current) {
+        try {
+          plotlyRef.current.purge(containerRef.current);
+        } catch {
+          // no-op
+        }
+      }
+    };
+  }, [autoRotate]);
 
   return (
     <div style={{ position: "relative", width: "100%", height }}>
-      <div
-        ref={containerRef}
-        style={{ width: "100%", height: "100%", cursor: "grab" }}
-        onMouseMove={handleMouseMove}
-        onClick={handleClick}
-      />
-      
-      {/* Hover tooltip */}
-      {hoveredCountry && (
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+
+      {renderError ? (
         <div
           style={{
             position: "absolute",
-            top: "10px",
-            left: "10px",
-            background: "rgba(0, 0, 0, 0.8)",
-            border: `1px solid ${getRiskColor(hoveredCountry.risk).getHexString()}`,
-            borderRadius: "8px",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#ff8888",
+            fontSize: "12px",
+            background: "rgba(10, 10, 15, 0.65)",
+            textAlign: "center",
             padding: "12px",
-            color: "#fff",
-            fontSize: "14px",
-            zIndex: 10,
-            backdropFilter: "blur(10px)",
           }}
         >
-          <div style={{ fontWeight: "bold", marginBottom: "4px" }}>
-            {hoveredCountry.country}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span>Risk Score:</span>
-            <span
-              style={{
-                color: getRiskColor(hoveredCountry.risk).getStyle(),
-                fontWeight: "bold",
-              }}
-            >
-              {hoveredCountry.risk.toFixed(1)}
-            </span>
-          </div>
+          3D globe render failed: {renderError}
         </div>
-      )}
+      ) : null}
 
-      {/* Legend */}
-      <div
-        style={{
-          position: "absolute",
-          bottom: "10px",
-          right: "10px",
-          background: "rgba(0, 0, 0, 0.7)",
-          borderRadius: "8px",
-          padding: "10px",
-          fontSize: "12px",
-          zIndex: 10,
-        }}
-      >
-        <div style={{ color: "#888", marginBottom: "6px" }}>Risk Level</div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-          <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: "#22c55e" }} />
-          <span style={{ color: "#aaa" }}>Low (0-40)</span>
+      {!renderError && plotted.length === 0 ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#9fb3d9",
+            fontSize: "12px",
+            textAlign: "center",
+            pointerEvents: "none",
+          }}
+        >
+          Waiting for risk-map data...
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-          <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: "#facc15" }} />
-          <span style={{ color: "#aaa" }}>Medium (40-70)</span>
+      ) : null}
+
+      {hoveredCountry ? (
+        <div
+          style={{
+            position: "absolute",
+            top: 10,
+            left: 10,
+            background: "rgba(0, 0, 0, 0.8)",
+            border: `1px solid ${getRiskColor(hoveredCountry.risk)}`,
+            borderRadius: 8,
+            padding: 10,
+            color: "#fff",
+            fontSize: 12,
+            zIndex: 10,
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>{hoveredCountry.country}</div>
+          <div>Risk: {hoveredCountry.risk.toFixed(1)}</div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: "#ef4444" }} />
-          <span style={{ color: "#aaa" }}>High (70-100)</span>
-        </div>
-      </div>
+      ) : null}
     </div>
   );
 }
