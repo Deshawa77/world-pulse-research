@@ -276,6 +276,11 @@ export default function SentinelAI({
 
         {/* Holographic Avatar - Face Projection (Gideon Style) */}
         <div className="hologram-container">
+          <span className="holo-corner holo-corner-tl" />
+          <span className="holo-corner holo-corner-tr" />
+          <span className="holo-corner holo-corner-bl" />
+          <span className="holo-corner holo-corner-br" />
+          <div className="holo-reticle" />
           <SentinelAvatar3D 
             className="sentinel-face-projection"
             isSpeaking={isSpeaking || isListening}

@@ -9,11 +9,45 @@
   align-items: center;
   gap: 12px;
   padding: 16px;
-  background: #1a1a2e;
-  border: 1px solid #333;
-  border-radius: 8px;
+  background:
+    radial-gradient(circle at 22% 0%, rgba(156, 222, 255, 0.24), transparent 46%),
+    radial-gradient(circle at 88% 12%, rgba(123, 188, 255, 0.2), transparent 38%),
+    linear-gradient(180deg, #10182b 0%, #090f1d 100%);
+  border: 1px solid rgba(144, 206, 255, 0.34);
+  border-radius: 12px;
   position: relative;
   overflow: hidden;
+  box-shadow:
+    inset 0 0 52px rgba(102, 182, 255, 0.16),
+    0 0 36px rgba(53, 130, 204, 0.2);
+}
+
+.sentinel-hologram::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, transparent, rgba(198, 239, 255, 0.1) 50%, transparent),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 20px,
+      rgba(143, 208, 255, 0.06) 21px,
+      transparent 22px
+    );
+  mix-blend-mode: screen;
+  opacity: 0.6;
+  pointer-events: none;
+  animation: sentinel-hud-sweep 7s linear infinite;
+}
+
+.sentinel-hologram::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border: 1px solid rgba(173, 227, 255, 0.18);
+  border-radius: 8px;
+  pointer-events: none;
 }
 
 /* Hologram Avatar Container */
@@ -24,16 +58,17 @@
   align-items: center;
   width: min(100%, 520px);
   height: 440px;
-  border-radius: 8px;
+  border-radius: 12px;
   overflow: hidden;
   background:
-    radial-gradient(circle at 50% 42%, rgba(230, 250, 255, 0.48) 0%, rgba(182, 229, 255, 0.28) 22%, rgba(60, 114, 166, 0.72) 56%, rgba(12, 30, 56, 0.98) 100%),
-    radial-gradient(circle at center, rgba(204, 243, 255, 0.24) 1.4px, transparent 2.3px) 0 0 / 15px 15px,
-    linear-gradient(180deg, #a6d8ff 0%, #4f81be 52%, #1a325d 100%);
-  border: 1px solid rgba(212, 244, 255, 0.52);
+    radial-gradient(circle at 50% 39%, rgba(238, 252, 255, 0.58) 0%, rgba(197, 235, 255, 0.36) 23%, rgba(64, 122, 181, 0.78) 56%, rgba(11, 30, 59, 0.99) 100%),
+    radial-gradient(circle at center, rgba(204, 243, 255, 0.2) 1.2px, transparent 2.3px) 0 0 / 15px 15px,
+    linear-gradient(180deg, #a9dbff 0%, #598ac4 53%, #172f57 100%);
+  border: 1px solid rgba(215, 245, 255, 0.58);
   box-shadow:
-    inset 0 0 70px rgba(178, 226, 255, 0.52),
-    0 0 40px rgba(172, 227, 255, 0.34);
+    inset 0 0 74px rgba(183, 228, 255, 0.56),
+    inset 0 -34px 48px rgba(109, 182, 255, 0.24),
+    0 0 42px rgba(172, 227, 255, 0.34);
 }
 
 /* Holographic scanline overlay effect */
@@ -48,12 +83,12 @@
     0deg,
     transparent,
     transparent 2px,
-    rgba(195, 243, 255, 0.08) 2px,
-    rgba(195, 243, 255, 0.08) 4px
+    rgba(206, 246, 255, 0.12) 2px,
+    rgba(206, 246, 255, 0.12) 4px
   );
   pointer-events: none;
   z-index: 5;
-  animation: scanlines 8s linear infinite;
+  animation: scanlines 7s linear infinite;
 }
 
 @keyframes scanlines {
@@ -70,11 +105,11 @@
   right: 0;
   bottom: 0;
   background:
-    radial-gradient(circle at 50% 38%, rgba(247, 254, 255, 0.3) 0%, rgba(210, 244, 255, 0.14) 26%, transparent 58%),
-    linear-gradient(90deg, rgba(198, 238, 255, 0.09), transparent 34%, rgba(198, 238, 255, 0.09));
+    radial-gradient(circle at 50% 38%, rgba(249, 254, 255, 0.38) 0%, rgba(212, 245, 255, 0.17) 26%, transparent 58%),
+    linear-gradient(90deg, rgba(198, 238, 255, 0.12), transparent 34%, rgba(198, 238, 255, 0.12));
   pointer-events: none;
   z-index: 6;
-  animation: hologram-flicker 0.15s infinite;
+  animation: hologram-flicker 0.12s infinite;
 }
 
 @keyframes hologram-flicker {
@@ -86,6 +121,67 @@
 .hologram-container canvas {
   width: 100%;
   height: 100%;
+}
+
+.holo-corner {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  border: 2px solid rgba(198, 240, 255, 0.72);
+  z-index: 8;
+  pointer-events: none;
+  box-shadow: 0 0 14px rgba(147, 222, 255, 0.5);
+  animation: holo-corner-pulse 3.2s ease-in-out infinite;
+}
+
+.holo-corner-tl {
+  top: 12px;
+  left: 12px;
+  border-right: none;
+  border-bottom: none;
+}
+
+.holo-corner-tr {
+  top: 12px;
+  right: 12px;
+  border-left: none;
+  border-bottom: none;
+}
+
+.holo-corner-bl {
+  bottom: 12px;
+  left: 12px;
+  border-right: none;
+  border-top: none;
+}
+
+.holo-corner-br {
+  bottom: 12px;
+  right: 12px;
+  border-left: none;
+  border-top: none;
+}
+
+.holo-reticle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 58%;
+  height: 58%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1px dashed rgba(192, 236, 255, 0.22);
+  z-index: 7;
+  pointer-events: none;
+  animation: holo-reticle-spin 20s linear infinite;
+}
+
+.holo-reticle::before {
+  content: "";
+  position: absolute;
+  inset: 11%;
+  border-radius: 50%;
+  border: 1px solid rgba(208, 242, 255, 0.2);
 }
 
 .scan-avatar-host {
@@ -102,18 +198,19 @@
 .sentinel-face-projection {
   position: relative;
   z-index: 2;
-  filter: saturate(1.14) contrast(1.2) brightness(1.12);
+  filter: saturate(1.16) contrast(1.16) brightness(1.13);
 }
 
 .sentinel-face-projection::after {
   content: "";
   position: absolute;
-  inset: 4% 10% 7%;
+  inset: 3% 9% 6%;
   border-radius: 46% 46% 44% 44%;
-  background: radial-gradient(circle at center, rgba(238, 252, 255, 0.26), rgba(176, 228, 255, 0.12) 52%, transparent 74%);
+  background: radial-gradient(circle at center, rgba(241, 252, 255, 0.3), rgba(176, 228, 255, 0.14) 52%, transparent 74%);
   pointer-events: none;
   mix-blend-mode: screen;
-  filter: blur(9px);
+  filter: blur(8px);
+  animation: face-aura-breathe 4s ease-in-out infinite;
 }
 
 /* Voice Indicator */
@@ -136,13 +233,17 @@
 /* Hologram Panel */
 .hologram-panel {
   width: 100%;
-  background: #1a1a2e;
-  border: 1px solid #333;
-  border-radius: 8px;
+  background:
+    linear-gradient(160deg, rgba(13, 25, 46, 0.95) 0%, rgba(9, 17, 33, 0.96) 100%);
+  border: 1px solid rgba(138, 202, 255, 0.34);
+  border-radius: 12px;
   padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  box-shadow:
+    inset 0 0 38px rgba(99, 176, 255, 0.15),
+    0 0 24px rgba(77, 149, 219, 0.16);
 }
 
 /* Header */
@@ -151,15 +252,16 @@
   justify-content: space-between;
   align-items: center;
   padding-bottom: 10px;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid rgba(151, 212, 255, 0.28);
 }
 
 .hologram-label {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 3px;
-  color: #888;
+  color: #cceeff;
   text-transform: uppercase;
+  text-shadow: 0 0 12px rgba(136, 218, 255, 0.5);
 }
 
 .hologram-controls {
@@ -171,9 +273,9 @@
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  border: 1px solid #444;
-  background: #222;
-  color: #888;
+  border: 1px solid rgba(131, 202, 255, 0.34);
+  background: linear-gradient(180deg, rgba(28, 46, 74, 0.9), rgba(14, 26, 46, 0.95));
+  color: #b8e8ff;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -182,13 +284,35 @@
 }
 
 .hologram-btn:hover {
-  background: #333;
-  border-color: #555;
+  background: linear-gradient(180deg, rgba(45, 74, 116, 0.95), rgba(18, 34, 58, 0.98));
+  border-color: rgba(161, 222, 255, 0.6);
+  box-shadow: 0 0 14px rgba(124, 203, 255, 0.35);
 }
 
 .hologram-btn.active {
-  background: #444;
-  color: #fff;
+  background: linear-gradient(180deg, rgba(63, 114, 169, 0.95), rgba(21, 48, 84, 0.98));
+  color: #ffffff;
+  box-shadow: 0 0 16px rgba(127, 206, 255, 0.42);
+}
+
+@keyframes sentinel-hud-sweep {
+  0% { transform: translateX(-45%); }
+  100% { transform: translateX(45%); }
+}
+
+@keyframes face-aura-breathe {
+  0%, 100% { opacity: 0.72; transform: scale(1); }
+  50% { opacity: 0.95; transform: scale(1.02); }
+}
+
+@keyframes holo-reticle-spin {
+  0% { transform: translate(-50%, -50%) rotate(0deg); }
+  100% { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+@keyframes holo-corner-pulse {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 1; }
 }
 
 /* Body */

@@ -71,6 +71,11 @@ export default function SentinelAvatar3D({
   modelYawOffsetDeg = 0,
   isProcessing = false,
 }: SentinelAvatar3DProps) {
+  const HOLO_CORE_COLOR = 0xe9f8ff;
+  const HOLO_EMISSIVE_COLOR = 0xa6e5ff;
+  const HOLO_WIREFRAME_COLOR = 0xc8f1ff;
+  const HOLO_ACCENT_COLOR = 0xefffff;
+
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -102,7 +107,7 @@ export default function SentinelAvatar3D({
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 100);
-    camera.position.set(0, 0.16, 1.55);
+    camera.position.set(0, 0.08, 1.55);
 
     const renderer = new THREE.WebGLRenderer({
       canvas,
@@ -114,25 +119,25 @@ export default function SentinelAvatar3D({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
+    renderer.toneMappingExposure = 0.67;
 
     // Brighter cool hologram lighting inspired by the reference projection
-    const ambientLight = new THREE.AmbientLight(0xa9dfff, 0.85);
+    const ambientLight = new THREE.AmbientLight(0xbfdff6, 0.82);
     scene.add(ambientLight);
 
-    const keyLight = new THREE.DirectionalLight(0xd8f3ff, 1.05);
+    const keyLight = new THREE.DirectionalLight(0xeaf6ff, 0.94);
     keyLight.position.set(2, 2.6, 2.2);
     scene.add(keyLight);
 
-    const fillLight = new THREE.DirectionalLight(0x8dd5ff, 0.72);
+    const fillLight = new THREE.DirectionalLight(0xa8d8f8, 0.72);
     fillLight.position.set(-2.5, 1.4, 1.4);
     scene.add(fillLight);
 
-    const rimLight = new THREE.DirectionalLight(0xb9ebff, 0.62);
+    const rimLight = new THREE.DirectionalLight(0xcde9ff, 0.66);
     rimLight.position.set(0, 2.4, -2);
     scene.add(rimLight);
 
-    const topLight = new THREE.PointLight(0xe5f9ff, 0.92, 4, 2);
+    const topLight = new THREE.PointLight(0xe9f8ff, 0.82, 4, 2);
     topLight.position.set(0, 1.7, 0.8);
     scene.add(topLight);
 
@@ -142,6 +147,9 @@ export default function SentinelAvatar3D({
     const disposableGeometries: THREE.BufferGeometry[] = [];
     const animatedBaseMaterials: THREE.MeshStandardMaterial[] = [];
     const animatedWireMaterials: THREE.MeshBasicMaterial[] = [];
+    const faceCoreMaterials: THREE.MeshStandardMaterial[] = [];
+    const faceWireframeMaterials: THREE.MeshBasicMaterial[] = [];
+    const overlayGeometries: THREE.BufferGeometry[] = [];
 
     const contentRoot = new THREE.Group();
     scene.add(contentRoot);
@@ -158,6 +166,7 @@ export default function SentinelAvatar3D({
         orientModelForFrontalView(model);
         const yawOffsetRad = THREE.MathUtils.degToRad(modelYawOffsetDeg);
         model.rotateY(yawOffsetRad);
+        model.rotateX(THREE.MathUtils.degToRad(-5));
 
         const box = new THREE.Box3().setFromObject(model);
         const size = box.getSize(new THREE.Vector3());
@@ -183,7 +192,7 @@ export default function SentinelAvatar3D({
         camera.position.z = THREE.MathUtils.clamp(fitDistance, 1.35, 2.15);
         camera.near = 0.05;
         camera.far = 40;
-        camera.lookAt(0, 0.14, 0);
+        camera.lookAt(0, 0.05, 0);
         camera.updateProjectionMatrix();
 
         headGroup.add(model);
@@ -196,15 +205,16 @@ export default function SentinelAvatar3D({
               mesh.material = mesh.material.map((mat) => {
                 if (mat instanceof THREE.MeshStandardMaterial) {
                   const clonedMat = mat.clone();
-                  clonedMat.color = new THREE.Color(0xd4f3ff);
+                  clonedMat.color = new THREE.Color(HOLO_CORE_COLOR);
                   clonedMat.transparent = true;
-                  clonedMat.opacity = 0.66;
-                  clonedMat.roughness = 0.22;
-                  clonedMat.metalness = 0.05;
+                  clonedMat.opacity = 0.63;
+                  clonedMat.roughness = 0.16;
+                  clonedMat.metalness = 0.03;
                   clonedMat.depthWrite = true;
                   clonedMat.blending = THREE.NormalBlending;
-                  clonedMat.emissive = new THREE.Color(0x7bd6ff);
-                  clonedMat.emissiveIntensity = 0.36;
+                  clonedMat.emissive = new THREE.Color(HOLO_EMISSIVE_COLOR);
+                  clonedMat.emissiveIntensity = 0.2;
+                  faceCoreMaterials.push(clonedMat);
                   animatedBaseMaterials.push(clonedMat);
                   return clonedMat;
                 }
@@ -213,27 +223,46 @@ export default function SentinelAvatar3D({
             } else if (mesh.material instanceof THREE.MeshStandardMaterial) {
               const mat = mesh.material as THREE.MeshStandardMaterial;
               const clonedMat = mat.clone();
-               clonedMat.color = new THREE.Color(0xd4f3ff);
+               clonedMat.color = new THREE.Color(HOLO_CORE_COLOR);
                clonedMat.transparent = true;
-               clonedMat.opacity = 0.66;
-               clonedMat.roughness = 0.22;
-               clonedMat.metalness = 0.05;
+               clonedMat.opacity = 0.63;
+               clonedMat.roughness = 0.16;
+               clonedMat.metalness = 0.03;
                clonedMat.depthWrite = true;
                clonedMat.blending = THREE.NormalBlending;
-               clonedMat.emissive = new THREE.Color(0x7bd6ff);
-               clonedMat.emissiveIntensity = 0.36;
+               clonedMat.emissive = new THREE.Color(HOLO_EMISSIVE_COLOR);
+               clonedMat.emissiveIntensity = 0.2;
+               faceCoreMaterials.push(clonedMat);
                animatedBaseMaterials.push(clonedMat);
                mesh.material = clonedMat;
             } else if (mesh.material instanceof THREE.MeshBasicMaterial) {
               const mat = mesh.material as THREE.MeshBasicMaterial;
               const clonedMat = mat.clone();
-               clonedMat.color = new THREE.Color(0xc4f0ff);
+               clonedMat.color = new THREE.Color(HOLO_WIREFRAME_COLOR);
                clonedMat.transparent = true;
-               clonedMat.opacity = 0.24;
+                clonedMat.opacity = 0.2;
                clonedMat.blending = THREE.AdditiveBlending;
                clonedMat.depthWrite = false;
                animatedWireMaterials.push(clonedMat);
                mesh.material = clonedMat;
+             }
+
+            if (mesh.geometry) {
+              const wireGeometry = mesh.geometry.clone();
+              overlayGeometries.push(wireGeometry);
+              const wireMaterial = new THREE.MeshBasicMaterial({
+                color: HOLO_WIREFRAME_COLOR,
+                wireframe: true,
+                transparent: true,
+                opacity: 0.1,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+              });
+              const wireOverlay = new THREE.Mesh(wireGeometry, wireMaterial);
+              wireOverlay.scale.setScalar(1.0025);
+              mesh.add(wireOverlay);
+              faceWireframeMaterials.push(wireMaterial);
+              animatedWireMaterials.push(wireMaterial);
             }
 
             if (mesh.geometry) {
@@ -252,8 +281,8 @@ export default function SentinelAvatar3D({
     const baseGeometry = new THREE.CylinderGeometry(0.48, 0.56, 0.015, 32);
     const baseMaterial = new THREE.MeshStandardMaterial({
       color: 0x101a29,
-      emissive: 0x89e2ff,
-      emissiveIntensity: 0.62,
+      emissive: 0xb3ecff,
+      emissiveIntensity: 0.36,
       transparent: true,
       opacity: 0.7,
       metalness: 0.9,
@@ -272,9 +301,9 @@ export default function SentinelAvatar3D({
     for (let i = 0; i < 2; i++) {
       const ringGeometry = new THREE.TorusGeometry(0.47 + i * 0.14, 0.002, 8, 48);
       const ringMaterial = new THREE.MeshBasicMaterial({
-        color: 0x00aacc,
+        color: 0x9edfff,
         transparent: true,
-         opacity: 0.2 + i * 0.08,
+         opacity: 0.14 + i * 0.05,
       });
       const ring = new THREE.Mesh(ringGeometry, ringMaterial);
       ring.rotation.x = Math.PI / 2;
@@ -284,7 +313,7 @@ export default function SentinelAvatar3D({
     }
 
     // Create subtle data particles (data reading effect - more subtle)
-    const particleCount = 60;
+    const particleCount = 110;
     const particleGeometry = new THREE.BufferGeometry();
     const particlePositions = new Float32Array(particleCount * 3);
     const particleSizes = new Float32Array(particleCount);
@@ -302,10 +331,10 @@ export default function SentinelAvatar3D({
     particleGeometry.setAttribute("size", new THREE.BufferAttribute(particleSizes, 1));
     
     const particleMaterial = new THREE.PointsMaterial({
-      color: 0x00ccff,
-      size: 0.012,
+      color: 0xbcecff,
+      size: 0.01,
       transparent: true,
-      opacity: 0.35,
+      opacity: 0.28,
       blending: THREE.AdditiveBlending,
       sizeAttenuation: true,
     });
@@ -316,9 +345,9 @@ export default function SentinelAvatar3D({
     // Create subtle scanning beam effect (more integrated)
     const scanLineGeometry = new THREE.PlaneGeometry(0.68, 0.003);
     const scanLineMaterial = new THREE.MeshBasicMaterial({
-      color: 0x00ddff,
+      color: 0xbbeeff,
       transparent: true,
-      opacity: 0.25,
+      opacity: 0.16,
       side: THREE.DoubleSide,
     });
     const scanLine = new THREE.Mesh(scanLineGeometry, scanLineMaterial);
@@ -326,21 +355,74 @@ export default function SentinelAvatar3D({
     scanLine.position.y = 0.2;
     scene.add(scanLine);
 
-    // Eye glow effect (subtle)
-    const eyeGlowGeometry = new THREE.SphereGeometry(0.025, 12, 12);
+    // Eye glow effect: two holographic blank-white eyes like the reference.
+    const eyeGlowGeometry = new THREE.SphereGeometry(0.03, 18, 18);
     const eyeGlowMaterial = new THREE.MeshBasicMaterial({
-      color: 0x00eeff,
+      color: HOLO_ACCENT_COLOR,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.46,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
-    const eyeGlow = new THREE.Mesh(eyeGlowGeometry, eyeGlowMaterial);
-    eyeGlow.position.set(0, 0.12, 0.3);
-    scene.add(eyeGlow);
+    const leftEyeGlow = new THREE.Mesh(eyeGlowGeometry, eyeGlowMaterial);
+    const rightEyeGlow = new THREE.Mesh(eyeGlowGeometry, eyeGlowMaterial.clone());
+    leftEyeGlow.position.set(-0.105, 0.13, 0.325);
+    rightEyeGlow.position.set(0.105, 0.13, 0.325);
+    leftEyeGlow.scale.set(1.28, 0.75, 0.9);
+    rightEyeGlow.scale.set(1.28, 0.75, 0.9);
+    scene.add(leftEyeGlow);
+    scene.add(rightEyeGlow);
+
+    const eyeAuraGeometry = new THREE.SphereGeometry(0.038, 18, 18);
+    const eyeAuraMaterial = new THREE.MeshBasicMaterial({
+      color: 0xdcf4ff,
+      transparent: true,
+      opacity: 0.15,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const leftEyeAura = new THREE.Mesh(eyeAuraGeometry, eyeAuraMaterial);
+    const rightEyeAura = new THREE.Mesh(eyeAuraGeometry, eyeAuraMaterial.clone());
+    leftEyeAura.position.copy(leftEyeGlow.position);
+    rightEyeAura.position.copy(rightEyeGlow.position);
+    leftEyeAura.scale.set(1.45, 0.82, 1);
+    rightEyeAura.scale.set(1.45, 0.82, 1);
+    scene.add(leftEyeAura);
+    scene.add(rightEyeAura);
+    const leftEyeBasePos = leftEyeGlow.position.clone();
+    const rightEyeBasePos = rightEyeGlow.position.clone();
+    const leftAuraBasePos = leftEyeAura.position.clone();
+    const rightAuraBasePos = rightEyeAura.position.clone();
+
+    const coreGlowGeometry = new THREE.SphereGeometry(0.34, 28, 28);
+    const coreGlowMaterial = new THREE.MeshBasicMaterial({
+      color: 0xe7f8ff,
+      transparent: true,
+      opacity: 0.08,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const coreGlow = new THREE.Mesh(coreGlowGeometry, coreGlowMaterial);
+    coreGlow.position.set(0, 0.08, 0.08);
+    headGroup.add(coreGlow);
+
+    const dataBandGeometry = new THREE.PlaneGeometry(0.62, 0.02);
+    const dataBandMaterial = new THREE.MeshBasicMaterial({
+      color: 0xf2fbff,
+      transparent: true,
+      opacity: 0.14,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const dataBand = new THREE.Mesh(dataBandGeometry, dataBandMaterial);
+    dataBand.position.set(0, 0.14, 0.34);
+    scene.add(dataBand);
 
     // Processing indicator light (subtle)
     const processingLightGeometry = new THREE.SphereGeometry(0.015, 8, 8);
     const processingLightMaterial = new THREE.MeshBasicMaterial({
-      color: 0xff8844,
+      color: 0xc2efff,
       transparent: true,
       opacity: 0,
     });
@@ -348,53 +430,304 @@ export default function SentinelAvatar3D({
     processingLight.position.set(0.25, 0.25, 0.25);
     scene.add(processingLight);
 
+    // Reference-style horizontal projection bars crossing the eye line.
+    const bridgeBarGeometry = new THREE.PlaneGeometry(0.24, 0.012);
+    const bridgeBarMaterial = new THREE.MeshBasicMaterial({
+      color: 0xf4fcff,
+      transparent: true,
+      opacity: 0.16,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const leftBridgeBar = new THREE.Mesh(bridgeBarGeometry, bridgeBarMaterial);
+    const rightBridgeBar = new THREE.Mesh(bridgeBarGeometry, bridgeBarMaterial.clone());
+    leftBridgeBar.position.set(-0.15, 0.125, 0.34);
+    rightBridgeBar.position.set(0.15, 0.125, 0.34);
+    scene.add(leftBridgeBar);
+    scene.add(rightBridgeBar);
+
+    // Fine network particles inside the head volume.
+    const faceNodeCount = 180;
+    const faceNodeGeometry = new THREE.BufferGeometry();
+    const faceNodePositions = new Float32Array(faceNodeCount * 3);
+    for (let i = 0; i < faceNodeCount; i++) {
+      faceNodePositions[i * 3] = (Math.random() - 0.5) * 0.48;
+      faceNodePositions[i * 3 + 1] = (Math.random() - 0.5) * 0.82 + 0.03;
+      faceNodePositions[i * 3 + 2] = (Math.random() - 0.5) * 0.34 + 0.08;
+    }
+    faceNodeGeometry.setAttribute("position", new THREE.BufferAttribute(faceNodePositions, 3));
+    const faceNodeMaterial = new THREE.PointsMaterial({
+      color: 0xeefdff,
+      size: 0.006,
+      transparent: true,
+      opacity: 0.16,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      sizeAttenuation: true,
+    });
+    const faceNodes = new THREE.Points(faceNodeGeometry, faceNodeMaterial);
+    headGroup.add(faceNodes);
+
+    // Large animated halo rings to make the avatar feel active and "thinking".
+    const haloGroup = new THREE.Group();
+    scene.add(haloGroup);
+    const haloMaterials: THREE.MeshBasicMaterial[] = [];
+    const haloRings: THREE.Mesh[] = [];
+    for (let i = 0; i < 3; i++) {
+      const haloGeometry = new THREE.TorusGeometry(0.76 + i * 0.09, 0.004, 10, 100);
+      const haloMaterial = new THREE.MeshBasicMaterial({
+        color: i === 1 ? 0xe9f7ff : 0x9fd6ff,
+        transparent: true,
+        opacity: 0.16 + i * 0.04,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const haloRing = new THREE.Mesh(haloGeometry, haloMaterial);
+      haloRing.position.y = 0.05 + i * 0.03;
+      haloRing.rotation.x = Math.PI * (0.46 + i * 0.08);
+      haloRing.rotation.z = i * 0.5;
+      haloGroup.add(haloRing);
+      haloMaterials.push(haloMaterial);
+      haloRings.push(haloRing);
+    }
+
+    // Vertical data streams around the head.
+    const streamCount = 26;
+    const streamGeometry = new THREE.BufferGeometry();
+    const streamPositions = new Float32Array(streamCount * 3);
+    const streamSpeed = new Float32Array(streamCount);
+    const streamRadius = new Float32Array(streamCount);
+    for (let i = 0; i < streamCount; i++) {
+      const angle = (i / streamCount) * Math.PI * 2;
+      const radius = 0.82 + Math.random() * 0.24;
+      const y = -0.55 + Math.random() * 1.5;
+      streamPositions[i * 3] = Math.cos(angle) * radius;
+      streamPositions[i * 3 + 1] = y;
+      streamPositions[i * 3 + 2] = Math.sin(angle) * radius;
+      streamSpeed[i] = 0.16 + Math.random() * 0.18;
+      streamRadius[i] = radius;
+    }
+    streamGeometry.setAttribute("position", new THREE.BufferAttribute(streamPositions, 3));
+    const streamMaterial = new THREE.PointsMaterial({
+      color: 0xaedfff,
+      size: 0.02,
+      transparent: true,
+      opacity: 0.2,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      sizeAttenuation: true,
+    });
+    const streams = new THREE.Points(streamGeometry, streamMaterial);
+    scene.add(streams);
+
+    // Sweeping orbital sparks.
+    const orbCount = 42;
+    const orbGeometry = new THREE.BufferGeometry();
+    const orbPositions = new Float32Array(orbCount * 3);
+    const orbAngles = new Float32Array(orbCount);
+    const orbRadii = new Float32Array(orbCount);
+    const orbOffsets = new Float32Array(orbCount);
+    for (let i = 0; i < orbCount; i++) {
+      orbAngles[i] = Math.random() * Math.PI * 2;
+      orbRadii[i] = 0.9 + Math.random() * 0.35;
+      orbOffsets[i] = (Math.random() - 0.5) * 0.7;
+      orbPositions[i * 3] = Math.cos(orbAngles[i]) * orbRadii[i];
+      orbPositions[i * 3 + 1] = orbOffsets[i];
+      orbPositions[i * 3 + 2] = Math.sin(orbAngles[i]) * orbRadii[i];
+    }
+    orbGeometry.setAttribute("position", new THREE.BufferAttribute(orbPositions, 3));
+    const orbMaterial = new THREE.PointsMaterial({
+      color: 0xeefdff,
+      size: 0.012,
+      transparent: true,
+      opacity: 0.24,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      sizeAttenuation: true,
+    });
+    const orbitalSparks = new THREE.Points(orbGeometry, orbMaterial);
+    scene.add(orbitalSparks);
+
+    // Arc lightning trails between ring layers.
+    const boltCount = 7;
+    const boltPointCount = 6;
+    const lightningGeometries: THREE.BufferGeometry[] = [];
+    const lightningMaterials: THREE.LineBasicMaterial[] = [];
+    const boltPhase = new Float32Array(boltCount);
+    const boltPointPhase = new Float32Array(boltCount * boltPointCount);
+    for (let i = 0; i < boltCount; i++) {
+      const boltGeometry = new THREE.BufferGeometry();
+      const boltPositions = new Float32Array(boltPointCount * 3);
+      boltGeometry.setAttribute("position", new THREE.BufferAttribute(boltPositions, 3));
+      const boltMaterial = new THREE.LineBasicMaterial({
+        color: 0xeefdff,
+        transparent: true,
+        opacity: 0.06,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const bolt = new THREE.Line(boltGeometry, boltMaterial);
+      scene.add(bolt);
+      lightningGeometries.push(boltGeometry);
+      lightningMaterials.push(boltMaterial);
+      boltPhase[i] = Math.random() * Math.PI * 2;
+      for (let p = 0; p < boltPointCount; p++) {
+        boltPointPhase[i * boltPointCount + p] = Math.random() * Math.PI * 2;
+      }
+    }
+
+    // Expanding shockwave pulses from the projection base.
+    const shockwaveCount = 3;
+    const shockwaveGeometries: THREE.RingGeometry[] = [];
+    const shockwaveMaterials: THREE.MeshBasicMaterial[] = [];
+    const shockwaves: THREE.Mesh[] = [];
+    const shockwaveOffsets = [0, 0.33, 0.66];
+    for (let i = 0; i < shockwaveCount; i++) {
+      const shockGeom = new THREE.RingGeometry(0.24, 0.3, 64);
+      const shockMat = new THREE.MeshBasicMaterial({
+        color: 0xbcecff,
+        transparent: true,
+        opacity: 0.0,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const shock = new THREE.Mesh(shockGeom, shockMat);
+      shock.rotation.x = Math.PI / 2;
+      shock.position.y = -0.63;
+      shock.position.z = 0.02;
+      scene.add(shock);
+      shockwaveGeometries.push(shockGeom);
+      shockwaveMaterials.push(shockMat);
+      shockwaves.push(shock);
+    }
+
     let raf: number;
     const startTime = performance.now();
-
-    const getThreatTint = () => {
-      switch (threatLevelRef.current) {
-        case "critical": return new THREE.Color(0xff0033);
-        case "elevated": return new THREE.Color(0xff6600);
-        case "guarded": return new THREE.Color(0xffcc00);
-        default: return new THREE.Color(0x00ff88);
-      }
-    };
+    const attentionTarget = new THREE.Vector2(0, 0);
+    const attentionCurrent = new THREE.Vector2(0, 0);
+    let nextSaccadeAt = 0.45 + Math.random() * 1.1;
+    let nextBlinkAt = 1.3 + Math.random() * 2.1;
+    let blinkWindowStart = -1;
+    let blinkWindowEnd = -1;
+    const headIntentPhase = Math.random() * Math.PI * 2;
+    let smoothedThreatSpeed = 0.8;
+    let smoothedThreatIntensity = 0.8;
+    let smoothedCriticalSpike = 0;
 
     const animate = () => {
       const elapsed = (performance.now() - startTime) / 1000;
+      const threatLevelNow = threatLevelRef.current;
+      const baseThreatSpeedMul =
+        threatLevelNow === "critical" ? 1.04 :
+        threatLevelNow === "elevated" ? 0.9 :
+        threatLevelNow === "guarded" ? 0.78 : 0.68;
+      const baseThreatIntensityMul =
+        threatLevelNow === "critical" ? 0.98 :
+        threatLevelNow === "elevated" ? 0.88 :
+        threatLevelNow === "guarded" ? 0.76 : 0.64;
+      const criticalSpikeTarget = threatLevelNow === "critical"
+        ? Math.pow(Math.max(0, Math.sin(elapsed * 1.7)), 2)
+        : 0;
+      smoothedCriticalSpike += (criticalSpikeTarget - smoothedCriticalSpike) * 0.08;
+
+      const targetThreatSpeed = Math.min(baseThreatSpeedMul + smoothedCriticalSpike * 0.22, 1.16);
+      const targetThreatIntensity = Math.min(baseThreatIntensityMul + smoothedCriticalSpike * 0.72, 1.25);
+      smoothedThreatSpeed += (targetThreatSpeed - smoothedThreatSpeed) * 0.07;
+      smoothedThreatIntensity += (targetThreatIntensity - smoothedThreatIntensity) * 0.06;
+      const threatSpeedMul = smoothedThreatSpeed;
+      const threatIntensityMul = smoothedThreatIntensity;
+
+      // Living behavior: gaze shifts, saccades, and blinking.
+      if (elapsed >= nextSaccadeAt) {
+        const saccadeScale = threatLevelNow === "critical" ? 0.05 : threatLevelNow === "elevated" ? 0.042 : 0.034;
+        attentionTarget.set(
+          (Math.random() - 0.5) * saccadeScale,
+          (Math.random() - 0.5) * saccadeScale * 0.7
+        );
+        nextSaccadeAt = elapsed + (threatLevelNow === "critical" ? 0.2 : 0.35) + Math.random() * (threatLevelNow === "critical" ? 0.55 : 1.05);
+      }
+      attentionCurrent.lerp(attentionTarget, Math.min(0.12 + 0.03 * threatSpeedMul, 0.16));
+
+      if (elapsed >= nextBlinkAt) {
+        const blinkDuration = 0.08 + Math.random() * 0.045;
+        blinkWindowStart = elapsed;
+        blinkWindowEnd = elapsed + blinkDuration;
+        nextBlinkAt = elapsed + 1.8 + Math.random() * 2.6 + (speakingRef.current ? 0.6 : 0);
+      }
+      let blinkStrength = 0;
+      if (elapsed >= blinkWindowStart && elapsed <= blinkWindowEnd) {
+        const t = (elapsed - blinkWindowStart) / Math.max(0.001, blinkWindowEnd - blinkWindowStart);
+        blinkStrength = 1 - Math.abs(t * 2 - 1);
+      }
       
       // Head movement - subtle scanning like reading data
       if (model) {
-        const headRotationY = Math.sin(elapsed * 0.6) * 0.08 + Math.sin(elapsed * 0.25) * 0.04;
-        const headRotationX = Math.sin(elapsed * 0.4) * 0.03;
-        headGroup.rotation.y = headRotationY;
-        headGroup.rotation.x = headRotationX;
+        const headMotionMul = Math.min(threatSpeedMul, 1.05);
+        const headRotationY = Math.sin(elapsed * 0.9 * headMotionMul) * 0.12 + Math.sin(elapsed * 0.45 * headMotionMul) * 0.05;
+        const headRotationX = -0.01 + Math.sin(elapsed * 0.65 * headMotionMul) * 0.02;
+        const intentYaw = attentionCurrent.x * 1.4;
+        const intentPitch = attentionCurrent.y * 1.05 + Math.sin(elapsed * 0.32 + headIntentPhase) * 0.004;
+        headGroup.rotation.y = headRotationY + intentYaw;
+        headGroup.rotation.x = headRotationX + intentPitch;
         
         // Very subtle breathing
-        const breathe = Math.sin(elapsed * 1.0) * 0.006;
+        const breathe = Math.sin(elapsed * 1.35 * threatSpeedMul) * 0.01;
         model.scale.setScalar(initialScale * (1 + breathe));
       }
 
+      for (let i = 0; i < faceCoreMaterials.length; i++) {
+        const flicker = 0.105 + Math.sin(elapsed * 2.7 * threatSpeedMul + i * 0.09) * 0.035;
+        faceCoreMaterials[i].emissiveIntensity = flicker + (speakingRef.current ? 0.055 : 0);
+      }
+
+      for (let i = 0; i < faceWireframeMaterials.length; i++) {
+        faceWireframeMaterials[i].opacity = 0.1 + Math.sin(elapsed * 1.6 + i * 0.14) * 0.04;
+      }
+
       // Camera subtle movement
-       camera.position.x = Math.sin(elapsed * 0.2) * 0.016;
-       camera.position.y = 0.16 + Math.sin(elapsed * 0.3) * 0.01;
-       camera.lookAt(0, 0.14, 0);
+       camera.position.x = Math.sin(elapsed * 0.14) * 0.012;
+       camera.position.y = 0.08 + Math.sin(elapsed * 0.22) * 0.006;
+       camera.lookAt(0, 0.05, 0);
 
       // Eye glow pulsation
-      const eyePulse = 0.6 + Math.sin(elapsed * 2) * 0.3 + (speakingRef.current ? 0.2 : 0);
-      eyeGlowMaterial.opacity = eyePulse;
-      eyeGlow.scale.setScalar(1 + Math.sin(elapsed * 3) * 0.1);
+      const eyePulse = 0.33 + Math.sin(elapsed * 2.7 * threatSpeedMul) * 0.06 + (speakingRef.current ? 0.09 : 0);
+      const blinkOpacityDrop = 1 - blinkStrength * 0.72;
+      eyeGlowMaterial.opacity = eyePulse * blinkOpacityDrop;
+      (rightEyeGlow.material as THREE.MeshBasicMaterial).opacity = eyePulse * blinkOpacityDrop;
+      const auraPulse = 0.075 + Math.sin(elapsed * 2.3 * threatSpeedMul) * 0.026;
+      eyeAuraMaterial.opacity = auraPulse * (1 - blinkStrength * 0.5);
+      (rightEyeAura.material as THREE.MeshBasicMaterial).opacity = auraPulse * (1 - blinkStrength * 0.5);
+      const eyeScale = 1 + Math.sin(elapsed * 2.8) * 0.06;
+      const blinkSquash = 1 - blinkStrength * 0.82;
+      leftEyeGlow.scale.set(1.28 * eyeScale, 0.75 * eyeScale * blinkSquash, 0.9);
+      rightEyeGlow.scale.set(1.28 * eyeScale, 0.75 * eyeScale * blinkSquash, 0.9);
+      const gazeX = attentionCurrent.x * 0.42;
+      const gazeY = attentionCurrent.y * 0.28;
+      leftEyeGlow.position.set(leftEyeBasePos.x + gazeX, leftEyeBasePos.y + gazeY, leftEyeBasePos.z);
+      rightEyeGlow.position.set(rightEyeBasePos.x + gazeX, rightEyeBasePos.y + gazeY, rightEyeBasePos.z);
+      leftEyeAura.position.set(leftAuraBasePos.x + gazeX * 0.9, leftAuraBasePos.y + gazeY * 0.9, leftAuraBasePos.z);
+      rightEyeAura.position.set(rightAuraBasePos.x + gazeX * 0.9, rightAuraBasePos.y + gazeY * 0.9, rightAuraBasePos.z);
+      coreGlowMaterial.opacity = 0.034 + Math.sin(elapsed * 1.6 * threatSpeedMul) * 0.012 + (speakingRef.current ? 0.02 : 0);
+
+      dataBand.position.x = Math.sin(elapsed * 0.95 * threatSpeedMul) * 0.11;
+      dataBandMaterial.opacity = 0.09 + Math.sin(elapsed * 2.8 * threatSpeedMul) * 0.035;
+      bridgeBarMaterial.opacity = 0.095 + Math.sin(elapsed * 3.6 * threatSpeedMul) * 0.03;
+      (rightBridgeBar.material as THREE.MeshBasicMaterial).opacity = bridgeBarMaterial.opacity;
+      leftBridgeBar.scale.x = 0.95 + Math.sin(elapsed * 2.4 * threatSpeedMul) * 0.04;
+      rightBridgeBar.scale.x = 0.95 + Math.sin(elapsed * 2.4 * threatSpeedMul + 0.65) * 0.04;
 
       // Processing light - only active when processing
       if (isProcessingRef.current) {
-        processingLightMaterial.opacity = 0.5 + Math.sin(elapsed * 8) * 0.4;
-        processingLight.scale.setScalar(1 + Math.sin(elapsed * 6) * 0.3);
+        processingLightMaterial.opacity = 0.28 + Math.sin(elapsed * 9 * threatSpeedMul) * 0.2;
+        processingLight.scale.setScalar(1 + Math.sin(elapsed * 7 * threatSpeedMul) * 0.2);
       } else {
         processingLightMaterial.opacity = Math.max(0, processingLightMaterial.opacity - 0.05);
       }
 
       // Data particles - ALWAYS ACTIVE for reading data effect
-      dataParticles.material.opacity = 0.4 + Math.sin(elapsed * 1.5) * 0.2;
+      dataParticles.material.opacity = (0.24 + Math.sin(elapsed * 1.9 * threatSpeedMul) * 0.1) * threatIntensityMul;
       
       const positions = dataParticles.geometry.attributes.position.array as Float32Array;
       for (let i = 0; i < particleCount; i++) {
@@ -420,30 +753,107 @@ export default function SentinelAvatar3D({
         }
       }
       dataParticles.geometry.attributes.position.needsUpdate = true;
+      faceNodeMaterial.opacity = (0.12 + Math.sin(elapsed * 2.4 * threatSpeedMul) * 0.06 + (speakingRef.current ? 0.04 : 0)) * threatIntensityMul;
 
       // Data rings - ALWAYS ACTIVE
       for (let i = 0; i < ringMaterials.length; i++) {
         const ring = ringGroup.children[i] as THREE.Mesh;
         ring.rotation.z = elapsed * (0.2 + i * 0.1);
         
-        const ringOpacity = 0.15 + Math.sin(elapsed * 1.2 + i) * 0.1;
+        const ringOpacity = (0.12 + Math.sin(elapsed * 1.2 * threatSpeedMul + i) * 0.08) * threatIntensityMul;
         ringMaterials[i].opacity = ringOpacity;
       }
 
+      // Big surrounding halo animation.
+      haloGroup.rotation.y = elapsed * 0.18 * Math.min(threatSpeedMul, 1.12);
+      for (let i = 0; i < haloRings.length; i++) {
+        const ringSpeedMul = Math.min(threatSpeedMul, 1.15);
+        haloRings[i].rotation.y += (0.0015 + i * 0.001) * ringSpeedMul;
+        haloRings[i].rotation.z += ((i % 2 === 0 ? 1 : -1) * 0.0012) * ringSpeedMul;
+        haloMaterials[i].opacity = (0.1 + Math.sin(elapsed * threatSpeedMul * (1.1 + i * 0.33) + i) * 0.08) * threatIntensityMul;
+      }
+
+      // Vertical stream animation.
+      const streamArr = streams.geometry.attributes.position.array as Float32Array;
+      for (let i = 0; i < streamCount; i++) {
+        const idx = i * 3;
+        streamArr[idx + 1] += streamSpeed[i] * 0.012 * threatSpeedMul;
+        if (streamArr[idx + 1] > 0.98) {
+          streamArr[idx + 1] = -0.62;
+        }
+        const swirl = elapsed * threatSpeedMul * (0.36 + i * 0.003);
+        streamArr[idx] = Math.cos(swirl + i * 0.38) * streamRadius[i];
+        streamArr[idx + 2] = Math.sin(swirl + i * 0.38) * streamRadius[i];
+      }
+      streams.geometry.attributes.position.needsUpdate = true;
+      streamMaterial.opacity = (0.1 + Math.sin(elapsed * 1.8 * threatSpeedMul) * 0.05) * threatIntensityMul;
+
+      // Orbital sparks.
+      const orbArr = orbitalSparks.geometry.attributes.position.array as Float32Array;
+      for (let i = 0; i < orbCount; i++) {
+        orbAngles[i] += (0.007 + i * 0.00004) * threatSpeedMul;
+        const idx = i * 3;
+        orbArr[idx] = Math.cos(orbAngles[i]) * orbRadii[i];
+        orbArr[idx + 1] = orbOffsets[i] + Math.sin(elapsed * 1.8 * threatSpeedMul + i * 0.4) * 0.08;
+        orbArr[idx + 2] = Math.sin(orbAngles[i]) * orbRadii[i];
+      }
+      orbitalSparks.geometry.attributes.position.needsUpdate = true;
+      orbMaterial.opacity = (0.14 + Math.sin(elapsed * 2.6 * threatSpeedMul) * 0.05) * threatIntensityMul;
+
+      // Arc lightning update.
+      for (let b = 0; b < boltCount; b++) {
+        const boltGeometry = lightningGeometries[b];
+        const boltMaterial = lightningMaterials[b];
+        const boltPos = boltGeometry.attributes.position.array as Float32Array;
+        const a = elapsed * threatSpeedMul * 1.6 + boltPhase[b];
+        const startRadius = 0.76 + (b % 2) * 0.09;
+        const endRadius = 0.94;
+        const startY = 0.04 + (b % 3) * 0.03;
+        const endY = 0.08 + ((b + 1) % 3) * 0.04;
+        const startX = Math.cos(a) * startRadius;
+        const startZ = Math.sin(a) * startRadius;
+        const endX = Math.cos(a + 0.42) * endRadius;
+        const endZ = Math.sin(a + 0.42) * endRadius;
+
+        for (let p = 0; p < boltPointCount; p++) {
+          const t = p / (boltPointCount - 1);
+          const idx = p * 3;
+          const jitter = (0.016 + (1 - t) * 0.01) * threatIntensityMul;
+          const phase = boltPointPhase[b * boltPointCount + p];
+          const wobble = elapsed * threatSpeedMul * 6.2 + phase;
+          const jx = Math.sin(wobble) * jitter * 0.55;
+          const jy = Math.cos(wobble * 1.17) * jitter * 0.42;
+          const jz = Math.sin(wobble * 0.83 + 1.2) * jitter * 0.55;
+          boltPos[idx] = THREE.MathUtils.lerp(startX, endX, t) + jx;
+          boltPos[idx + 1] = THREE.MathUtils.lerp(startY, endY, t) + jy;
+          boltPos[idx + 2] = THREE.MathUtils.lerp(startZ, endZ, t) + jz;
+        }
+        boltGeometry.attributes.position.needsUpdate = true;
+        const flash = Math.max(0, Math.sin(elapsed * threatSpeedMul * 9 + boltPhase[b] * 2.3));
+        boltMaterial.opacity = (0.02 + flash * 0.17) * threatIntensityMul;
+      }
+
+      // Expanding shockwave pulses.
+      for (let i = 0; i < shockwaveCount; i++) {
+        const t = (elapsed * 0.42 * threatSpeedMul + shockwaveOffsets[i]) % 1;
+        const scale = 0.45 + t * 1.9;
+        shockwaves[i].scale.setScalar(scale);
+        shockwaveMaterials[i].opacity = Math.max(0, (1 - t) * (1 - t) * 0.14 * threatIntensityMul);
+      }
+
       // Scanning beam - ALWAYS ACTIVE
-      scanLineMaterial.opacity = 0.15 + Math.sin(elapsed * 3) * 0.08;
-      scanLine.position.x = Math.sin(elapsed * 0.6) * 0.2;
-      scanLine.position.y = 0.12 + Math.sin(elapsed * 0.4) * 0.1;
+      scanLineMaterial.opacity = (0.11 + Math.sin(elapsed * 3 * threatSpeedMul) * 0.06) * threatIntensityMul;
+      scanLine.position.x = Math.sin(elapsed * 0.6 * threatSpeedMul) * 0.2;
+      scanLine.position.y = 0.12 + Math.sin(elapsed * 0.4 * threatSpeedMul) * 0.1;
 
       // Base platform glow
-      const tint = getThreatTint();
       const speakingBoost = speakingRef.current ? 0.3 : 0;
-      const pulseIntensity = 0.3 + Math.sin(elapsed * 2) * 0.1 * (1 + speakingBoost);
-      baseMaterial.emissive = tint;
-      baseMaterial.emissiveIntensity = pulseIntensity;
+      const pulseIntensity = (0.21 + Math.sin(elapsed * 2 * threatSpeedMul) * 0.07 * (1 + speakingBoost)) * threatIntensityMul;
+      baseMaterial.emissive = new THREE.Color(0xbcecff);
+      baseMaterial.emissiveIntensity = pulseIntensity * 0.42;
 
       // Content scale pulse when speaking
-      const speakPulse = speakingRef.current ? 1 + Math.sin(elapsed * 4) * 0.02 : 1;
+      const speakPulse = speakingRef.current ? 1 + Math.sin(elapsed * 4 * threatSpeedMul) * 0.02 : 1;
       contentRoot.scale.setScalar(speakPulse);
 
       renderer.render(scene, camera);
@@ -480,10 +890,48 @@ export default function SentinelAvatar3D({
       scanLineMaterial.dispose();
       eyeGlowGeometry.dispose();
       eyeGlowMaterial.dispose();
+      eyeAuraGeometry.dispose();
+      eyeAuraMaterial.dispose();
+      (rightEyeGlow.material as THREE.Material).dispose();
+      (rightEyeAura.material as THREE.Material).dispose();
+      coreGlowGeometry.dispose();
+      coreGlowMaterial.dispose();
+      dataBandGeometry.dispose();
+      dataBandMaterial.dispose();
       processingLightGeometry.dispose();
       processingLightMaterial.dispose();
+      bridgeBarGeometry.dispose();
+      bridgeBarMaterial.dispose();
+      (rightBridgeBar.material as THREE.Material).dispose();
+      faceNodeGeometry.dispose();
+      faceNodeMaterial.dispose();
+      for (const ring of haloRings) {
+        ((ring.geometry) as THREE.BufferGeometry).dispose();
+      }
+      for (const mat of haloMaterials) {
+        mat.dispose();
+      }
+      for (const geom of lightningGeometries) {
+        geom.dispose();
+      }
+      for (const mat of lightningMaterials) {
+        mat.dispose();
+      }
+      for (const geom of shockwaveGeometries) {
+        geom.dispose();
+      }
+      for (const mat of shockwaveMaterials) {
+        mat.dispose();
+      }
+      streamGeometry.dispose();
+      streamMaterial.dispose();
+      orbGeometry.dispose();
+      orbMaterial.dispose();
       baseGeometry.dispose();
       baseMaterial.dispose();
+      for (const geom of overlayGeometries) {
+        geom.dispose();
+      }
       scene.clear();
     };
   }, [resolvedModelUrl, modelYawOffsetDeg]);
