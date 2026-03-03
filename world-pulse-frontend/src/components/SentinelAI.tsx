@@ -9,6 +9,7 @@ import {
 import TypewriterText from "./TypewriterText";
 import PulseIndicator from "./PulseIndicator";
 import HolographicAvatar from "./HolographicAvatar";
+import SentinelAvatar3D from "./SentinelAvatar3D";
 import MoodIndicator from "./MoodIndicator";
 import useSentinel from "./useSentinel";
 import TimeSeriesChart from "./TimeSeriesChart";
@@ -273,13 +274,16 @@ export default function SentinelAI({
           />
         </div>
 
-        {/* Holographic Avatar - JARVIS Style */}
+        {/* Holographic Avatar - Face Projection (Gideon Style) */}
         <div className="hologram-container">
-          <HolographicAvatar 
-            isSpeaking={isSpeaking || isListening} 
+          <SentinelAvatar3D 
+            className="sentinel-face-projection"
+            isSpeaking={isSpeaking || isListening}
+            isProcessing={isLoading || isProcessingQA}
             threatLevel={data?.threat_level || "stable"}
+            modelUrl="/models/sentinel-scan.glb"
+            modelYawOffsetDeg={-90}
           />
-
           
           {/* Voice indicator */}
           {(voiceEnabled || isListening) && (

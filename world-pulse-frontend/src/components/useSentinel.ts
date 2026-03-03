@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import API, { API_HEADERS } from "../services/api";
 
+const API_KEY = import.meta.env.VITE_API_KEY || "super_secure_api_key";
+
 // Type declarations for Web Speech API
 declare global {
   interface Window {
@@ -165,6 +167,21 @@ export function useSentinel(options: UseSentinelOptions = {}) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const mutedAlertUntilRef = useRef<Record<string, number>>({});
+  const ALERT_MUTE_MS = 10 * 60 * 1000;
+
+  const isAlertMuted = useCallback((id?: string, signature?: string) => {
+    const now = Date.now();
+    if (id) {
+      const untilById = mutedAlertUntilRef.current[id];
+      if (typeof untilById === "number" && untilById > now) return true;
+    }
+    if (signature) {
+      const untilBySig = mutedAlertUntilRef.current[signature];
+      if (typeof untilBySig === "number" && untilBySig > now) return true;
+    }
+    return false;
+  }, []);
 
 
   // Load saved preferences
@@ -237,23 +254,47 @@ export function useSentinel(options: UseSentinelOptions = {}) {
   }, [customThreshold, sensitivity, enableVoice]);
 
   const checkAlerts = useCallback((riskScore: number) => {
-    const triggered = alerts.filter(alert => {
+    const nowIso = new Date().toISOString();
+
+    const triggered = alerts.filter((alert) => {
       if (!alert.enabled) return false;
       const shouldTrigger = alert.condition === "above" ? riskScore > alert.threshold : riskScore < alert.threshold;
-      if (shouldTrigger && !alert.triggered) {
-        return true;
-      }
-      return false;
+      // Trigger only on threshold entry. It will rearm once condition clears.
+      return shouldTrigger && !alert.triggered;
     });
-    
+
     if (triggered.length > 0) {
-      setActiveAlerts(triggered);
-      // Update triggered status
-      setAlerts(prev => prev.map(a => 
-        triggered.find(t => t.id === a.id) ? { ...a, triggered: true, lastTriggered: new Date().toISOString() } : a
-      ));
+      setActiveAlerts((prev) => {
+        const existing = new Set(prev.map((a) => a.id));
+        const next = [...prev];
+        for (const alert of triggered) {
+          const signature = `${alert.condition}-${alert.threshold}`;
+          if (isAlertMuted(alert.id, signature)) {
+            continue;
+          }
+          if (!existing.has(alert.id)) {
+            next.push({ ...alert, triggered: true, lastTriggered: nowIso });
+          }
+        }
+        return next;
+      });
     }
-  }, [alerts]);
+
+    // Keep `triggered` latched while condition remains true; rearm when condition clears.
+    setAlerts((prev) =>
+      prev.map((alert) => {
+        if (!alert.enabled) return { ...alert, triggered: false };
+        const shouldTrigger = alert.condition === "above" ? riskScore > alert.threshold : riskScore < alert.threshold;
+        if (!shouldTrigger && alert.triggered) {
+          return { ...alert, triggered: false };
+        }
+        if (shouldTrigger && !alert.triggered) {
+          return { ...alert, triggered: true, lastTriggered: nowIso };
+        }
+        return alert;
+      }),
+    );
+  }, [alerts, isAlertMuted]);
 
   const speakAnalysis = useCallback((text: string) => {
     if (!window.speechSynthesis) return;
@@ -284,7 +325,11 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     if (!enableWebSocket || wsRef.current?.readyState === WebSocket.OPEN) return;
 
     try {
-      const ws = new WebSocket(webSocketUrl);
+      // Append API key as query parameter for authentication
+      const wsUrl = webSocketUrl.includes('?') 
+        ? `${webSocketUrl}&api_key=${API_KEY}` 
+        : `${webSocketUrl}?api_key=${API_KEY}`;
+      const ws = new WebSocket(wsUrl);
       
       ws.onopen = () => {
         setWsConnected(true);
@@ -300,7 +345,27 @@ export function useSentinel(options: UseSentinelOptions = {}) {
             setLastUpdate(new Date().toISOString());
             checkAlerts(message.data.risk_score);
           } else if (message.type === "alert") {
-            setActiveAlerts(prev => [...prev, message.alert]);
+            const incoming = message.alert as Partial<AlertConfig> | undefined;
+            if (!incoming) return;
+
+            const alertId = incoming.id || `${incoming.condition || "alert"}-${incoming.threshold || "na"}`;
+            const signature = `${incoming.condition === "below" ? "below" : "above"}-${Number(incoming.threshold ?? 0)}`;
+            if (isAlertMuted(alertId, signature)) return;
+
+            setActiveAlerts((prev) => {
+              if (prev.some((a) => a.id === alertId || `${a.condition}-${a.threshold}` === signature)) {
+                return prev;
+              }
+              const normalized: AlertConfig = {
+                id: alertId,
+                threshold: Number(incoming.threshold ?? 0),
+                condition: incoming.condition === "below" ? "below" : "above",
+                enabled: incoming.enabled ?? true,
+                triggered: true,
+                lastTriggered: new Date().toISOString(),
+              };
+              return [...prev, normalized];
+            });
           }
         } catch (e) {
           console.error("WebSocket message error:", e);
@@ -325,7 +390,7 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     } catch (err) {
       console.error("Failed to connect WebSocket:", err);
     }
-  }, [enableWebSocket, webSocketUrl, checkAlerts]);
+  }, [enableWebSocket, webSocketUrl, checkAlerts, isAlertMuted]);
 
   const disconnectWebSocket = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -500,9 +565,17 @@ export function useSentinel(options: UseSentinelOptions = {}) {
   }, []);
 
   const dismissAlert = useCallback((id: string) => {
-    setActiveAlerts(prev => prev.filter(a => a.id !== id));
-    setAlerts(prev => prev.map(a => 
-      a.id === id ? { ...a, triggered: false } : a
+    const muteUntil = Date.now() + ALERT_MUTE_MS;
+    setActiveAlerts((prev) => {
+      const dismissed = prev.find((a) => a.id === id);
+      mutedAlertUntilRef.current[id] = muteUntil;
+      if (dismissed) {
+        mutedAlertUntilRef.current[`${dismissed.condition}-${dismissed.threshold}`] = muteUntil;
+      }
+      return prev.filter((a) => a.id !== id);
+    });
+    setAlerts(prev => prev.map(a =>
+      a.id === id ? { ...a, lastTriggered: new Date().toISOString() } : a
     ));
   }, []);
 

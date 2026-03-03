@@ -112,10 +112,21 @@ def compute_global_risk():
     new_articles_count = len(df[df['timestamp'] >= last_hour])
     volume_score = min(10, new_articles_count / 5)  # scale 0–10
 
-    # Step 5: Compute final risk
-    risk_score = 50 - (avg_sentiment * 40)    # base risk from sentiment
-    risk_score += sentiment_std * 20          # volatility boost
-    risk_score += volume_score                 # volume spike
+    # Step 5: Compute final risk with BALANCED formula and DAMPING factors
+    # FIX: Balance the formula - negative sentiment should only moderately increase risk
+    # FIX: Add damping factors to prevent constant alerts above 75
+    
+    # Base risk centered at 50 with symmetric sentiment impact (damped)
+    # Sentiment range is typically -1 to +1, so *15 gives -15 to +15 range
+    risk_score = 50 - (avg_sentiment * 15)    # balanced sentiment impact
+    
+    # Damped volatility boost (was *20, now *8)
+    risk_score += sentiment_std * 8            # damped volatility
+    
+    # Damped volume score (was /5 with max 10, now /10 with max 5)
+    volume_score = min(5, new_articles_count / 10)  # capped volume spike
+    risk_score += volume_score
+    
     risk_score = max(0, min(100, risk_score)) # clamp 0–100
 
     # Step 6: Optional external API signals

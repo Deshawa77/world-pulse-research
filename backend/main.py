@@ -1861,9 +1861,10 @@ def observability_model(request: Request, window: int = Query(200, ge=10, le=500
 # REAL-TIME RISK STREAM WITH TOPICS
 # =====================================================
 @app.websocket("/ws/risk")
-async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(...)):
+async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(None), api_key: str = Query(None)):
     # --- Security check ---
-    key = (x_api_key or "").strip()
+    # Support both header and query parameter for API key
+    key = (x_api_key or api_key or "").strip()
     valid_key = any(hmac.compare_digest(key, k) for k in USER_API_KEYS.union(ADMIN_API_KEYS))
     if not valid_key:
         await websocket.close(code=1008)
@@ -1896,13 +1897,14 @@ async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(...)):
 # SENTINEL AI REAL-TIME WEBSOCKET
 # =====================================================
 @app.websocket("/ws/sentinel")
-async def websocket_sentinel(websocket: WebSocket, x_api_key: str = Header(...)):
+async def websocket_sentinel(websocket: WebSocket, x_api_key: str = Header(None), api_key: str = Query(None)):
     """
     WebSocket endpoint for Sentinel AI real-time updates.
     Provides risk score, analysis, and alerts to connected clients.
     """
     # --- Security check (optional for local dev) ---
-    key = (x_api_key or "").strip()
+    # Support both header and query parameter for API key
+    key = (x_api_key or api_key or "").strip()
     if key and (USER_API_KEYS or ADMIN_API_KEYS):
         valid_key = any(hmac.compare_digest(key, k) for k in USER_API_KEYS.union(ADMIN_API_KEYS))
         if not valid_key:
