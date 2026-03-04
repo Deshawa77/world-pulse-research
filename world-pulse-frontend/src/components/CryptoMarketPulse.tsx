@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Bitcoin, TrendingUp, TrendingDown, Activity, DollarSign, BarChart3 } from "lucide-react";
+import { Bitcoin, TrendingUp, TrendingDown, Activity, BarChart3 } from "lucide-react";
 import { getCryptoPulse, type CryptoItem } from "../services/api";
 
 interface CryptoMarketPulseProps {

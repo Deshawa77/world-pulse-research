@@ -7,8 +7,6 @@ import CommandCenterHeader from "../components/CommandCenterHeader";
 
 import CountryDrilldown from "../components/CountryDrilldown";
 import EventLog, { type OperatorEvent } from "../components/EventLog";
-import ModelGovernance from "../components/ModelGovernance";
-import AdvancedStreamingTrends from "../components/AdvancedStreamingTrends";
 import SentinelAI from "../components/SentinelAI";
 import DataBurstModal from "../components/DataBurstModal";
 import LiveDataStreams from "../components/LiveDataStreams";
@@ -18,24 +16,16 @@ import GlobalDisasterMonitor from "../components/GlobalDisasterMonitor";
 import EconomicIndicatorsFeed from "../components/EconomicIndicatorsFeed";
 import HealthAlertStream from "../components/HealthAlertStream";
 import GoogleTrendsRadar from "../components/GoogleTrendsRadar";
-import AdvancedAnalyticsPanel from "../components/AdvancedAnalyticsPanel";
-import RiskCorrelationMatrix from "../components/RiskCorrelationMatrix";
-import SentimentTrendAnalyzer from "../components/SentimentTrendAnalyzer";
-import WorldGlobe3D from "../components/WorldGlobe3D";
-import HistoricalPlayback from "../components/HistoricalPlayback";
-import CountryComparison from "../components/CountryComparison";
 
 
 import API, {
 
   API_HEADERS,
   getCountryDrilldown,
-  getGovernanceData,
   getLiveCommandFeed,
   getRiskMap,
   postAlertAction,
   type CountryDrilldownData,
-  type GovernanceData,
   type LiveCommandFeed,
   type RiskMapPoint,
 } from "../services/api";
@@ -65,7 +55,7 @@ type Snapshot = {
 };
 
 type ConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
-type PanelKey = "risk" | "map" | "stream" | "ops" | "governance";
+type PanelKey = "risk" | "map" | "stream" | "ops";
 
 const HISTORY_KEY = "wp_v3_history";
 const EVENTS_KEY = "wp_v3_events";
@@ -121,7 +111,6 @@ export default function Dashboard() {
     modelDrift: 0,
     lastUpdated: new Date().toISOString(),
   });
-  const [governance, setGovernance] = useState<GovernanceData>({ models: [], disagreement: [], calibrationTrend: [] });
   const [riskMap, setRiskMap] = useState<RiskMapPoint[]>([]);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [fpsLow, setFpsLow] = useState(false);
@@ -148,12 +137,10 @@ export default function Dashboard() {
 
   const cacheRef = useRef<{
     liveFeed: { data: LiveCommandFeed | null; timestamp: number; ttl: number };
-    governance: { data: GovernanceData | null; timestamp: number; ttl: number };
     riskMap: { data: RiskMapPoint[] | null; timestamp: number; ttl: number };
     global: { data: any | null; timestamp: number; ttl: number };
   }>({
     liveFeed: { data: null, timestamp: 0, ttl: 3000 },
-    governance: { data: null, timestamp: 0, ttl: 10000 },
     riskMap: { data: null, timestamp: 0, ttl: 5000 },
     global: { data: null, timestamp: 0, ttl: 2000 },
   });
@@ -165,7 +152,6 @@ export default function Dashboard() {
     map: Date.now(),
     stream: Date.now(),
     ops: Date.now(),
-    governance: Date.now(),
   });
   
   const retriesRef = useRef(0);
@@ -189,51 +175,8 @@ export default function Dashboard() {
       map: staleFor(now - panelUpdated.current.map, 12000),
       stream: staleFor(now - panelUpdated.current.stream, 12000),
       ops: staleFor(now - panelUpdated.current.ops, 30000),
-      governance: staleFor(now - panelUpdated.current.governance, 60000),
     };
-  }, [history.length, operatorEvents.length, governance.calibrationTrend.length, riskMap.length]);
-
-  const topTopics = active?.topics?.slice(0, 5) ?? [];
-  
-  const streamingSeries = useMemo(
-    () => [
-      {
-        name: "Global Risk",
-        points: history.slice(-120).map((h) => ({ timestamp: h.timestamp, value: h.score })),
-        color: "#00f5ff",
-        width: 3,
-      },
-      {
-        name: "News Sentiment",
-        points: history.slice(-120).map((h) => ({ timestamp: h.timestamp, value: Math.min(100, Math.max(0, (h.features.news_sentiment + 1) * 40)) })),
-        color: "#ff00ff",
-        width: 2,
-        dash: "dash",
-      },
-      {
-        name: "Crypto Volatility",
-        points: history.slice(-120).map((h) => ({ 
-          timestamp: h.timestamp, 
-          value: Math.min(100, Math.max(0, h.features.crypto_volatility * 500 + 50)) 
-        })),
-        color: "#39ff14",
-        width: 3,
-      },
-      {
-        name: "Weather Anomaly",
-        points: history.slice(-120).map((h) => ({ timestamp: h.timestamp, value: Math.min(100, Math.max(0, h.features.weather_anomaly * 100)) })),
-        color: "#ffaa00",
-        width: 2,
-        dash: "dot",
-      },
-    ],
-    [history],
-  );
-
-  const anomalyMarks = useMemo(
-    () => history.slice(-120).filter((h) => h.score > 75 || h.score < 25).map((h) => ({ timestamp: h.timestamp, value: h.score })),
-    [history],
-  );
+  }, [history.length, operatorEvents.length, riskMap.length]);
 
   useEffect(() => {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-MAX_HISTORY)));
@@ -303,9 +246,8 @@ export default function Dashboard() {
       if (stop) return;
       setConnectionState(retriesRef.current > 0 ? "reconnecting" : "connecting");
       try {
-        const [live, gov, mapRows, global] = await Promise.all([
+        const [live, mapRows, global] = await Promise.all([
           getCachedOrFetch("liveFeed", getLiveCommandFeed),
-          getCachedOrFetch("governance", getGovernanceData),
           getCachedOrFetch("riskMap", getRiskMap),
           getCachedOrFetch("global", () => 
             API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } }).then(r => r.data)
@@ -326,10 +268,8 @@ export default function Dashboard() {
         }
 
         setLiveFeed(live);
-        setGovernance(gov);
         setRiskMap(mapRows);
         panelUpdated.current.map = Date.now();
-        panelUpdated.current.governance = Date.now();
         setErrorText("");
         retriesRef.current = 0;
         setRetries(0);
@@ -342,7 +282,6 @@ export default function Dashboard() {
         
         if (e?.response?.status === 429) {
           cacheRef.current.liveFeed.timestamp = 0;
-          cacheRef.current.governance.timestamp = 0;
           cacheRef.current.riskMap.timestamp = 0;
           cacheRef.current.global.timestamp = 0;
         }
@@ -740,28 +679,6 @@ export default function Dashboard() {
         </article>
       </section>
 
-      {/* Model Governance - 2 Column Grid */}
-      <section style={{ margin: "0 16px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-        {/* Model Governance */}
-        <article className={`wp-card panel-frame governance-panel ${fpsLow ? "" : "panel-animated"}`} style={{ height: "850px", display: "flex", flexDirection: "column", gridColumn: "span 2" }}>
-
-
-
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(168,85,247,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(168,85,247,0.4) 0%, transparent 70%)" }}></div>
-            <h3>
-              <span className="header-icon">◈</span>
-              Model Governance
-              <span className="header-badge" style={{ background: "rgba(168,85,247,0.2)", color: "#a855f7", border: "1px solid rgba(168,85,247,0.4)" }}>AI</span>
-            </h3>
-          </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
-            {panelStale.governance ? <div className="panel-stale">stale</div> : null}
-            <ModelGovernance data={governance} />
-          </div>
-        </article>
-      </section>
-
       {/* Operator Workflow - Full Width */}
       <section style={{ margin: "0 16px 16px" }}>
         <article className={`wp-card panel-frame operator-panel ${fpsLow ? "" : "panel-animated"}`} style={{ height: "350px", display: "flex", flexDirection: "column" }}>
@@ -776,70 +693,6 @@ export default function Dashboard() {
           <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
             {panelStale.ops ? <div className="panel-stale">stale</div> : null}
             <EventLog events={operatorEvents} />
-          </div>
-        </article>
-      </section>
-
-      {/* Advanced Analytics Panel - Full Width */}
-      <section style={{ margin: "0 16px 16px" }}>
-        <article className={`wp-card panel-frame advanced-analytics-panel ${fpsLow ? "" : "panel-animated"}`} style={{ display: "flex", flexDirection: "column" }}>
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(0,212,255,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(0,212,255,0.4) 0%, transparent 70%)" }}></div>
-            <h3>
-              <span className="header-icon">🔮</span>
-              Advanced Analytics
-              <span className="header-badge" style={{ background: "rgba(0,212,255,0.2)", color: "#00d4ff", border: "1px solid rgba(0,212,255,0.4)" }}>ML</span>
-            </h3>
-          </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
-            <AdvancedAnalyticsPanel />
-          </div>
-        </article>
-      </section>
-
-      {/* Visualization Enhancements - 2x2 Grid */}
-      <section style={{ margin: "0 16px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-        {/* 3D WebGL Globe */}
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "550px", display: "flex", flexDirection: "column" }}>
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(0,212,255,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(0,212,255,0.4) 0%, transparent 70%)" }}></div>
-            <h3><span className="header-icon">🌐</span>3D Risk Globe<span className="header-badge" style={{ background: "rgba(0,212,255,0.2)", color: "#00d4ff" }}>WEBGL</span></h3>
-          </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
-            <WorldGlobe3D data={riskMap.map(r => ({ country: r.country, countryCode: r.country, risk: r.risk, lat: 0, lng: 0 }))} autoRotate={true} height={480} />
-          </div>
-        </article>
-
-        {/* Risk Correlation Matrix */}
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "550px", display: "flex", flexDirection: "column" }}>
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(168,85,247,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(168,85,247,0.4) 0%, transparent 70%)" }}></div>
-            <h3><span className="header-icon">🔗</span>Correlation Matrix<span className="header-badge" style={{ background: "rgba(168,85,247,0.2)", color: "#a855f7" }}>ML</span></h3>
-          </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
-            <RiskCorrelationMatrix data={history.map(h => ({ features: { news_sentiment: h.features.news_sentiment, gdelt_sentiment: h.features.gdelt_sentiment, crypto_return: h.features.crypto_return, crypto_volatility: h.features.crypto_volatility, stock_return: h.features.stock_return, stock_volatility: h.features.stock_volatility, weather_anomaly: h.features.weather_anomaly, global_risk_score: h.score }, timestamp: h.timestamp }))} height={480} />
-          </div>
-        </article>
-
-        {/* Historical Playback */}
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "550px", display: "flex", flexDirection: "column" }}>
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(245,158,11,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(245,158,11,0.4) 0%, transparent 70%)" }}></div>
-            <h3><span className="header-icon">⏮️</span>Historical Playback<span className="header-badge" style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}>TIME</span></h3>
-          </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
-            <HistoricalPlayback data={history} height={480} />
-          </div>
-        </article>
-
-        {/* Country Comparison */}
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "550px", display: "flex", flexDirection: "column" }}>
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(34,197,94,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(34,197,94,0.4) 0%, transparent 70%)" }}></div>
-            <h3><span className="header-icon">⚖️</span>Country Comparison<span className="header-badge" style={{ background: "rgba(34,197,94,0.2)", color: "#22c55e" }}>COMPARE</span></h3>
-          </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
-            <CountryComparison countries={riskMap.map(r => ({ country: r.country, countryCode: r.country, risk: r.risk, features: { news_sentiment: 0, gdelt_sentiment: 0, crypto_return: 0, crypto_volatility: 0, stock_return: 0, stock_volatility: 0, weather_anomaly: 0 }, timestamp: new Date().toISOString() }))} height={480} />
           </div>
         </article>
       </section>
@@ -905,3 +758,4 @@ export default function Dashboard() {
     </main>
   );
 }
+

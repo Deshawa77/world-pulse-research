@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import * as echarts from "echarts";
 
 interface CountryData {
@@ -13,6 +13,15 @@ interface CountryComparisonProps {
   countries: CountryData[];
   height?: number;
 }
+
+const toNumberOr = (value: unknown, fallback = 0): number => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+};
 
 const METRICS = [
   { key: "news_sentiment", label: "News Sentiment", format: (v: number) => v.toFixed(2) },
@@ -179,6 +188,9 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
     return "#22c55e";
   };
 
+  const country1Risk = toNumberOr(country1Data?.risk);
+  const country2Risk = toNumberOr(country2Data?.risk);
+
   if (!countries || countries.length === 0) {
     return (
       <div style={{ 
@@ -303,11 +315,11 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
               <h4 style={{ color: "#00d4ff", margin: 0 }}>{country1Data.country}</h4>
               <span style={{ 
-                color: getRiskColor(country1Data.risk), 
+                color: getRiskColor(country1Risk), 
                 fontWeight: "bold", 
                 fontSize: "20px" 
               }}>
-                {country1Data.risk.toFixed(1)}
+                {country1Risk.toFixed(1)}
               </span>
             </div>
             <div style={{ fontSize: "11px", color: "#888", marginBottom: "8px" }}>
@@ -332,11 +344,11 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
               <h4 style={{ color: "#ff69b4", margin: 0 }}>{country2Data.country}</h4>
               <span style={{ 
-                color: getRiskColor(country2Data.risk), 
+                color: getRiskColor(country2Risk), 
                 fontWeight: "bold", 
                 fontSize: "20px" 
               }}>
-                {country2Data.risk.toFixed(1)}
+                {country2Risk.toFixed(1)}
               </span>
             </div>
             <div style={{ fontSize: "11px", color: "#888", marginBottom: "8px" }}>

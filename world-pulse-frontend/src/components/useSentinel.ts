@@ -2,6 +2,33 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import API, { API_HEADERS } from "../services/api";
 
 const API_KEY = import.meta.env.VITE_API_KEY || "super_secure_api_key";
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
+const deriveWebSocketUrl = (explicitUrl?: string) => {
+  if (explicitUrl && explicitUrl.trim().length > 0) return explicitUrl;
+  try {
+    const parsed = new URL(API_URL);
+    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+    parsed.pathname = "/ws/sentinel";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "ws://127.0.0.1:8000/ws/sentinel";
+  }
+};
+
+const normalizeWebSocketUrl = (url: string) => {
+  const normalized = url.trim();
+  try {
+    const parsed = new URL(normalized);
+    const isWsProtocol = parsed.protocol === "ws:" || parsed.protocol === "wss:";
+    if (!isWsProtocol) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+};
 
 // Type declarations for Web Speech API
 declare global {
@@ -128,7 +155,7 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     pollInterval = 5000, 
     enableVoice = false,
     enableWebSocket = true,
-    webSocketUrl = "ws://localhost:8000/ws/sentinel",
+    webSocketUrl,
     maxHistory = 50
   } = options;
 
@@ -166,9 +193,12 @@ export function useSentinel(options: UseSentinelOptions = {}) {
   const voiceSynthesisRef = useRef<SpeechSynthesisUtterance | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const wsShouldReconnectRef = useRef(true);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const mutedAlertUntilRef = useRef<Record<string, number>>({});
   const ALERT_MUTE_MS = 10 * 60 * 1000;
+  const resolvedWebSocketUrl = deriveWebSocketUrl(webSocketUrl);
 
   const isAlertMuted = useCallback((id?: string, signature?: string) => {
     const now = Date.now();
@@ -322,18 +352,31 @@ export function useSentinel(options: UseSentinelOptions = {}) {
 
   // WebSocket Connection
   const connectWebSocket = useCallback(() => {
-    if (!enableWebSocket || wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (!enableWebSocket) return;
+    const currentState = wsRef.current?.readyState;
+    if (currentState === WebSocket.OPEN || currentState === WebSocket.CONNECTING) return;
+
+    const validWsUrl = normalizeWebSocketUrl(resolvedWebSocketUrl);
+    if (!validWsUrl) {
+      setWsConnected(false);
+      setWsReconnecting(false);
+      setError(`Invalid WebSocket URL: ${resolvedWebSocketUrl}`);
+      console.warn("Sentinel WebSocket skipped due to invalid URL:", resolvedWebSocketUrl);
+      return;
+    }
 
     try {
       // Append API key as query parameter for authentication
-      const wsUrl = webSocketUrl.includes('?') 
-        ? `${webSocketUrl}&api_key=${API_KEY}` 
-        : `${webSocketUrl}?api_key=${API_KEY}`;
+      const wsUrl = validWsUrl.includes("?")
+        ? `${validWsUrl}&api_key=${API_KEY}`
+        : `${validWsUrl}?api_key=${API_KEY}`;
       const ws = new WebSocket(wsUrl);
       
       ws.onopen = () => {
         setWsConnected(true);
         setWsReconnecting(false);
+        setError(null);
+        reconnectAttemptsRef.current = 0;
         console.log("Sentinel WebSocket connected");
       };
       
@@ -375,14 +418,16 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       ws.onclose = () => {
         setWsConnected(false);
         // Attempt reconnect
-        if (enableWebSocket) {
+        if (enableWebSocket && wsShouldReconnectRef.current) {
           setWsReconnecting(true);
-          reconnectTimeoutRef.current = setTimeout(connectWebSocket, 5000);
+          reconnectAttemptsRef.current += 1;
+          const reconnectDelay = Math.min(5000 * reconnectAttemptsRef.current, 30000);
+          reconnectTimeoutRef.current = setTimeout(connectWebSocket, reconnectDelay);
         }
       };
       
       ws.onerror = (error) => {
-        console.error("WebSocket error:", error);
+        void error;
         ws.close();
       };
       
@@ -390,9 +435,10 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     } catch (err) {
       console.error("Failed to connect WebSocket:", err);
     }
-  }, [enableWebSocket, webSocketUrl, checkAlerts, isAlertMuted]);
+  }, [enableWebSocket, resolvedWebSocketUrl, checkAlerts, isAlertMuted]);
 
   const disconnectWebSocket = useCallback(() => {
+    wsShouldReconnectRef.current = false;
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
     }
@@ -656,15 +702,16 @@ export function useSentinel(options: UseSentinelOptions = {}) {
   useEffect(() => {
     fetchSentinelData();
     
-    // Use WebSocket if enabled, otherwise polling
-    if (!enableWebSocket) {
+    // Keep polling as fallback if WebSocket is disabled or not connected.
+    if (!enableWebSocket || !wsConnected) {
       const interval = setInterval(fetchSentinelData, pollInterval);
       return () => clearInterval(interval);
     }
-  }, [fetchSentinelData, pollInterval, enableWebSocket]);
+  }, [fetchSentinelData, pollInterval, enableWebSocket, wsConnected]);
 
   useEffect(() => {
     if (enableWebSocket) {
+      wsShouldReconnectRef.current = true;
       connectWebSocket();
       return () => disconnectWebSocket();
     }

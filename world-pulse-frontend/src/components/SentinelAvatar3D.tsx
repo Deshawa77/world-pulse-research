@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
@@ -78,7 +78,6 @@ export default function SentinelAvatar3D({
 
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
   const speakingRef = useRef(isSpeaking);
   const threatLevelRef = useRef(threatLevel);
   const isProcessingRef = useRef(isProcessing);
@@ -272,9 +271,7 @@ export default function SentinelAvatar3D({
         });
       },
       undefined,
-      () => {
-        setLoadFailed(true);
-      }
+      () => {}
     );
 
     // Create subtle holographic base platform (integrated with existing style)

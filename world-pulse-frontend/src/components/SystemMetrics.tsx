@@ -102,7 +102,7 @@ export default function SystemMetrics({ className = "" }: SystemMetricsProps) {
   }, [updateMetrics]);
 
 
-  const getBarColor = (value: number, type: string) => {
+  const getBarColor = (value: number) => {
     if (value > 80) return "#ff3366"; // Critical - Red
     if (value > 60) return "#ff9500"; // Elevated - Orange
     if (value > 40) return "#ffd600"; // Guarded - Yellow
@@ -133,7 +133,7 @@ export default function SystemMetrics({ className = "" }: SystemMetricsProps) {
     value: number; 
     type: string;
   }) => {
-    const color = getBarColor(value, type);
+    const color = getBarColor(value);
     const icon = getIcon(type);
 
     return (

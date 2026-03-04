@@ -74,19 +74,6 @@ export default function SentimentTrendAnalyzer({ data, height = 350 }: Sentiment
       return date.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit" });
     });
 
-    const getMetricData = () => {
-      switch (selectedMetric) {
-        case "news_sentiment":
-          return processedData.map(d => d.news_sentiment);
-        case "gdelt_sentiment":
-          return processedData.map(d => d.gdelt_sentiment);
-        case "momentum":
-          return processedData.map(d => d.momentum || 0);
-        default:
-          return processedData.map(d => d.news_sentiment);
-      }
-    };
-
     const option: echarts.EChartsOption = {
       tooltip: {
         trigger: "axis",

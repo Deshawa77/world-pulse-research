@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import * as echarts from "echarts";
 
 interface CorrelationData {
@@ -36,8 +36,6 @@ const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
 export default function RiskCorrelationMatrix({ data, height = 400 }: RiskCorrelationMatrixProps) {
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<echarts.ECharts | null>(null);
-  const [hoveredCell, setHoveredCell] = useState<{ x: string; y: string; value: number } | null>(null);
-
   // Calculate correlation matrix
   const correlationMatrix = useMemo(() => {
     if (!data || data.length < 2) return null;

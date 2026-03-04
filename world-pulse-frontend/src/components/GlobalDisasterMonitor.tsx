@@ -166,7 +166,7 @@ export default function GlobalDisasterMonitor({
                 <div style={typeIconStyle(item.type)}>
                   {getTypeIcon(item.type)}
                 </div>
-                <div style={severityBadgeStyle(getSeverityColor(item.severity))}>
+                <div style={severityBadgeStyle()}>
                   {getSeverityIcon(item.severity)}
                 </div>
               </div>
@@ -404,7 +404,7 @@ const typeIconStyle = (type: string): React.CSSProperties => ({
   border: `1px solid ${type === "earthquake" ? "rgba(239, 68, 68, 0.3)" : "rgba(59, 130, 246, 0.3)"}`,
 });
 
-const severityBadgeStyle = (color: string): React.CSSProperties => ({
+const severityBadgeStyle = (): React.CSSProperties => ({
   fontSize: "12px",
 });
 

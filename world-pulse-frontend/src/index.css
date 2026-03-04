@@ -1696,3 +1696,117 @@ button:hover {
     padding: 8px;
   }
 }
+
+/* Deep Intelligence section on Trend Prediction page */
+.prediction-deep-intel {
+  margin: 28px 16px 12px;
+  padding: 20px;
+  border-radius: 18px;
+  background:
+    radial-gradient(1200px 320px at 10% -20%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(900px 360px at 90% -10%, rgba(167, 139, 250, 0.16), transparent 62%),
+    linear-gradient(135deg, rgba(8, 16, 34, 0.96), rgba(10, 22, 46, 0.96));
+  border: 1px solid rgba(147, 197, 253, 0.22);
+  box-shadow: 0 18px 44px rgba(4, 10, 24, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.prediction-deep-intel-head {
+  margin-bottom: 16px;
+}
+
+.prediction-deep-intel-kicker {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #67e8f9;
+  background: rgba(34, 211, 238, 0.14);
+  border: 1px solid rgba(103, 232, 249, 0.35);
+}
+
+.prediction-deep-intel-head h2 {
+  margin: 0 0 6px;
+  font-size: 1.5rem;
+  letter-spacing: 0.4px;
+  color: #e6f2ff;
+}
+
+.prediction-deep-intel-head p {
+  margin: 0;
+  color: #9fb2d6;
+  font-size: 0.94rem;
+}
+
+.prediction-deep-intel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.prediction-deep-card {
+  position: relative;
+  min-height: 520px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(10, 22, 46, 0.86), rgba(8, 17, 36, 0.92));
+  border: 1px solid rgba(120, 161, 219, 0.2);
+}
+
+.prediction-deep-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(144, 205, 255, 0.025) 0px,
+      rgba(144, 205, 255, 0.025) 1px,
+      transparent 1px,
+      transparent 26px
+    );
+}
+
+.prediction-deep-card-wide {
+  grid-column: 1 / -1;
+  min-height: 860px;
+}
+
+.prediction-deep-title {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(148, 191, 255, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.prediction-deep-title > span {
+  color: #d8ebff;
+  font-size: 1.02rem;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.prediction-deep-title > small {
+  color: #88a6d5;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+}
+
+@media (max-width: 1080px) {
+  .prediction-deep-intel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .prediction-deep-card,
+  .prediction-deep-card-wide {
+    min-height: 540px;
+    grid-column: auto;
+  }
+}

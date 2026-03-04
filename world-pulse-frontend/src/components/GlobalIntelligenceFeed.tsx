@@ -447,10 +447,6 @@ const rowStyle: React.CSSProperties = {
   overflow: "hidden",
 };
 
-const animatingRowStyle: React.CSSProperties = {
-  animation: "hologramPop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards, glowPulse 2s ease-in-out",
-};
-
 const countrySectionStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",

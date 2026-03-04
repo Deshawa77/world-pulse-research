@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Heart, Activity, Shield, AlertCircle, TrendingUp, Users, Syringe } from "lucide-react";
+import { Heart, Activity, Shield, AlertCircle, Users, Syringe } from "lucide-react";
 import { getHealthAlerts, type HealthAlertsData } from "../services/api";
 
 interface HealthAlertStreamProps {

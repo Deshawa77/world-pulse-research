@@ -35,7 +35,7 @@ export default function AdvancedStreamingTrends({
 }: Props) {
   const holderRef = useRef<HTMLDivElement | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [hoveredSeries, setHoveredSeries] = useState<string | null>(null);
+  const [hoveredSeries] = useState<string | null>(null);
   const [anomalyPulse, setAnomalyPulse] = useState(false);
 
   // Pulse effect for anomalies

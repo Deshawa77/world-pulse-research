@@ -77,8 +77,6 @@ export default function ScannedHologramAvatar({
   className = "",
   modelUrl = "/models/sentinel-scan.glb",
   modelYawOffsetDeg = 0,
-  isProcessing = false,
-  isDataStreaming = false,
 }: ScannedHologramAvatarProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);

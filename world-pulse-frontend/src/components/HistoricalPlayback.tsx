@@ -64,17 +64,6 @@ export default function HistoricalPlayback({ data, height = 400 }: HistoricalPla
 
     const chart = chartInstanceRef.current;
 
-    // Create timeline data for all points up to current index
-    const timelineData = data.slice(0, currentIndex + 1).map((d) => ({
-      timestamp: d.timestamp,
-      value: d.score,
-    }));
-
-    // Calculate average for the visible range
-    const avgScore = currentData 
-      ? (data.slice(0, currentIndex + 1).reduce((sum, d) => sum + d.score, 0) / (currentIndex + 1)).toFixed(1)
-      : "0";
-
     const option: echarts.EChartsOption = {
       tooltip: {
         trigger: "axis",
@@ -131,7 +120,7 @@ export default function HistoricalPlayback({ data, height = 400 }: HistoricalPla
           data: data.map((d) => d.score),
           smooth: true,
           symbol: "circle",
-          symbolSize: (value: number, param: any) => {
+          symbolSize: (_value: number, param: any) => {
             return param.dataIndex === currentIndex ? 12 : 4;
           },
           lineStyle: {

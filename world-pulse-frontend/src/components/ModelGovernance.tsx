@@ -229,7 +229,7 @@ export default function ModelGovernance({ data }: Props) {
         <div className="governance-disagreement">
           <div className="section-label">Model Disagreement Matrix</div>
           <div className="disagreement-heatmap">
-            {data.disagreement.map((d, i) => {
+            {data.disagreement.map((d) => {
               const intensity = Math.min(1, d.value);
               const heatColor = intensity > 0.7 ? "#ff0040" : intensity > 0.4 ? "#ff9500" : "#00f5ff";
 
