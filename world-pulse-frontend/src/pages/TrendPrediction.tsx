@@ -45,6 +45,8 @@ type SnapshotLike = {
   features: Record<string, number>;
 };
 
+type PanelStatus = "live" | "no-data" | "error";
+
 
 const FEATURE_NAMES = [
   "News Sentiment",
@@ -155,6 +157,27 @@ function deriveMarketReactionsFromHistory(rows: HistoricalDataPoint[]): MarketRe
   return reactions.slice(-30).reverse();
 }
 
+function PanelHeader({
+  title,
+  subtitle,
+  status,
+}: {
+  title: string;
+  subtitle: string;
+  status: PanelStatus;
+}) {
+  const statusLabel = status === "live" ? "Live" : status === "error" ? "Error" : "No data";
+  return (
+    <div className="prediction-card-head">
+      <div className="prediction-card-title-wrap">
+        <h3>{title}</h3>
+        <p>{subtitle}</p>
+      </div>
+      <span className={`prediction-status prediction-status-${status}`}>{statusLabel}</span>
+    </div>
+  );
+}
+
 export default function TrendPrediction() {
   const navigate = useNavigate();
   const token = localStorage.getItem("token");
@@ -177,6 +200,7 @@ export default function TrendPrediction() {
   const [riskMap, setRiskMap] = useState<RiskMapPoint[]>([]);
   const [historicalData, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
   const [plotlyReady, setPlotlyReady] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState("");
 
   const mlChartRef = useRef<HTMLDivElement | null>(null);
   const sentimentChartRef = useRef<HTMLDivElement | null>(null);
@@ -339,6 +363,7 @@ export default function TrendPrediction() {
     } catch (err: any) {
       setError(err?.message || "Failed to load prediction data");
     } finally {
+      setLastUpdatedAt(new Date().toISOString());
       setLoading(false);
     }
   }
@@ -687,6 +712,26 @@ export default function TrendPrediction() {
     return fallbackFromEvents;
   }, [deepHistoryResolved, riskMap, eventPredictions]);
 
+  const hasMlData = predictionLogs.length > 0 || Boolean(currentPrediction);
+  const hasFeatureData = latestFeatures.some((value) => Math.abs(safeN(value)) > 0);
+  const hasSentimentData = Boolean(sentimentForecast);
+  const hasMarketData = marketReactions.length > 0;
+  const hasEventData = eventPredictions.length > 0;
+  const hasInsightsData = Boolean(currentPrediction) || hasFeatureData || hasMarketData;
+  const hasAdvancedData =
+    governanceData.models.length > 0 ||
+    riskMap.length > 0 ||
+    deepHistoryResolved.length > 1 ||
+    comparisonCountries.length > 1;
+
+  const mlStatus: PanelStatus = error ? "error" : hasMlData ? "live" : "no-data";
+  const featureStatus: PanelStatus = error ? "error" : hasFeatureData ? "live" : "no-data";
+  const sentimentStatus: PanelStatus = error ? "error" : hasSentimentData ? "live" : "no-data";
+  const marketStatus: PanelStatus = error ? "error" : hasMarketData ? "live" : "no-data";
+  const eventsStatus: PanelStatus = error ? "error" : hasEventData ? "live" : "no-data";
+  const insightsStatus: PanelStatus = error ? "error" : hasInsightsData ? "live" : "no-data";
+  const advancedStatus: PanelStatus = error ? "error" : hasAdvancedData ? "live" : "no-data";
+
   if (loading) {
     return (
       <main className="wp-loading">
@@ -731,10 +776,33 @@ export default function TrendPrediction() {
 
       </header>
 
-      {/* Timeframe Selector */}
-      <section className="wp-strip">
-        <article className="wp-card timeframe-selector">
-          <h3>Analysis Timeframe</h3>
+      <section className="prediction-summary-sticky">
+        <article className="wp-card prediction-summary-card">
+          <span className="prediction-summary-label">Risk Score</span>
+          <strong className="prediction-summary-value">
+            {currentPrediction ? (currentPrediction.probability * 100).toFixed(1) : "50.0"}
+          </strong>
+          <small>/100 global risk probability</small>
+        </article>
+        <article className="wp-card prediction-summary-card">
+          <span className="prediction-summary-label">Confidence</span>
+          <strong className="prediction-summary-value">{(avgConfidence * 100).toFixed(1)}%</strong>
+          <small>ensemble average confidence</small>
+        </article>
+        <article className="wp-card prediction-summary-card">
+          <span className="prediction-summary-label">Active Model</span>
+          <strong className="prediction-summary-value">{currentPrediction?.model_version || "v1.0.0"}</strong>
+          <small>production inference model</small>
+        </article>
+        <article className="wp-card prediction-summary-card">
+          <span className="prediction-summary-label">Last Update</span>
+          <strong className="prediction-summary-value">
+            {lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleTimeString() : "--:--:--"}
+          </strong>
+          <small>latest data refresh</small>
+        </article>
+        <article className="wp-card prediction-summary-controls">
+          <div className="prediction-summary-controls-head">Timeframe + Refresh</div>
           <div className="timeframe-buttons">
             {(["1h", "6h", "24h", "7d"] as const).map((tf) => (
               <button
@@ -749,312 +817,334 @@ export default function TrendPrediction() {
               </button>
             ))}
           </div>
-        </article>
-
-        <article className="wp-card">
-          <h3>Current Risk Score</h3>
-          <div className="wp-gauge-wrap">
-            <div
-              className="wp-gauge"
-              style={{ ["--risk" as any]: `${currentPrediction?.probability ? currentPrediction.probability * 100 : 50}` }}
-            >
-              <div className="wp-gauge-hole" />
-            </div>
-            <strong className="wp-highlight">
-              {currentPrediction ? (currentPrediction.probability * 100).toFixed(1) : "50.0"} / 100
-            </strong>
-            <div
-              className={`lvl-${
-                (currentPrediction?.probability || 0.5) > 0.75
-                  ? "critical"
-                  : (currentPrediction?.probability || 0.5) > 0.45
-                  ? "elevated"
-                  : "low"
-              }`}
-            >
-              {(currentPrediction?.probability || 0.5) > 0.75
-                ? "Critical"
-                : (currentPrediction?.probability || 0.5) > 0.45
-                ? "Elevated"
-                : "Low"}
-            </div>
-          </div>
-        </article>
-
-        <article className="wp-card">
-          <h3>Model Confidence</h3>
-          <div className="confidence-display">
-            <strong className="wp-highlight">{(avgConfidence * 100).toFixed(1)}%</strong>
-            <div className="confidence-bar">
-              <div
-                className="confidence-fill"
-                style={{ width: `${avgConfidence * 100}%` }}
-              />
-            </div>
-            <div className="wp-mini-meta">
-              <span>Disagreement</span>
-              <strong>{disagreement.toFixed(2)}</strong>
-            </div>
-          </div>
-        </article>
-
-        <article className="wp-card">
-          <h3>Active Model</h3>
-          <div className="model-info">
-            <strong className="wp-highlight">
-              {currentPrediction?.model_version || "v1.0.0"}
-            </strong>
-            <div className="wp-mini-meta">
-              <span>Last Update</span>
-              <span>{new Date().toLocaleTimeString()}</span>
-            </div>
-          </div>
-        </article>
-      </section>
-
-      {/* ML Prediction Graphs */}
-      <section className="wp-grid">
-        <article className="wp-card panel-animated">
-          <h2>ML Prediction History</h2>
-          <div ref={mlChartRef} className="prediction-chart" />
-        </article>
-
-        <article className="wp-card panel-animated">
-          <h2>Feature Importance</h2>
-          <div className="feature-importance">
-            {latestFeatures.map((value, idx) => (
-              <div key={idx} className="feature-bar">
-                <div className="wp-mini-meta">
-                  <span>{FEATURE_NAMES[idx]}</span>
-                  <span>{value.toFixed(3)}</span>
-                </div>
-                <div className="importance-track">
-                  <div
-                    className="importance-fill"
-                    style={{
-                      width: `${Math.min(100, Math.abs(value) * 50)}%`,
-                      background:
-                        value > 0
-                          ? "linear-gradient(90deg, #22d3ee, #60a5fa)"
-                          : "linear-gradient(90deg, #ef4444, #f87171)",
-                    }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </article>
-      </section>
-
-      {/* Sentiment Forecast & Market Reaction */}
-      <section className="wp-grid">
-        <article className="wp-card panel-animated">
-          <h2>Sentiment Forecast</h2>
-          <div ref={sentimentChartRef} className="prediction-chart" />
-          <div className="forecast-legend">
-            <div className="legend-item">
-              <span className="dot" style={{ background: "#22d3ee" }} />
-              <span>Current</span>
-            </div>
-            <div className="legend-item">
-              <span className="dot" style={{ background: "#60a5fa" }} />
-              <span>1h</span>
-            </div>
-            <div className="legend-item">
-              <span className="dot" style={{ background: "#818cf8" }} />
-              <span>6h</span>
-            </div>
-            <div className="legend-item">
-              <span className="dot" style={{ background: "#a78bfa" }} />
-              <span>24h</span>
-            </div>
-          </div>
-        </article>
-
-        <article className="wp-card panel-animated">
-          <h2>Market Reaction Forecast</h2>
-          <div ref={marketChartRef} className="prediction-chart" />
-        </article>
-      </section>
-
-      {/* Ensemble Models & Event Predictions */}
-      <section className="wp-grid-3">
-        <article className="wp-card panel-animated">
-          <h3>Ensemble Model Votes</h3>
-          <div className="ensemble-models">
-            {modelEnsemble.map((model) => (
-              <div key={model.name} className="model-vote">
-                <div className="wp-mini-meta">
-                  <span style={{ color: model.color }}>{model.name}</span>
-                  <strong>{model.vote.toFixed(2)}</strong>
-                </div>
-                <div className="vote-bar">
-                  <div
-                    className="vote-fill"
-                    style={{
-                      width: `${model.vote}%`,
-                      background: model.color,
-                    }}
-                  />
-                </div>
-                <div className="confidence-text">
-                  Confidence: {(model.confidence * 100).toFixed(0)}%
-                </div>
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="wp-card panel-animated">
-          <h3>Event-Based Predictions</h3>
-          <div className="event-predictions">
-            {eventPredictions.map((event) => (
-              <div key={event.event_id} className="event-card">
-                <div className="event-header">
-                  <span className={`severity-badge severity-${event.severity}`}>
-                    S{event.severity}
-                  </span>
-                  <span className="event-type">{event.event_type}</span>
-                </div>
-                <div className="event-details">
-                  <div className="wp-mini-meta">
-                    <span>Risk Increase</span>
-                    <strong className="risk-increase">+{event.predicted_risk_increase}%</strong>
-                  </div>
-                  <div className="wp-mini-meta">
-                    <span>Confidence</span>
-                    <span>{(event.confidence * 100).toFixed(0)}%</span>
-                  </div>
-                  <div className="affected-regions">
-                    {event.affected_regions.map((region) => (
-                      <span key={region} className="region-tag">
-                        {region}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="event-time">
-                    Expected: {new Date(event.timestamp).toLocaleDateString()}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="wp-card panel-animated">
-          <h3>Prediction Insights</h3>
-          <div className="insights-panel">
-            <div className="insight-item">
-              <span className="insight-label">Top Risk Driver</span>
-              <strong className="insight-value">
-                {latestFeatures[0] > latestFeatures[1] ? "News Sentiment" : "GDELT Sentiment"}
-              </strong>
-            </div>
-            <div className="insight-item">
-              <span className="insight-label">Market Correlation</span>
-              <strong className="insight-value">
-                {marketReactions.length
-                  ? (marketReactions.reduce((acc, row) => acc + row.correlation_strength, 0) / marketReactions.length).toFixed(2)
-                  : "0.00"}
-              </strong>
-            </div>
-            <div className="insight-item">
-              <span className="insight-label">Volatility Trend</span>
-              <strong
-                className={`insight-value ${
-                  latestFeatures[3] > 0 ? "trend-up" : "trend-down"
-                }`}
-              >
-                {latestFeatures[3] > 0 ? "↗ Rising" : "↘ Falling"}
-              </strong>
-            </div>
-            <div className="insight-item">
-              <span className="insight-label">Drift Score</span>
-              <strong className="insight-value">
-                {currentPrediction?.drift_score?.toFixed(4) || "0.0000"}
-              </strong>
-            </div>
-          </div>
+          <button onClick={loadData}>Refresh Predictions</button>
         </article>
       </section>
 
       <section className="prediction-deep-intel">
-        <div className="prediction-deep-intel-head">
-          <div className="prediction-deep-intel-kicker">Deep Intelligence</div>
-          <h2>Decision Theater</h2>
-          <p>Advanced governance, geospatial risk, feature interactions, playback, and country-to-country comparison in one flow.</p>
-        </div>
-
         <div className="prediction-deep-intel-grid">
-          <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide">
-            <div className="prediction-deep-title">
-              <span>Model Governance</span>
-              <small>Ensemble behavior and model calibration</small>
-            </div>
-            <ModelGovernance data={governanceData} />
-          </article>
-
-          <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide">
-            <div className="prediction-deep-title">
-              <span>Advanced Analytics</span>
-              <small>Anomalies, causality, ML insights, and generated reports</small>
-            </div>
-            <AdvancedAnalyticsPanel />
-          </article>
-
           <article className="wp-card panel-animated prediction-deep-card">
-            <div className="prediction-deep-title">
-              <span>3D Risk Globe</span>
-              <small>Rotating global risk distribution</small>
-            </div>
-            <WorldGlobe3D data={globeData} autoRotate={true} height={460} />
-          </article>
-
-          <article className="wp-card panel-animated prediction-deep-card">
-            <div className="prediction-deep-title">
-              <span>Correlation Matrix</span>
-              <small>Feature-to-feature correlation heatmap</small>
-            </div>
-            <RiskCorrelationMatrix
-              data={deepHistoryResolved.map((h) => ({
-                features: {
-                  news_sentiment: h.features.news_sentiment,
-                  gdelt_sentiment: h.features.gdelt_sentiment,
-                  crypto_return: h.features.crypto_return,
-                  crypto_volatility: h.features.crypto_volatility,
-                  stock_return: h.features.stock_return,
-                  stock_volatility: h.features.stock_volatility,
-                  weather_anomaly: h.features.weather_anomaly,
-                  global_risk_score: h.score,
-                },
-                timestamp: h.timestamp,
-              }))}
-              height={460}
+            <PanelHeader
+              title="3D Risk Globe"
+              subtitle="Rotating distribution from live risk-map snapshots"
+              status={riskMap.length ? "live" : advancedStatus}
             />
+            {riskMap.length ? (
+              <WorldGlobe3D data={globeData} autoRotate={true} height={460} />
+            ) : (
+              <div className="prediction-empty">
+                <p>No risk-map data available for globe rendering.</p>
+                <button onClick={loadData}>Retry</button>
+              </div>
+            )}
           </article>
-
           <article className="wp-card panel-animated prediction-deep-card">
-            <div className="prediction-deep-title">
-              <span>Historical Playback</span>
-              <small>Timeline replay of global risk progression</small>
-            </div>
-            <HistoricalPlayback data={deepHistoryResolved} height={500} />
+            <PanelHeader
+              title="Correlation Matrix"
+              subtitle="Feature interactions derived from real historical snapshots"
+              status={deepHistoryResolved.length > 1 ? "live" : advancedStatus}
+            />
+            {deepHistoryResolved.length > 1 ? (
+              <RiskCorrelationMatrix
+                data={deepHistoryResolved.map((h) => ({
+                  features: {
+                    news_sentiment: h.features.news_sentiment,
+                    gdelt_sentiment: h.features.gdelt_sentiment,
+                    crypto_return: h.features.crypto_return,
+                    crypto_volatility: h.features.crypto_volatility,
+                    stock_return: h.features.stock_return,
+                    stock_volatility: h.features.stock_volatility,
+                    weather_anomaly: h.features.weather_anomaly,
+                    global_risk_score: h.score,
+                  },
+                  timestamp: h.timestamp,
+                }))}
+                height={460}
+              />
+            ) : (
+              <div className="prediction-empty">
+                <p>Need at least two historical snapshots for correlations.</p>
+                <button onClick={loadData}>Retry</button>
+              </div>
+            )}
           </article>
-
           <article className="wp-card panel-animated prediction-deep-card">
-            <div className="prediction-deep-title">
-              <span>Country Comparison</span>
-              <small>Cross-country comparative analytics</small>
-            </div>
-            <CountryComparison countries={comparisonCountries} height={500} />
+            <PanelHeader
+              title="Historical Playback"
+              subtitle="Timeline replay of risk progression"
+              status={deepHistoryResolved.length > 1 ? "live" : advancedStatus}
+            />
+            {deepHistoryResolved.length > 1 ? (
+              <HistoricalPlayback data={deepHistoryResolved} height={500} />
+            ) : (
+              <div className="prediction-empty">
+                <p>Need more history to enable playback.</p>
+                <button onClick={loadData}>Retry</button>
+              </div>
+            )}
+          </article>
+          <article className="wp-card panel-animated prediction-deep-card">
+            <PanelHeader
+              title="Country Comparison"
+              subtitle="Cross-country comparative analytics"
+              status={comparisonCountries.length > 1 ? "live" : advancedStatus}
+            />
+            {comparisonCountries.length > 1 ? (
+              <CountryComparison countries={comparisonCountries} height={500} />
+            ) : (
+              <div className="prediction-empty">
+                <p>Need more country points for meaningful comparison.</p>
+                <button onClick={loadData}>Retry</button>
+              </div>
+            )}
           </article>
         </div>
       </section>
 
+      <section className="prediction-row prediction-row-core">
+        <article className="wp-card panel-animated prediction-card-large">
+          <PanelHeader
+            title="ML Prediction History"
+            subtitle="Risk trajectory and confidence trends from real prediction logs"
+            status={mlStatus}
+          />
+          {hasMlData ? (
+            <div ref={mlChartRef} className="prediction-chart" />
+          ) : (
+            <div className="prediction-empty">
+              <p>No real prediction history available for this timeframe.</p>
+              <button onClick={loadData}>Retry</button>
+            </div>
+          )}
+        </article>
+        <article className="wp-card panel-animated prediction-card-small">
+          <PanelHeader
+            title="Feature Importance"
+            subtitle="Current live feature vector driving predictions"
+            status={featureStatus}
+          />
+          {hasFeatureData ? (
+            <div className="feature-importance">
+              {latestFeatures.map((value, idx) => (
+                <div key={idx} className="feature-bar">
+                  <div className="wp-mini-meta">
+                    <span>{FEATURE_NAMES[idx]}</span>
+                    <span>{value.toFixed(3)}</span>
+                  </div>
+                  <div className="importance-track">
+                    <div
+                      className="importance-fill"
+                      style={{
+                        width: `${Math.min(100, Math.abs(value) * 50)}%`,
+                        background:
+                          value > 0
+                            ? "linear-gradient(90deg, #22d3ee, #60a5fa)"
+                            : "linear-gradient(90deg, #ef4444, #f87171)",
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="prediction-empty">
+              <p>No live feature data found yet.</p>
+              <button onClick={loadData}>Retry</button>
+            </div>
+          )}
+        </article>
+      </section>
+
+      <section className="prediction-row prediction-row-signals">
+        <article className="wp-card panel-animated prediction-card-medium">
+          <PanelHeader
+            title="Sentiment Forecast"
+            subtitle="Current and projected sentiment from historical feature signals"
+            status={sentimentStatus}
+          />
+          {hasSentimentData ? (
+            <>
+              <div ref={sentimentChartRef} className="prediction-chart" />
+              <div className="forecast-legend">
+                <div className="legend-item">
+                  <span className="dot" style={{ background: "#22d3ee" }} />
+                  <span>Current</span>
+                </div>
+                <div className="legend-item">
+                  <span className="dot" style={{ background: "#60a5fa" }} />
+                  <span>1h</span>
+                </div>
+                <div className="legend-item">
+                  <span className="dot" style={{ background: "#818cf8" }} />
+                  <span>6h</span>
+                </div>
+                <div className="legend-item">
+                  <span className="dot" style={{ background: "#a78bfa" }} />
+                  <span>24h</span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="prediction-empty">
+              <p>No backend sentiment forecast was returned.</p>
+              <button onClick={loadData}>Retry</button>
+            </div>
+          )}
+        </article>
+        <article className="wp-card panel-animated prediction-card-medium">
+          <PanelHeader
+            title="Market Reaction Forecast"
+            subtitle="Impact projections across sentiment, crypto, and stock responses"
+            status={marketStatus}
+          />
+          {hasMarketData ? (
+            <div ref={marketChartRef} className="prediction-chart" />
+          ) : (
+            <div className="prediction-empty">
+              <p>No market reaction entries available right now.</p>
+              <button onClick={loadData}>Retry</button>
+            </div>
+          )}
+        </article>
+      </section>
+
+      <section className="prediction-row prediction-row-support">
+        <article className="wp-card panel-animated prediction-card-medium">
+          <PanelHeader
+            title="Event-Based Predictions"
+            subtitle="Severity-ranked event risk deltas and impacted regions"
+            status={eventsStatus}
+          />
+          {hasEventData ? (
+            <div className="event-predictions">
+              {eventPredictions.map((event) => (
+                <div key={event.event_id} className="event-card">
+                  <div className="event-header">
+                    <span className={`severity-badge severity-${event.severity}`}>
+                      S{event.severity}
+                    </span>
+                    <span className="event-type">{event.event_type}</span>
+                  </div>
+                  <div className="event-details">
+                    <div className="wp-mini-meta">
+                      <span>Risk Increase</span>
+                      <strong className="risk-increase">+{event.predicted_risk_increase}%</strong>
+                    </div>
+                    <div className="wp-mini-meta">
+                      <span>Confidence</span>
+                      <span>{(event.confidence * 100).toFixed(0)}%</span>
+                    </div>
+                    <div className="affected-regions">
+                      {event.affected_regions.map((region) => (
+                        <span key={region} className="region-tag">
+                          {region}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="event-time">
+                      Expected: {new Date(event.timestamp).toLocaleDateString()}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="prediction-empty">
+              <p>No event predictions are available for the selected range.</p>
+              <button onClick={loadData}>Retry</button>
+            </div>
+          )}
+        </article>
+        <article className="wp-card panel-animated prediction-card-medium">
+          <PanelHeader
+            title="Prediction Insights"
+            subtitle="Condensed decision signal summary from live analytics"
+            status={insightsStatus}
+          />
+          {hasInsightsData ? (
+            <div className="insights-panel">
+              <div className="insight-item">
+                <span className="insight-label">Top Risk Driver</span>
+                <strong className="insight-value">
+                  {latestFeatures[0] > latestFeatures[1] ? "News Sentiment" : "GDELT Sentiment"}
+                </strong>
+              </div>
+              <div className="insight-item">
+                <span className="insight-label">Market Correlation</span>
+                <strong className="insight-value">
+                  {marketReactions.length
+                    ? (marketReactions.reduce((acc, row) => acc + row.correlation_strength, 0) / marketReactions.length).toFixed(2)
+                    : "0.00"}
+                </strong>
+              </div>
+              <div className="insight-item">
+                <span className="insight-label">Volatility Trend</span>
+                <strong
+                  className={`insight-value ${
+                    latestFeatures[3] > 0 ? "trend-up" : "trend-down"
+                  }`}
+                >
+                  {latestFeatures[3] > 0 ? "Upward" : "Downward"}
+                </strong>
+              </div>
+              <div className="insight-item">
+                <span className="insight-label">Drift Score</span>
+                <strong className="insight-value">
+                  {currentPrediction?.drift_score?.toFixed(4) || "0.0000"}
+                </strong>
+              </div>
+              <div className="insight-item">
+                <span className="insight-label">Model Disagreement</span>
+                <strong className="insight-value">{disagreement.toFixed(2)}</strong>
+              </div>
+            </div>
+          ) : (
+            <div className="prediction-empty">
+              <p>Insights will appear once real prediction data is available.</p>
+              <button onClick={loadData}>Retry</button>
+            </div>
+          )}
+        </article>
+      </section>
+
+      <section className="prediction-advanced-wrap">
+        <div className="prediction-advanced-head">
+          <div>
+            <div className="prediction-advanced-kicker">Deep Intelligence</div>
+            <h2>Advanced Analytics</h2>
+            <p>Governance, geospatial risk, correlation, playback, and country comparison.</p>
+          </div>
+          <div className="prediction-advanced-actions">
+            <span className={`prediction-status prediction-status-${advancedStatus}`}>
+              {advancedStatus === "live" ? "Live" : advancedStatus === "error" ? "Error" : "No data"}
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section className="prediction-deep-intel">
+        <div className="prediction-deep-intel-grid">
+          <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide">
+            <PanelHeader
+              title="Model Governance"
+              subtitle="Ensemble behavior and calibration integrity"
+              status={governanceData.models.length ? "live" : advancedStatus}
+            />
+            <ModelGovernance data={governanceData} />
+          </article>
+          <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide">
+            <PanelHeader
+              title="Advanced Analytics"
+              subtitle="Anomalies, causality, and generated reports"
+              status={advancedStatus}
+            />
+            <AdvancedAnalyticsPanel />
+          </article>
+        </div>
+      </section>
       <footer className="wp-footer">
-        <button onClick={loadData}>Refresh Predictions</button>
         <button onClick={() => navigate("/dashboard")}>Back to Dashboard</button>
-        <span>Last updated: {new Date().toLocaleTimeString()}</span>
+        <span>Last updated: {lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleTimeString() : "--:--:--"}</span>
         {error && <span className="err">{error}</span>}
       </footer>
     </main>
