@@ -308,6 +308,8 @@ export default function TrendPrediction() {
   const [historicalData, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
   const [plotlyReady, setPlotlyReady] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState("");
+  const [playbackFrame, setPlaybackFrame] = useState<SnapshotLike | null>(null);
+  const [playbackActive, setPlaybackActive] = useState(false);
 
   const mlChartRef = useRef<HTMLDivElement | null>(null);
   const sentimentChartRef = useRef<HTMLDivElement | null>(null);
@@ -577,9 +579,82 @@ export default function TrendPrediction() {
     }
   }
 
+  const playbackTimestampMs = useMemo(
+    () => (playbackActive && playbackFrame ? parseTimestampMs(playbackFrame.timestamp) : null),
+    [playbackActive, playbackFrame],
+  );
+
+  const visibleHistoricalData = useMemo(() => {
+    if (playbackTimestampMs === null) return historicalData;
+    const sliced = historicalData.filter((row) => {
+      const ts = parseTimestampMs(row.timestamp);
+      return ts !== null && ts <= playbackTimestampMs;
+    });
+    return sliced.length ? sliced : historicalData;
+  }, [historicalData, playbackTimestampMs]);
+
+  const visiblePredictionLogs = useMemo(() => {
+    if (playbackTimestampMs === null) return predictionLogs;
+    const sliced = predictionLogs.filter((row) => {
+      const ts = parseTimestampMs(row.timestamp);
+      return ts !== null && ts <= playbackTimestampMs;
+    });
+    return sliced.length ? sliced : predictionLogs;
+  }, [predictionLogs, playbackTimestampMs]);
+
+  const activePredictionData = useMemo<PredictionData | null>(() => {
+    if (!playbackActive || !playbackFrame) return currentPrediction;
+    return {
+      timestamp: playbackFrame.timestamp,
+      prediction: playbackFrame.score / 100,
+      probability: playbackFrame.score / 100,
+      model_version: "playback-replay",
+      features: [
+        safeN(playbackFrame.features.news_sentiment),
+        safeN(playbackFrame.features.gdelt_sentiment),
+        safeN(playbackFrame.features.crypto_return),
+        safeN(playbackFrame.features.crypto_volatility),
+        safeN(playbackFrame.features.stock_return),
+        safeN(playbackFrame.features.stock_volatility),
+        safeN(playbackFrame.features.weather_anomaly),
+      ],
+      drift_score: currentPrediction?.drift_score,
+    };
+  }, [playbackActive, playbackFrame, currentPrediction]);
+
+  const activeFeatureVector = useMemo<number[]>(() => {
+    if (activePredictionData && Array.isArray(activePredictionData.features) && activePredictionData.features.length >= 7) {
+      return activePredictionData.features.slice(0, 7).map((v) => safeN(v));
+    }
+    return latestFeatures;
+  }, [activePredictionData, latestFeatures]);
+
+  const activeSentimentForecast = useMemo<SentimentForecast | null>(() => {
+    if (playbackActive) {
+      return deriveSentimentForecastFromHistory(visibleHistoricalData) ?? sentimentForecast;
+    }
+    return sentimentForecast;
+  }, [playbackActive, visibleHistoricalData, sentimentForecast]);
+
+  const activeMarketReactions = useMemo<MarketReaction[]>(() => {
+    if (playbackActive) {
+      return deriveMarketReactionsFromHistory(visibleHistoricalData);
+    }
+    return marketReactions;
+  }, [playbackActive, visibleHistoricalData, marketReactions]);
+
+  const activeEventPredictions = useMemo<EventPrediction[]>(() => {
+    if (playbackTimestampMs === null) return eventPredictions;
+    const filtered = eventPredictions.filter((row) => {
+      const ts = parseTimestampMs(row.timestamp);
+      return ts !== null && ts <= playbackTimestampMs;
+    });
+    return filtered.length ? filtered : eventPredictions;
+  }, [eventPredictions, playbackTimestampMs]);
+
   const mlSeries = useMemo(() => {
-    if (predictionLogs.length) {
-      return predictionLogs.map((log, idx) => {
+    if (visiblePredictionLogs.length) {
+      return visiblePredictionLogs.map((log, idx) => {
         const ts = parseTimestampMs(log.timestamp);
         return {
           label: ts !== null ? new Date(ts).toLocaleString() : `Point ${idx + 1}`,
@@ -589,8 +664,8 @@ export default function TrendPrediction() {
       });
     }
 
-    if (historicalData.length) {
-      return historicalData.map((row, idx) => {
+    if (visibleHistoricalData.length) {
+      return visibleHistoricalData.map((row, idx) => {
         const ts = parseTimestampMs(row.timestamp);
         const p = normalizeUnitValue(safeN(row.risk_score) / 100, 0.5);
         return {
@@ -601,12 +676,12 @@ export default function TrendPrediction() {
       });
     }
 
-    if (currentPrediction) {
-      const ts = parseTimestampMs(currentPrediction.timestamp);
+    if (activePredictionData) {
+      const ts = parseTimestampMs(activePredictionData.timestamp);
       return [{
         label: ts !== null ? new Date(ts).toLocaleString() : "Current",
-        prediction: normalizeUnitValue(currentPrediction.prediction),
-        probabilityPct: normalizeUnitValue(currentPrediction.probability, 0.5) * 100,
+        prediction: normalizeUnitValue(activePredictionData.prediction),
+        probabilityPct: normalizeUnitValue(activePredictionData.probability, 0.5) * 100,
       }];
     }
 
@@ -615,7 +690,7 @@ export default function TrendPrediction() {
       prediction: 0.5,
       probabilityPct: 50,
     }];
-  }, [predictionLogs, historicalData, currentPrediction]);
+  }, [visiblePredictionLogs, visibleHistoricalData, activePredictionData]);
 
   // Render ML Prediction Chart
   useEffect(() => {
@@ -688,13 +763,13 @@ export default function TrendPrediction() {
 
   // Render Sentiment Forecast Chart
   useEffect(() => {
-    if (!sentimentChartRef.current || !sentimentForecast || !plotlyRef.current || !plotlyReady) return;
+    if (!sentimentChartRef.current || !activeSentimentForecast || !plotlyRef.current || !plotlyReady) return;
 
-    const currentSentiment = safeN(sentimentForecast.current_sentiment);
-    const forecast1h = safeN(sentimentForecast.forecast_1h);
-    const forecast6h = safeN(sentimentForecast.forecast_6h);
-    const forecast24h = safeN(sentimentForecast.forecast_24h);
-    const confidencePct = safeN(sentimentForecast.confidence) * 100;
+    const currentSentiment = safeN(activeSentimentForecast.current_sentiment);
+    const forecast1h = safeN(activeSentimentForecast.forecast_1h);
+    const forecast6h = safeN(activeSentimentForecast.forecast_6h);
+    const forecast24h = safeN(activeSentimentForecast.forecast_24h);
+    const confidencePct = safeN(activeSentimentForecast.confidence) * 100;
 
     const forecastData = [
       {
@@ -745,16 +820,16 @@ export default function TrendPrediction() {
       displayModeBar: false,
       responsive: true,
     });
-  }, [sentimentForecast, plotlyReady]);
+  }, [activeSentimentForecast, plotlyReady]);
 
   // Render Market Reaction Chart
   useEffect(() => {
-    if (!marketChartRef.current || !marketReactions.length || !plotlyRef.current || !plotlyReady) return;
+    if (!marketChartRef.current || !activeMarketReactions.length || !plotlyRef.current || !plotlyReady) return;
 
-    const events = marketReactions.map((r) => r.event_type || "Event");
-    const sentimentImpacts = marketReactions.map((r) => safeN(r.sentiment_impact));
-    const cryptoReactions = marketReactions.map((r) => safeN(r.crypto_reaction));
-    const stockReactions = marketReactions.map((r) => safeN(r.stock_reaction));
+    const events = activeMarketReactions.map((r) => r.event_type || "Event");
+    const sentimentImpacts = activeMarketReactions.map((r) => safeN(r.sentiment_impact));
+    const cryptoReactions = activeMarketReactions.map((r) => safeN(r.crypto_reaction));
+    const stockReactions = activeMarketReactions.map((r) => safeN(r.stock_reaction));
 
     const data = [
       {
@@ -810,7 +885,7 @@ export default function TrendPrediction() {
       displayModeBar: false,
       responsive: true,
     });
-  }, [marketReactions, plotlyReady]);
+  }, [activeMarketReactions, plotlyReady]);
 
   // Load Plotly on mount
   useEffect(() => {
@@ -875,19 +950,50 @@ export default function TrendPrediction() {
     return [];
   }, [deepHistory, predictionLogs, currentPrediction?.probability, latestFeatures]);
 
-  const globeData = useMemo(
-    () => riskMap.map((r) => ({
-      country: r.country,
-      countryCode: r.country,
-      risk: normalizeRisk(r.risk),
-      lat: 0,
-      lng: 0,
-    })),
-    [riskMap],
-  );
+  const deepHistoryForPanels = useMemo<SnapshotLike[]>(() => {
+    if (playbackTimestampMs === null) return deepHistoryResolved;
+    const filtered = deepHistoryResolved.filter((row) => {
+      const ts = parseTimestampMs(row.timestamp);
+      return ts !== null && ts <= playbackTimestampMs;
+    });
+    return filtered.length >= 2 ? filtered : deepHistoryResolved;
+  }, [deepHistoryResolved, playbackTimestampMs]);
+
+  const activeGlobeData = useMemo(() => {
+    const playbackAnchor = deepHistoryForPanels[deepHistoryForPanels.length - 1];
+    const playbackRisk = playbackAnchor ? normalizeRisk(playbackAnchor.score) : null;
+
+    if (riskMap.length) {
+      return riskMap.map((r) => {
+        const code = (r.country || "").toUpperCase();
+        if (!playbackActive || playbackRisk === null) {
+          return {
+            country: r.country,
+            countryCode: code,
+            risk: normalizeRisk(r.risk),
+            lat: 0,
+            lng: 0,
+          };
+        }
+
+        const h = hashCountryCode(code);
+        const drift = (((h % 17) - 8) / 8) * 3; // deterministic +/-3 spread
+        const blended = (normalizeRisk(r.risk) * 0.35) + (playbackRisk * 0.65) + drift;
+        return {
+          country: r.country,
+          countryCode: code,
+          risk: normalizeRisk(blended),
+          lat: 0,
+          lng: 0,
+        };
+      });
+    }
+
+    return [];
+  }, [riskMap, deepHistoryForPanels, playbackActive]);
 
   const comparisonCountries = useMemo(() => {
-    const latest = deepHistoryResolved[deepHistoryResolved.length - 1];
+    const latest = deepHistoryForPanels[deepHistoryForPanels.length - 1];
     const baseFeatures = latest?.features ?? {
       news_sentiment: 0,
       gdelt_sentiment: 0,
@@ -924,7 +1030,7 @@ export default function TrendPrediction() {
 
     const fallbackFromEvents = Array.from(
       new Set(
-        eventPredictions.flatMap((e) =>
+        activeEventPredictions.flatMap((e) =>
           (e.affected_regions || [])
             .filter((region) => typeof region === "string" && region.length === 3)
             .map((region) => region.toUpperCase()),
@@ -933,7 +1039,7 @@ export default function TrendPrediction() {
     ).slice(0, 8).map((code, idx) => ({
       country: code,
       countryCode: code,
-      risk: normalizeRisk(45 + (idx * 7) + (eventPredictions[idx]?.predicted_risk_increase ?? 0)),
+      risk: normalizeRisk(45 + (idx * 7) + (activeEventPredictions[idx]?.predicted_risk_increase ?? 0)),
       timestamp: latest?.timestamp ?? new Date().toISOString(),
       features: {
         news_sentiment: safeN(baseFeatures.news_sentiment + idx * 0.03),
@@ -947,18 +1053,18 @@ export default function TrendPrediction() {
     }));
 
     return fallbackFromEvents;
-  }, [deepHistoryResolved, riskMap, eventPredictions]);
+  }, [deepHistoryForPanels, riskMap, activeEventPredictions]);
 
   const hasMlData = mlSeries.length > 0;
-  const hasFeatureData = latestFeaturesLoaded;
-  const hasSentimentData = Boolean(sentimentForecast);
-  const hasMarketData = marketReactions.length > 0;
-  const hasEventData = eventPredictions.length > 0;
-  const hasInsightsData = Boolean(currentPrediction) || hasFeatureData || hasMarketData;
+  const hasFeatureData = playbackActive ? activeFeatureVector.length >= 7 : latestFeaturesLoaded;
+  const hasSentimentData = Boolean(activeSentimentForecast);
+  const hasMarketData = activeMarketReactions.length > 0;
+  const hasEventData = activeEventPredictions.length > 0;
+  const hasInsightsData = Boolean(activePredictionData) || hasFeatureData || hasMarketData;
   const hasAdvancedData =
     governanceData.models.length > 0 ||
-    riskMap.length > 0 ||
-    deepHistoryResolved.length > 1 ||
+    activeGlobeData.length > 0 ||
+    deepHistoryForPanels.length > 1 ||
     comparisonCountries.length > 1;
 
   const mlStatus: PanelStatus = error ? "error" : hasMlData ? "live" : "no-data";
@@ -968,6 +1074,19 @@ export default function TrendPrediction() {
   const eventsStatus: PanelStatus = error ? "error" : hasEventData ? "live" : "no-data";
   const insightsStatus: PanelStatus = error ? "error" : hasInsightsData ? "live" : "no-data";
   const advancedStatus: PanelStatus = error ? "error" : hasAdvancedData ? "live" : "no-data";
+
+  function handlePlaybackFrameChange(frame: SnapshotLike | null) {
+    setPlaybackFrame(frame);
+  }
+
+  function handlePlaybackStateChange(isPlaying: boolean) {
+    setPlaybackActive(isPlaying);
+  }
+
+  function stopPlaybackMode() {
+    setPlaybackActive(false);
+    setPlaybackFrame(null);
+  }
 
   if (loading) {
     return (
@@ -1017,7 +1136,7 @@ export default function TrendPrediction() {
         <article className="wp-card prediction-summary-card">
           <span className="prediction-summary-label">Risk Score</span>
           <strong className="prediction-summary-value">
-            {currentPrediction ? (currentPrediction.probability * 100).toFixed(1) : "50.0"}
+            {activePredictionData ? (activePredictionData.probability * 100).toFixed(1) : "50.0"}
           </strong>
           <small>/100 global risk probability</small>
         </article>
@@ -1028,15 +1147,19 @@ export default function TrendPrediction() {
         </article>
         <article className="wp-card prediction-summary-card">
           <span className="prediction-summary-label">Active Model</span>
-          <strong className="prediction-summary-value">{currentPrediction?.model_version || "v1.0.0"}</strong>
-          <small>production inference model</small>
+          <strong className="prediction-summary-value">{activePredictionData?.model_version || "v1.0.0"}</strong>
+          <small>{playbackActive ? "historical playback model state" : "production inference model"}</small>
         </article>
         <article className="wp-card prediction-summary-card">
           <span className="prediction-summary-label">Last Update</span>
           <strong className="prediction-summary-value">
-            {lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleTimeString() : "--:--:--"}
+            {playbackActive && playbackFrame
+              ? new Date(playbackFrame.timestamp).toLocaleTimeString()
+              : lastUpdatedAt
+              ? new Date(lastUpdatedAt).toLocaleTimeString()
+              : "--:--:--"}
           </strong>
-          <small>latest data refresh</small>
+          <small>{playbackActive ? "playback frame timestamp" : "latest data refresh"}</small>
         </article>
         <article className="wp-card prediction-summary-controls">
           <div className="prediction-summary-controls-head">Timeframe + Refresh</div>
@@ -1055,6 +1178,17 @@ export default function TrendPrediction() {
             ))}
           </div>
           <button onClick={loadData}>Refresh Predictions</button>
+          {playbackActive && (
+            <button onClick={stopPlaybackMode} style={{ borderColor: "#22d3ee", color: "#22d3ee" }}>
+              Back To Live
+            </button>
+          )}
+          {playbackActive && playbackFrame && (
+            <div className="wp-mini-meta">
+              <span>Playback Mode</span>
+              <span>{new Date(playbackFrame.timestamp).toLocaleString()}</span>
+            </div>
+          )}
         </article>
       </section>
 
@@ -1063,11 +1197,11 @@ export default function TrendPrediction() {
           <article className="wp-card panel-animated prediction-deep-card">
             <PanelHeader
               title="3D Risk Globe"
-              subtitle="Rotating distribution from live risk-map snapshots"
-              status={riskMap.length ? "live" : advancedStatus}
+              subtitle={playbackActive ? "Playback-adjusted global distribution" : "Rotating distribution from live risk-map snapshots"}
+              status={activeGlobeData.length ? "live" : advancedStatus}
             />
-            {riskMap.length ? (
-              <WorldGlobe3D data={globeData} autoRotate={true} height={460} />
+            {activeGlobeData.length ? (
+              <WorldGlobe3D data={activeGlobeData} autoRotate={true} height={460} />
             ) : (
               <div className="prediction-empty">
                 <p>No risk-map data available for globe rendering.</p>
@@ -1079,11 +1213,11 @@ export default function TrendPrediction() {
             <PanelHeader
               title="Correlation Matrix"
               subtitle="Feature interactions derived from real historical snapshots"
-              status={deepHistoryResolved.length > 1 ? "live" : advancedStatus}
+              status={deepHistoryForPanels.length > 1 ? "live" : advancedStatus}
             />
-            {deepHistoryResolved.length > 1 ? (
+            {deepHistoryForPanels.length > 1 ? (
               <RiskCorrelationMatrix
-                data={deepHistoryResolved.map((h) => ({
+                data={deepHistoryForPanels.map((h) => ({
                   features: {
                     news_sentiment: h.features.news_sentiment,
                     gdelt_sentiment: h.features.gdelt_sentiment,
@@ -1112,7 +1246,12 @@ export default function TrendPrediction() {
               status={deepHistoryResolved.length > 1 ? "live" : advancedStatus}
             />
             {deepHistoryResolved.length > 1 ? (
-              <HistoricalPlayback data={deepHistoryResolved} height={500} />
+              <HistoricalPlayback
+                data={deepHistoryResolved}
+                height={500}
+                onFrameChange={handlePlaybackFrameChange}
+                onPlaybackStateChange={handlePlaybackStateChange}
+              />
             ) : (
               <div className="prediction-empty">
                 <p>Need more history to enable playback.</p>
@@ -1156,13 +1295,13 @@ export default function TrendPrediction() {
         </article>
         <article className="wp-card panel-animated prediction-card-small">
           <PanelHeader
-            title="Feature Importance"
-            subtitle="Current live feature vector driving predictions"
+              title="Feature Importance"
+            subtitle={playbackActive ? "Playback frame feature vector" : "Current live feature vector driving predictions"}
             status={featureStatus}
           />
           {hasFeatureData ? (
             <div className="feature-importance">
-              {latestFeatures.map((value, idx) => (
+              {activeFeatureVector.map((value, idx) => (
                 <div key={idx} className="feature-bar">
                   <div className="wp-mini-meta">
                     <span>{FEATURE_NAMES[idx]}</span>
@@ -1254,7 +1393,7 @@ export default function TrendPrediction() {
           />
           {hasEventData ? (
             <div className="event-predictions">
-              {eventPredictions.map((event) => (
+              {activeEventPredictions.map((event) => (
                 <div key={event.event_id} className="event-card">
                   <div className="event-header">
                     <span className={`severity-badge severity-${event.severity}`}>
@@ -1303,14 +1442,14 @@ export default function TrendPrediction() {
               <div className="insight-item">
                 <span className="insight-label">Top Risk Driver</span>
                 <strong className="insight-value">
-                  {latestFeatures[0] > latestFeatures[1] ? "News Sentiment" : "GDELT Sentiment"}
+                  {activeFeatureVector[0] > activeFeatureVector[1] ? "News Sentiment" : "GDELT Sentiment"}
                 </strong>
               </div>
               <div className="insight-item">
                 <span className="insight-label">Market Correlation</span>
                 <strong className="insight-value">
-                  {marketReactions.length
-                    ? (marketReactions.reduce((acc, row) => acc + row.correlation_strength, 0) / marketReactions.length).toFixed(2)
+                  {activeMarketReactions.length
+                    ? (activeMarketReactions.reduce((acc, row) => acc + row.correlation_strength, 0) / activeMarketReactions.length).toFixed(2)
                     : "0.00"}
                 </strong>
               </div>
@@ -1318,16 +1457,16 @@ export default function TrendPrediction() {
                 <span className="insight-label">Volatility Trend</span>
                 <strong
                   className={`insight-value ${
-                    latestFeatures[3] > 0 ? "trend-up" : "trend-down"
+                    activeFeatureVector[3] > 0 ? "trend-up" : "trend-down"
                   }`}
                 >
-                  {latestFeatures[3] > 0 ? "Upward" : "Downward"}
+                  {activeFeatureVector[3] > 0 ? "Upward" : "Downward"}
                 </strong>
               </div>
               <div className="insight-item">
                 <span className="insight-label">Drift Score</span>
                 <strong className="insight-value">
-                  {currentPrediction?.drift_score?.toFixed(4) || "0.0000"}
+                  {activePredictionData?.drift_score?.toFixed(4) || "0.0000"}
                 </strong>
               </div>
               <div className="insight-item">

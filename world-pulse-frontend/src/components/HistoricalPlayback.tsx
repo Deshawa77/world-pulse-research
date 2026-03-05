@@ -10,9 +10,16 @@ interface HistoricalDataPoint {
 interface HistoricalPlaybackProps {
   data: HistoricalDataPoint[];
   height?: number;
+  onFrameChange?: (frame: HistoricalDataPoint | null, index: number) => void;
+  onPlaybackStateChange?: (isPlaying: boolean) => void;
 }
 
-export default function HistoricalPlayback({ data, height = 400 }: HistoricalPlaybackProps) {
+export default function HistoricalPlayback({
+  data,
+  height = 400,
+  onFrameChange,
+  onPlaybackStateChange,
+}: HistoricalPlaybackProps) {
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<echarts.ECharts | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -35,6 +42,20 @@ export default function HistoricalPlayback({ data, height = 400 }: HistoricalPla
 
   // Current data point
   const currentData = data[currentIndex];
+
+  useEffect(() => {
+    if (!onFrameChange) return;
+    if (!data.length) {
+      onFrameChange(null, 0);
+      return;
+    }
+    onFrameChange(currentData ?? null, currentIndex);
+  }, [onFrameChange, currentData, currentIndex, data.length]);
+
+  useEffect(() => {
+    if (!onPlaybackStateChange) return;
+    onPlaybackStateChange(isPlaying);
+  }, [onPlaybackStateChange, isPlaying]);
 
   // Playback controls
   useEffect(() => {
