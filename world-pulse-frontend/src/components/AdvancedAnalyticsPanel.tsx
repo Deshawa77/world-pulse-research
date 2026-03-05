@@ -435,7 +435,7 @@ export default function AdvancedAnalyticsPanel() {
         }
 
         .panel-content {
-          min-height: 300px;
+          min-height: 0;
         }
 
         .loading, .no-data {

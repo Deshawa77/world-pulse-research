@@ -1774,6 +1774,10 @@ button:hover {
   min-height: 860px;
 }
 
+.prediction-deep-card-auto {
+  min-height: auto;
+}
+
 .prediction-deep-title {
   position: relative;
   z-index: 1;
@@ -1808,6 +1812,10 @@ button:hover {
   .prediction-deep-card-wide {
     min-height: 540px;
     grid-column: auto;
+  }
+
+  .prediction-deep-card-auto {
+    min-height: auto;
   }
 }
 

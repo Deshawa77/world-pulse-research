@@ -74,7 +74,22 @@ class PredictionService {
       headers: API_HEADERS,
       params: { limit },
     });
-    return response.data;
+    const payload = response.data as unknown;
+    const rows = Array.isArray(payload)
+      ? payload
+      : Array.isArray((payload as { logs?: unknown[] } | null)?.logs)
+      ? (payload as { logs: unknown[] }).logs
+      : Array.isArray((payload as { data?: unknown[] } | null)?.data)
+      ? (payload as { data: unknown[] }).data
+      : [];
+
+    return rows
+      .filter((row): row is PredictionLog => Boolean(row && typeof row === "object"))
+      .sort((a, b) => {
+        const aTs = new Date(a.timestamp).getTime();
+        const bTs = new Date(b.timestamp).getTime();
+        return Number.isFinite(bTs - aTs) ? bTs - aTs : 0;
+      });
   }
 
   async getHistoricalData(
