@@ -179,8 +179,9 @@ export default function SentinelAI({
 
   // Handle country query
   const handleCountryQuery = async () => {
-    if (!countryInput.trim()) return;
-    const country = countryInput.trim();
+    if (!countryInput.trim() || isProcessingQA) return;
+    const countryRaw = countryInput.trim();
+    const country = countryRaw.length <= 3 ? countryRaw.toUpperCase() : countryRaw;
     setCountryInput("");
     
     if (onCountryQuery) {
@@ -232,10 +233,19 @@ export default function SentinelAI({
   }
 
   if (error || !data) {
-    return null;
+    return (
+      <div className={`sentinel-hologram ${className}`}>
+        <div className="hologram-loading">
+          <HolographicAvatar threatLevel="guarded" />
+          <span className="hologram-text">Sentinel data stream unavailable</span>
+        </div>
+      </div>
+    );
   }
 
   const threatColor = getThreatColor(data?.threat_level || "stable");
+  const connectionLabel = wsConnected ? "Live stream connected" : wsReconnecting ? "Reconnecting stream" : "Offline stream";
+  const lastUpdateLabel = data?.timestamp ? new Date(data.timestamp).toLocaleTimeString() : "Unknown";
 
 
   return (
@@ -314,6 +324,7 @@ export default function SentinelAI({
                 onClick={() => setShowQA(!showQA)}
                 className={`hologram-btn ${showQA ? "active" : ""}`}
                 title="Ask a question"
+                aria-label="Toggle Q and A panel"
               >
                 <MessageSquare size={14} />
               </button>
@@ -321,12 +332,14 @@ export default function SentinelAI({
                 onClick={() => setVoiceEnabled(!voiceEnabled)}
                 className={`hologram-btn ${voiceEnabled ? "active" : ""}`}
                 title={voiceEnabled ? "Mute" : "Enable voice"}
+                aria-label={voiceEnabled ? "Disable voice output" : "Enable voice output"}
               >
                 {voiceEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
               </button>
               <button 
                 onClick={() => setExpanded(!expanded)}
                 className="hologram-btn"
+                aria-label={expanded ? "Collapse Sentinel panel" : "Expand Sentinel panel"}
               >
                 {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
               </button>
@@ -345,7 +358,7 @@ export default function SentinelAI({
             {showPredictive && data?.risk_trend !== "stable" && (
               <div className="hologram-predictive">
                 <TypewriterText 
-                  text={`If current trajectory persists, systemic risk may remain ${data?.threat_level || "stable"} over the next 48–72 hours.`}
+                  text={`If current trajectory persists, systemic risk may remain ${data?.threat_level || "stable"} over the next 48-72 hours.`}
                   speed={35}
                   className="predictive-text"
                 />
@@ -398,6 +411,9 @@ export default function SentinelAI({
             </div>
             <span className="hologram-confidence">
               {((data?.confidence || 0) * 100).toFixed(0)}% confidence
+            </span>
+            <span className="hologram-confidence" title={connectionLabel}>
+              {connectionLabel} | {lastUpdateLabel}
             </span>
           </div>
 
@@ -563,7 +579,10 @@ export default function SentinelAI({
                   {/* Country Query Section */}
                   <div className="country-query-section">
                     <h3>Country Analysis</h3>
-                    <div className="country-query-input">
+                    <form className="country-query-input" onSubmit={(e) => {
+                      e.preventDefault();
+                      void handleCountryQuery();
+                    }}>
                       <Globe size={14} />
                       <input
                         type="text"
@@ -571,8 +590,10 @@ export default function SentinelAI({
                         onChange={(e) => setCountryInput(e.target.value)}
                         placeholder="Enter country code (e.g., USA, CHN)..."
                       />
-                      <button onClick={handleCountryQuery}>Analyze</button>
-                    </div>
+                      <button type="submit" disabled={!countryInput.trim() || isProcessingQA}>
+                        Analyze
+                      </button>
+                    </form>
                   </div>
 
                   <div className="drivers-section">
@@ -810,3 +831,4 @@ export default function SentinelAI({
     </>
   );
 }
+

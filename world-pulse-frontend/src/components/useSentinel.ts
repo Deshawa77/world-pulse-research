@@ -38,7 +38,6 @@ declare global {
   }
 }
 
-
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
 }
@@ -74,7 +73,6 @@ interface SpeechRecognition extends EventTarget {
   start(): void;
   stop(): void;
 }
-
 
 export interface SentinelDriver {
   feature: string;
@@ -195,6 +193,10 @@ export function useSentinel(options: UseSentinelOptions = {}) {
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const wsShouldReconnectRef = useRef(true);
+  const wsConnectingRef = useRef(false);
+  const isUnmountedRef = useRef(false);
+  const MAX_RECONNECT_ATTEMPTS = 5; // Maximum reconnection attempts before giving up
+  
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const mutedAlertUntilRef = useRef<Record<string, number>>({});
   const ALERT_MUTE_MS = 10 * 60 * 1000;
@@ -212,7 +214,6 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     }
     return false;
   }, []);
-
 
   // Load saved preferences
   useEffect(() => {
@@ -236,52 +237,10 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       sensitivity,
       customThreshold,
       alerts,
-      conversationMemory: conversationMemory.slice(-20), // Keep last 20
+      conversationMemory: conversationMemory.slice(-20),
     };
     localStorage.setItem("sentinel_preferences", JSON.stringify(prefs));
   }, [sensitivity, customThreshold, alerts, conversationMemory]);
-
-  const fetchSentinelData = useCallback(async () => {
-    try {
-      const response = await API.get("/api/sentinel/latest", {
-        headers: API_HEADERS,
-      });
-      
-      const sentinelData: SentinelData = response.data;
-      setData(sentinelData);
-      setLastUpdate(new Date().toISOString());
-      setError(null);
-
-      // Check if we should activate based on risk delta
-      const currentRisk = sentinelData.risk_score;
-      const prevRisk = prevRiskRef.current;
-      
-      if (prevRisk !== null) {
-        const delta = Math.abs(currentRisk - prevRisk);
-        const effectiveThreshold = sensitivity === "low" ? customThreshold * 1.5 : 
-                                   sensitivity === "high" ? customThreshold * 0.5 : 
-                                   customThreshold;
-        
-        if (delta >= effectiveThreshold) {
-          setIsActive(true);
-          
-          if (enableVoice && window.speechSynthesis) {
-            speakAnalysis(sentinelData.analysis_text);
-          }
-        }
-      }
-      
-      // Check alerts
-      checkAlerts(sentinelData.risk_score);
-      
-      prevRiskRef.current = currentRisk;
-    } catch (err: any) {
-      setError(err?.message || "Failed to fetch sentinel data");
-      console.error("Sentinel fetch error:", err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [customThreshold, sensitivity, enableVoice]);
 
   const checkAlerts = useCallback((riskScore: number) => {
     const nowIso = new Date().toISOString();
@@ -289,7 +248,6 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     const triggered = alerts.filter((alert) => {
       if (!alert.enabled) return false;
       const shouldTrigger = alert.condition === "above" ? riskScore > alert.threshold : riskScore < alert.threshold;
-      // Trigger only on threshold entry. It will rearm once condition clears.
       return shouldTrigger && !alert.triggered;
     });
 
@@ -310,7 +268,6 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       });
     }
 
-    // Keep `triggered` latched while condition remains true; rearm when condition clears.
     setAlerts((prev) =>
       prev.map((alert) => {
         if (!alert.enabled) return { ...alert, triggered: false };
@@ -325,6 +282,46 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       }),
     );
   }, [alerts, isAlertMuted]);
+
+  const fetchSentinelData = useCallback(async () => {
+    try {
+      const response = await API.get("/api/sentinel/latest", {
+        headers: API_HEADERS,
+      });
+      
+      const sentinelData: SentinelData = response.data;
+      setData(sentinelData);
+      setLastUpdate(new Date().toISOString());
+      setError(null);
+
+      const currentRisk = sentinelData.risk_score;
+      const prevRisk = prevRiskRef.current;
+      
+      if (prevRisk !== null) {
+        const delta = Math.abs(currentRisk - prevRisk);
+        const effectiveThreshold = sensitivity === "low" ? customThreshold * 1.5 : 
+                                   sensitivity === "high" ? customThreshold * 0.5 : 
+                                   customThreshold;
+        
+        if (delta >= effectiveThreshold) {
+          setIsActive(true);
+          
+          if (enableVoice && window.speechSynthesis) {
+            speakAnalysis(sentinelData.analysis_text);
+          }
+        }
+      }
+      
+      checkAlerts(sentinelData.risk_score);
+      
+      prevRiskRef.current = currentRisk;
+    } catch (err: any) {
+      setError(err?.message || "Failed to fetch sentinel data");
+      console.error("Sentinel fetch error:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [customThreshold, sensitivity, enableVoice, checkAlerts]);
 
   const speakAnalysis = useCallback((text: string) => {
     if (!window.speechSynthesis) return;
@@ -352,9 +349,14 @@ export function useSentinel(options: UseSentinelOptions = {}) {
 
   // WebSocket Connection
   const connectWebSocket = useCallback(() => {
-    if (!enableWebSocket) return;
-    const currentState = wsRef.current?.readyState;
-    if (currentState === WebSocket.OPEN || currentState === WebSocket.CONNECTING) return;
+    if (
+      !enableWebSocket ||
+      wsConnectingRef.current ||
+      wsRef.current?.readyState === WebSocket.OPEN ||
+      wsRef.current?.readyState === WebSocket.CONNECTING
+    ) {
+      return;
+    }
 
     const validWsUrl = normalizeWebSocketUrl(resolvedWebSocketUrl);
     if (!validWsUrl) {
@@ -366,13 +368,14 @@ export function useSentinel(options: UseSentinelOptions = {}) {
     }
 
     try {
-      // Append API key as query parameter for authentication
+      wsConnectingRef.current = true;
       const wsUrl = validWsUrl.includes("?")
         ? `${validWsUrl}&api_key=${API_KEY}`
         : `${validWsUrl}?api_key=${API_KEY}`;
       const ws = new WebSocket(wsUrl);
       
       ws.onopen = () => {
+        wsConnectingRef.current = false;
         setWsConnected(true);
         setWsReconnecting(false);
         setError(null);
@@ -416,23 +419,35 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       };
       
       ws.onclose = () => {
+        wsConnectingRef.current = false;
         setWsConnected(false);
-        // Attempt reconnect
-        if (enableWebSocket && wsShouldReconnectRef.current) {
-          setWsReconnecting(true);
-          reconnectAttemptsRef.current += 1;
-          const reconnectDelay = Math.min(5000 * reconnectAttemptsRef.current, 30000);
-          reconnectTimeoutRef.current = setTimeout(connectWebSocket, reconnectDelay);
+        
+        // Check if we should reconnect and haven't exceeded max attempts
+        if (enableWebSocket && wsShouldReconnectRef.current && !isUnmountedRef.current) {
+          if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+            setWsReconnecting(true);
+            reconnectAttemptsRef.current += 1;
+            const reconnectDelay = Math.min(5000 * reconnectAttemptsRef.current, 30000);
+            reconnectTimeoutRef.current = setTimeout(connectWebSocket, reconnectDelay);
+          } else {
+            // Max attempts reached - stop trying and set error
+            console.warn(`Sentinel WebSocket: Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Giving up.`);
+            setWsReconnecting(false);
+            setError("WebSocket connection failed after multiple attempts. Please refresh the page.");
+          }
         }
       };
       
       ws.onerror = (error) => {
-        void error;
-        ws.close();
+        // Don't call ws.close() here as it triggers onclose and creates a loop
+        // Just log the error and let onclose handle cleanup
+        console.error("WebSocket error:", error);
+        wsConnectingRef.current = false;
       };
       
       wsRef.current = ws;
     } catch (err) {
+      wsConnectingRef.current = false;
       console.error("Failed to connect WebSocket:", err);
     }
   }, [enableWebSocket, resolvedWebSocketUrl, checkAlerts, isAlertMuted]);
@@ -527,7 +542,6 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       const transcript = event.results[0][0].transcript;
       const confidence = event.results[0][0].confidence;
 
-      
       const command: VoiceCommand = {
         command: transcript,
         action: parseVoiceCommand(transcript),
@@ -537,7 +551,6 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       setVoiceCommands(prev => [...prev, command].slice(-20));
       setLastVoiceCommand(command);
       
-      // Execute command
       executeVoiceCommand(command);
     };
     
@@ -546,7 +559,6 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       setIsListening(false);
     };
 
-    
     recognitionRef.current = recognition;
     recognition.start();
   }, []);
@@ -586,7 +598,6 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       case "export_analysis":
         exportAnalysis();
         break;
-      // Other commands handled by component
     }
   };
 
@@ -648,7 +659,6 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       return { success: true, format: "json" };
     }
     
-    // PDF export would require additional library
     return { success: false, format: "pdf", error: "PDF export not implemented" };
   }, [data, qaHistory, conversationMemory]);
 
@@ -702,12 +712,28 @@ export function useSentinel(options: UseSentinelOptions = {}) {
   useEffect(() => {
     fetchSentinelData();
     
-    // Keep polling as fallback if WebSocket is disabled or not connected.
     if (!enableWebSocket || !wsConnected) {
       const interval = setInterval(fetchSentinelData, pollInterval);
       return () => clearInterval(interval);
     }
   }, [fetchSentinelData, pollInterval, enableWebSocket, wsConnected]);
+
+  // Track unmount to prevent state updates after unmount
+  useEffect(() => {
+    isUnmountedRef.current = false;
+    return () => {
+      isUnmountedRef.current = true;
+      // Cleanup WebSocket on unmount
+      wsShouldReconnectRef.current = false;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (enableWebSocket) {
@@ -715,7 +741,7 @@ export function useSentinel(options: UseSentinelOptions = {}) {
       connectWebSocket();
       return () => disconnectWebSocket();
     }
-  }, [enableWebSocket, connectWebSocket, disconnectWebSocket]);
+  }, [enableWebSocket]);
 
   useEffect(() => {
     if (enableVoice && window.speechSynthesis) {
@@ -780,3 +806,4 @@ export function useSentinel(options: UseSentinelOptions = {}) {
 }
 
 export default useSentinel;
+

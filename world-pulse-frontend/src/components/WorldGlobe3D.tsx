@@ -120,18 +120,22 @@ export default function WorldGlobe3D({
         );
 
         setRenderError(null);
+        const plotEl = containerRef.current as any;
+        plotEl.removeAllListeners?.("plotly_hover");
+        plotEl.removeAllListeners?.("plotly_unhover");
+        plotEl.removeAllListeners?.("plotly_click");
 
-        (containerRef.current as any).on?.("plotly_hover", (evt: any) => {
+        plotEl.on?.("plotly_hover", (evt: any) => {
           const point = evt?.points?.[0];
           if (!point?.customdata) return;
           setHoveredCountry(point.customdata as CountryRisk);
         });
 
-        (containerRef.current as any).on?.("plotly_unhover", () => {
+        plotEl.on?.("plotly_unhover", () => {
           setHoveredCountry(null);
         });
 
-        (containerRef.current as any).on?.("plotly_click", (evt: any) => {
+        plotEl.on?.("plotly_click", (evt: any) => {
           const point = evt?.points?.[0];
           if (!point?.customdata || !onCountryClick) return;
           onCountryClick(point.customdata as CountryRisk);
@@ -146,6 +150,12 @@ export default function WorldGlobe3D({
 
     return () => {
       stopped = true;
+      if (containerRef.current) {
+        const plotEl = containerRef.current as any;
+        plotEl.removeAllListeners?.("plotly_hover");
+        plotEl.removeAllListeners?.("plotly_unhover");
+        plotEl.removeAllListeners?.("plotly_click");
+      }
     };
   }, [plotted, onCountryClick]);
 

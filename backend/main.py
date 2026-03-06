@@ -230,7 +230,7 @@ prediction_collection = db["prediction_logs"]
 model_monitoring_collection = db["model_monitoring"]
 users_collection = db["users"]
 operator_events_collection = db["operator_events"]
-
+sentinel_feedback_collection = db["sentinel_feedback"]
 # Create indexes for scalable queries (run once)
 prediction_collection.create_index([("timestamp", DESCENDING)])
 prediction_collection.create_index([("model_version", ASCENDING)])
@@ -238,7 +238,7 @@ model_monitoring_collection.create_index([("timestamp", DESCENDING)])
 model_monitoring_collection.create_index([("model_version", ASCENDING)])
 users_collection.create_index([("email", ASCENDING)], unique=True)
 operator_events_collection.create_index([("timestamp", DESCENDING)])
-
+sentinel_feedback_collection.create_index([("timestamp", DESCENDING)])
 # =====================================================
 # Model Cache
 # =====================================================
@@ -442,6 +442,21 @@ class ScenarioStep(BaseModel):
 class ScenarioRunRequest(BaseModel):
     steps: list[ScenarioStep]
 
+
+class SentinelQuestionRequest(BaseModel):
+    question: str
+    context: dict | None = None
+    conversation_history: list[dict] | None = None
+    current_risk: float | None = None
+
+
+class SentinelFeedbackRequest(BaseModel):
+    eventId: str
+    feedbackType: str
+    threatLevel: str
+    riskScore: float
+    timestamp: str
+    notes: str | None = None
 # =====================================================
 # WebSocket Connection Manager
 # =====================================================
@@ -1436,6 +1451,79 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
 # SENTINEL AI ENDPOINTS
 # =====================================================
 
+def _build_sentinel_historical_comparison(history: list[dict]) -> dict:
+    if not history:
+        return {
+            "history": [],
+            "trend_data": [],
+            "current": None,
+            "week_ago": None,
+            "month_ago": None,
+            "week_change_pct": None,
+            "month_change_pct": None,
+            "trend_direction": "stable",
+        }
+
+    current = float(history[-1].get("risk_score", 0.0))
+    week_ago = float(history[-8].get("risk_score", history[0].get("risk_score", current))) if len(history) >= 8 else None
+    month_ago = float(history[0].get("risk_score", current))
+
+    week_change_pct = None
+    month_change_pct = None
+    if week_ago not in (None, 0):
+        week_change_pct = round(((current - week_ago) / week_ago) * 100, 2)
+    if month_ago not in (None, 0):
+        month_change_pct = round(((current - month_ago) / month_ago) * 100, 2)
+
+    trend_direction = "stable"
+    if month_change_pct is not None:
+        if month_change_pct > 2:
+            trend_direction = "worsening"
+        elif month_change_pct < -2:
+            trend_direction = "improving"
+
+    return {
+        "history": history,
+        "trend_data": history,
+        "current": round(current, 2),
+        "week_ago": round(week_ago, 2) if week_ago is not None else None,
+        "month_ago": round(month_ago, 2) if month_ago is not None else None,
+        "week_change_pct": week_change_pct,
+        "month_change_pct": month_change_pct,
+        "trend_direction": trend_direction,
+    }
+
+
+def _build_sentinel_qa_answer(payload: SentinelQuestionRequest, analysis: dict) -> str:
+    question = (payload.question or "").strip()
+    if not question:
+        return "Please ask a question and I can summarize the latest risk signals."
+
+    threat_level = analysis.get("threat_level", "stable")
+    risk_score = analysis.get("risk_score", 0)
+    trend = analysis.get("risk_trend", "stable")
+    drivers = analysis.get("top_drivers", []) or []
+    driver_labels = [d.get("display_name") or d.get("feature", "unknown driver") for d in drivers[:3]]
+    driver_text = ", ".join(driver_labels) if driver_labels else "multiple global indicators"
+
+    country = None
+    context = payload.context if isinstance(payload.context, dict) else None
+    if context:
+        country = context.get("country")
+
+    if country:
+        return (
+            f"Current global risk is {risk_score} ({threat_level}, trend: {trend}). "
+            f"For {country}, the most relevant active signals right now are {driver_text}. "
+            f"I will keep monitoring for rapid shifts."
+        )
+
+    return (
+        f"Current global risk is {risk_score} with a {threat_level} threat level and a {trend} trend. "
+        f"Top current drivers are {driver_text}."
+    )
+
+
 @app.get("/api/sentinel/latest")
 @limiter.limit("60/minute")
 def get_sentinel_latest(request: Request, role: str = Depends(check_role)):
@@ -1461,18 +1549,72 @@ def get_sentinel_latest(request: Request, role: str = Depends(check_role)):
 def get_sentinel_history_api(
     request: Request,
     role: str = Depends(check_role),
-    limit: int = Query(10, ge=1, le=100)
+    limit: int = Query(10, ge=1, le=100),
+    days: int | None = Query(None, ge=1, le=30),
 ):
     """
     Get historical sentinel analysis data for trend analysis.
+
+    Supports both limit and days query styles.
     """
     try:
-        history = get_sentinel_history(limit=limit)
-        return {"history": history}
+        effective_limit = min(100, max(limit, days or 0)) if days else limit
+        history = get_sentinel_history(limit=effective_limit)
+        return _build_sentinel_historical_comparison(history)
     except Exception as e:
         logger.error("sentinel_history_failed", extra={"error": str(e)})
         raise HTTPException(status_code=500, detail="Failed to retrieve sentinel history")
 
+
+@app.post("/api/sentinel/qa")
+@limiter.limit("40/minute")
+def sentinel_qa(
+    payload: SentinelQuestionRequest,
+    request: Request,
+    role: str = Depends(check_role),
+):
+    """Simple deterministic Q&A endpoint for Sentinel chat UI."""
+    try:
+        analysis = compute_sentinel_analysis()
+        answer = _build_sentinel_qa_answer(payload, analysis)
+        return {
+            "answer": answer,
+            "timestamp": datetime.utcnow().isoformat(),
+            "analysis_snapshot": {
+                "risk_score": analysis.get("risk_score"),
+                "threat_level": analysis.get("threat_level"),
+                "risk_trend": analysis.get("risk_trend"),
+            },
+        }
+    except Exception as e:
+        logger.error("sentinel_qa_failed", extra={"error": str(e)})
+        raise HTTPException(status_code=500, detail="Failed to process sentinel question")
+
+
+@app.post("/api/sentinel/feedback")
+@limiter.limit("60/minute")
+def sentinel_feedback(
+    payload: SentinelFeedbackRequest,
+    request: Request,
+    role: str = Depends(check_role),
+):
+    """Persist Sentinel feedback so UI actions are not dropped."""
+    try:
+        feedback_doc = {
+            "eventId": payload.eventId,
+            "feedbackType": payload.feedbackType,
+            "threatLevel": payload.threatLevel,
+            "riskScore": payload.riskScore,
+            "timestamp": payload.timestamp,
+            "notes": payload.notes,
+            "submitted_at": datetime.utcnow().isoformat(),
+            "submitted_by_role": role,
+        }
+        sentinel_feedback_collection.insert_one(feedback_doc)
+        return {"ok": True}
+    except Exception as e:
+        logger.error("sentinel_feedback_failed", extra={"error": str(e)})
+        raise HTTPException(status_code=500, detail="Failed to store sentinel feedback")
 
 
 # =====================================================

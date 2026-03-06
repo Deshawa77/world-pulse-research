@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
@@ -74,10 +74,10 @@ export default function SentinelAvatar3D({
   const HOLO_CORE_COLOR = 0xe9f8ff;
   const HOLO_EMISSIVE_COLOR = 0xa6e5ff;
   const HOLO_WIREFRAME_COLOR = 0xc8f1ff;
-  const HOLO_ACCENT_COLOR = 0xefffff;
 
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const speakingRef = useRef(isSpeaking);
   const threatLevelRef = useRef(threatLevel);
   const isProcessingRef = useRef(isProcessing);
@@ -148,131 +148,140 @@ export default function SentinelAvatar3D({
     const animatedWireMaterials: THREE.MeshBasicMaterial[] = [];
     const faceCoreMaterials: THREE.MeshStandardMaterial[] = [];
     const faceWireframeMaterials: THREE.MeshBasicMaterial[] = [];
-    const overlayGeometries: THREE.BufferGeometry[] = [];
 
     const contentRoot = new THREE.Group();
     scene.add(contentRoot);
 
     const headGroup = new THREE.Group();
     contentRoot.add(headGroup);
+    setLoadFailed(false);
 
-    loader.load(
+    const loadCandidates = Array.from(new Set([
       resolvedModelUrl,
-      (gltf) => {
-        model = gltf.scene;
-        
-        // Orient model and apply offset
-        orientModelForFrontalView(model);
-        const yawOffsetRad = THREE.MathUtils.degToRad(modelYawOffsetDeg);
-        model.rotateY(yawOffsetRad);
-        model.rotateX(THREE.MathUtils.degToRad(-5));
+      resolvePublicAssetUrl("/models/sentinel-scan.glb"),
+      "/models/sentinel-scan.glb",
+      "models/sentinel-scan.glb",
+    ]));
 
-        const box = new THREE.Box3().setFromObject(model);
-        const size = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z);
-        // Keep the head large but allow camera-fit pass to keep it inside the frame.
-        initialScale = (1.0 / maxDim) * 1.08;
-        model.scale.setScalar(initialScale);
+    const applyLoadedModel = (gltf: { scene: THREE.Object3D }) => {
+      setLoadFailed(false);
+      model = gltf.scene;
 
-        box.setFromObject(model);
-        const center = box.getCenter(new THREE.Vector3());
-        model.position.sub(center);
-        // Push projection down so the crown stays inside frame while the neck is slightly clipped.
-        model.position.y = -0.44;
+      // Orient model and apply offset
+      orientModelForFrontalView(model);
+      const yawOffsetRad = THREE.MathUtils.degToRad(modelYawOffsetDeg);
+      model.rotateY(yawOffsetRad);
+      model.rotateX(THREE.MathUtils.degToRad(-5));
 
-        // Fit camera to keep the enlarged head fully inside the frame with small padding.
-        const fittedBox = new THREE.Box3().setFromObject(model);
-        const fittedSize = fittedBox.getSize(new THREE.Vector3());
-        const halfV = THREE.MathUtils.degToRad(camera.fov * 0.5);
-        const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
-        const distForHeight = (fittedSize.y * 0.5) / Math.tan(halfV);
-        const distForWidth = (fittedSize.x * 0.5) / Math.tan(halfH);
-        const fitDistance = Math.max(distForHeight, distForWidth) * 1.12;
-        camera.position.z = THREE.MathUtils.clamp(fitDistance, 1.35, 2.15);
-        camera.near = 0.05;
-        camera.far = 40;
-        camera.lookAt(0, 0.05, 0);
-        camera.updateProjectionMatrix();
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      // Keep the head large but allow camera-fit pass to keep it inside the frame.
+      initialScale = (1.0 / maxDim) * 1.08;
+      model.scale.setScalar(initialScale);
 
-        headGroup.add(model);
+      box.setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      model.position.sub(center);
+      // Push projection down so the crown stays inside frame while the neck is slightly clipped.
+      model.position.y = -0.44;
 
-        model.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            const mesh = child as THREE.Mesh;
-            
-            if (Array.isArray(mesh.material)) {
-              mesh.material = mesh.material.map((mat) => {
-                if (mat instanceof THREE.MeshStandardMaterial) {
-                  const clonedMat = mat.clone();
-                  clonedMat.color = new THREE.Color(HOLO_CORE_COLOR);
-                  clonedMat.transparent = true;
-                  clonedMat.opacity = 0.63;
-                  clonedMat.roughness = 0.16;
-                  clonedMat.metalness = 0.03;
-                  clonedMat.depthWrite = true;
-                  clonedMat.blending = THREE.NormalBlending;
-                  clonedMat.emissive = new THREE.Color(HOLO_EMISSIVE_COLOR);
-                  clonedMat.emissiveIntensity = 0.2;
-                  faceCoreMaterials.push(clonedMat);
-                  animatedBaseMaterials.push(clonedMat);
-                  return clonedMat;
-                }
-                return mat;
-              });
-            } else if (mesh.material instanceof THREE.MeshStandardMaterial) {
-              const mat = mesh.material as THREE.MeshStandardMaterial;
-              const clonedMat = mat.clone();
-               clonedMat.color = new THREE.Color(HOLO_CORE_COLOR);
-               clonedMat.transparent = true;
-               clonedMat.opacity = 0.63;
-               clonedMat.roughness = 0.16;
-               clonedMat.metalness = 0.03;
-               clonedMat.depthWrite = true;
-               clonedMat.blending = THREE.NormalBlending;
-               clonedMat.emissive = new THREE.Color(HOLO_EMISSIVE_COLOR);
-               clonedMat.emissiveIntensity = 0.2;
-               faceCoreMaterials.push(clonedMat);
-               animatedBaseMaterials.push(clonedMat);
-               mesh.material = clonedMat;
-            } else if (mesh.material instanceof THREE.MeshBasicMaterial) {
-              const mat = mesh.material as THREE.MeshBasicMaterial;
-              const clonedMat = mat.clone();
-               clonedMat.color = new THREE.Color(HOLO_WIREFRAME_COLOR);
-               clonedMat.transparent = true;
-                clonedMat.opacity = 0.2;
-               clonedMat.blending = THREE.AdditiveBlending;
-               clonedMat.depthWrite = false;
-               animatedWireMaterials.push(clonedMat);
-               mesh.material = clonedMat;
-             }
+      // Fit camera to keep the enlarged head fully inside the frame with small padding.
+      const fittedBox = new THREE.Box3().setFromObject(model);
+      const fittedSize = fittedBox.getSize(new THREE.Vector3());
+      const halfV = THREE.MathUtils.degToRad(camera.fov * 0.5);
+      const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
+      const distForHeight = (fittedSize.y * 0.5) / Math.tan(halfV);
+      const distForWidth = (fittedSize.x * 0.5) / Math.tan(halfH);
+      const fitDistance = Math.max(distForHeight, distForWidth) * 1.12;
+      camera.position.z = THREE.MathUtils.clamp(fitDistance, 1.35, 2.15);
+      camera.near = 0.05;
+      camera.far = 40;
+      camera.lookAt(0, 0.05, 0);
+      camera.updateProjectionMatrix();
 
-            if (mesh.geometry) {
-              const wireGeometry = mesh.geometry.clone();
-              overlayGeometries.push(wireGeometry);
-              const wireMaterial = new THREE.MeshBasicMaterial({
-                color: HOLO_WIREFRAME_COLOR,
-                wireframe: true,
-                transparent: true,
-                opacity: 0.1,
-                blending: THREE.AdditiveBlending,
-                depthWrite: false,
-              });
-              const wireOverlay = new THREE.Mesh(wireGeometry, wireMaterial);
-              wireOverlay.scale.setScalar(1.0025);
-              mesh.add(wireOverlay);
-              faceWireframeMaterials.push(wireMaterial);
-              animatedWireMaterials.push(wireMaterial);
-            }
+      headGroup.add(model);
 
-            if (mesh.geometry) {
-              disposableGeometries.push(mesh.geometry);
-            }
+      model.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          const mesh = child as THREE.Mesh;
+
+          if (Array.isArray(mesh.material)) {
+            mesh.material = mesh.material.map((mat) => {
+              if (mat instanceof THREE.MeshStandardMaterial) {
+                const clonedMat = mat.clone();
+                clonedMat.color = new THREE.Color(HOLO_CORE_COLOR);
+                clonedMat.transparent = true;
+                clonedMat.opacity = 0.63;
+                clonedMat.roughness = 0.16;
+                clonedMat.metalness = 0.03;
+                clonedMat.depthWrite = true;
+                clonedMat.blending = THREE.NormalBlending;
+                clonedMat.emissive = new THREE.Color(HOLO_EMISSIVE_COLOR);
+                clonedMat.emissiveIntensity = 0.2;
+                faceCoreMaterials.push(clonedMat);
+                animatedBaseMaterials.push(clonedMat);
+                return clonedMat;
+              }
+              return mat;
+            });
+          } else if (mesh.material instanceof THREE.MeshStandardMaterial) {
+            const mat = mesh.material as THREE.MeshStandardMaterial;
+            const clonedMat = mat.clone();
+             clonedMat.color = new THREE.Color(HOLO_CORE_COLOR);
+             clonedMat.transparent = true;
+             clonedMat.opacity = 0.63;
+             clonedMat.roughness = 0.16;
+             clonedMat.metalness = 0.03;
+             clonedMat.depthWrite = true;
+             clonedMat.blending = THREE.NormalBlending;
+             clonedMat.emissive = new THREE.Color(HOLO_EMISSIVE_COLOR);
+             clonedMat.emissiveIntensity = 0.2;
+             faceCoreMaterials.push(clonedMat);
+             animatedBaseMaterials.push(clonedMat);
+             mesh.material = clonedMat;
+           } else if (mesh.material instanceof THREE.MeshBasicMaterial) {
+            const mat = mesh.material as THREE.MeshBasicMaterial;
+            const clonedMat = mat.clone();
+             clonedMat.color = new THREE.Color(HOLO_WIREFRAME_COLOR);
+             clonedMat.transparent = true;
+              clonedMat.opacity = 0.2;
+             clonedMat.blending = THREE.AdditiveBlending;
+             clonedMat.depthWrite = false;
+             animatedWireMaterials.push(clonedMat);
+             mesh.material = clonedMat;
+           }
+
+          if (mesh.geometry) {
+            disposableGeometries.push(mesh.geometry);
           }
-        });
-      },
-      undefined,
-      () => {}
-    );
+        }
+      });
+    };
+
+    const tryLoadModel = (index: number) => {
+      const candidateUrl = loadCandidates[index];
+      loader.load(
+        candidateUrl,
+        applyLoadedModel,
+        undefined,
+        (error) => {
+          console.error(
+            `[SentinelAvatar3D] Failed to load model (attempt ${index + 1}/${loadCandidates.length}) from "${candidateUrl}"`,
+            error
+          );
+
+          if (index + 1 < loadCandidates.length) {
+            tryLoadModel(index + 1);
+            return;
+          }
+
+          setLoadFailed(true);
+        }
+      );
+    };
+
+    tryLoadModel(0);
 
     // Create subtle holographic base platform (integrated with existing style)
     const baseGeometry = new THREE.CylinderGeometry(0.48, 0.56, 0.015, 32);
@@ -352,45 +361,6 @@ export default function SentinelAvatar3D({
     scanLine.position.y = 0.2;
     scene.add(scanLine);
 
-    // Eye glow effect: two holographic blank-white eyes like the reference.
-    const eyeGlowGeometry = new THREE.SphereGeometry(0.03, 18, 18);
-    const eyeGlowMaterial = new THREE.MeshBasicMaterial({
-      color: HOLO_ACCENT_COLOR,
-      transparent: true,
-      opacity: 0.46,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    const leftEyeGlow = new THREE.Mesh(eyeGlowGeometry, eyeGlowMaterial);
-    const rightEyeGlow = new THREE.Mesh(eyeGlowGeometry, eyeGlowMaterial.clone());
-    leftEyeGlow.position.set(-0.105, 0.13, 0.325);
-    rightEyeGlow.position.set(0.105, 0.13, 0.325);
-    leftEyeGlow.scale.set(1.28, 0.75, 0.9);
-    rightEyeGlow.scale.set(1.28, 0.75, 0.9);
-    scene.add(leftEyeGlow);
-    scene.add(rightEyeGlow);
-
-    const eyeAuraGeometry = new THREE.SphereGeometry(0.038, 18, 18);
-    const eyeAuraMaterial = new THREE.MeshBasicMaterial({
-      color: 0xdcf4ff,
-      transparent: true,
-      opacity: 0.15,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    const leftEyeAura = new THREE.Mesh(eyeAuraGeometry, eyeAuraMaterial);
-    const rightEyeAura = new THREE.Mesh(eyeAuraGeometry, eyeAuraMaterial.clone());
-    leftEyeAura.position.copy(leftEyeGlow.position);
-    rightEyeAura.position.copy(rightEyeGlow.position);
-    leftEyeAura.scale.set(1.45, 0.82, 1);
-    rightEyeAura.scale.set(1.45, 0.82, 1);
-    scene.add(leftEyeAura);
-    scene.add(rightEyeAura);
-    const leftEyeBasePos = leftEyeGlow.position.clone();
-    const rightEyeBasePos = rightEyeGlow.position.clone();
-    const leftAuraBasePos = leftEyeAura.position.clone();
-    const rightAuraBasePos = rightEyeAura.position.clone();
-
     const coreGlowGeometry = new THREE.SphereGeometry(0.34, 28, 28);
     const coreGlowMaterial = new THREE.MeshBasicMaterial({
       color: 0xe7f8ff,
@@ -402,6 +372,56 @@ export default function SentinelAvatar3D({
     const coreGlow = new THREE.Mesh(coreGlowGeometry, coreGlowMaterial);
     coreGlow.position.set(0, 0.08, 0.08);
     headGroup.add(coreGlow);
+
+    // Bottom-to-brain energy conduit.
+    const energyColumnGeometry = new THREE.CylinderGeometry(0.026, 0.05, 1.04, 20, 1, true);
+    const energyColumnMaterial = new THREE.MeshStandardMaterial({
+      color: 0x49a9ff,
+      emissive: 0x7cc5ff,
+      emissiveIntensity: 0.18,
+      transparent: true,
+      opacity: 0.16,
+      metalness: 0,
+      roughness: 0.2,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const energyColumn = new THREE.Mesh(energyColumnGeometry, energyColumnMaterial);
+    energyColumn.position.set(0, -0.2, 0.08);
+    headGroup.add(energyColumn);
+
+    const pulseNodeGeometry = new THREE.SphereGeometry(0.028, 16, 16);
+    const pulseNodeMaterials: THREE.MeshBasicMaterial[] = [];
+    const pulseNodes: THREE.Mesh[] = [];
+    const pulseNodeOffsets = new Float32Array(5);
+    for (let i = 0; i < 5; i++) {
+      pulseNodeOffsets[i] = i / 5;
+      const pulseMat = new THREE.MeshBasicMaterial({
+        color: 0x95d6ff,
+        transparent: true,
+        opacity: 0.22,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const node = new THREE.Mesh(pulseNodeGeometry, pulseMat);
+      node.position.set(0, -0.66, 0.08);
+      pulseNodes.push(node);
+      pulseNodeMaterials.push(pulseMat);
+      headGroup.add(node);
+    }
+
+    const brainGlowGeometry = new THREE.SphereGeometry(0.09, 20, 20);
+    const brainGlowMaterial = new THREE.MeshBasicMaterial({
+      color: 0xb9e5ff,
+      transparent: true,
+      opacity: 0.05,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const brainGlow = new THREE.Mesh(brainGlowGeometry, brainGlowMaterial);
+    brainGlow.position.set(0, 0.40, 0.1);
+    headGroup.add(brainGlow);
 
     const dataBandGeometry = new THREE.PlaneGeometry(0.62, 0.02);
     const dataBandMaterial = new THREE.MeshBasicMaterial({
@@ -605,9 +625,6 @@ export default function SentinelAvatar3D({
     const attentionTarget = new THREE.Vector2(0, 0);
     const attentionCurrent = new THREE.Vector2(0, 0);
     let nextSaccadeAt = 0.45 + Math.random() * 1.1;
-    let nextBlinkAt = 1.3 + Math.random() * 2.1;
-    let blinkWindowStart = -1;
-    let blinkWindowEnd = -1;
     const headIntentPhase = Math.random() * Math.PI * 2;
     let smoothedThreatSpeed = 0.8;
     let smoothedThreatIntensity = 0.8;
@@ -635,8 +652,9 @@ export default function SentinelAvatar3D({
       smoothedThreatIntensity += (targetThreatIntensity - smoothedThreatIntensity) * 0.06;
       const threatSpeedMul = smoothedThreatSpeed;
       const threatIntensityMul = smoothedThreatIntensity;
+      let brainImpact = 0;
 
-      // Living behavior: gaze shifts, saccades, and blinking.
+      // Living behavior: gaze shifts and saccades.
       if (elapsed >= nextSaccadeAt) {
         const saccadeScale = threatLevelNow === "critical" ? 0.05 : threatLevelNow === "elevated" ? 0.042 : 0.034;
         attentionTarget.set(
@@ -647,17 +665,24 @@ export default function SentinelAvatar3D({
       }
       attentionCurrent.lerp(attentionTarget, Math.min(0.12 + 0.03 * threatSpeedMul, 0.16));
 
-      if (elapsed >= nextBlinkAt) {
-        const blinkDuration = 0.08 + Math.random() * 0.045;
-        blinkWindowStart = elapsed;
-        blinkWindowEnd = elapsed + blinkDuration;
-        nextBlinkAt = elapsed + 1.8 + Math.random() * 2.6 + (speakingRef.current ? 0.6 : 0);
+      const pulseSpeed = (isProcessingRef.current ? 0.32 : 0.22) * threatSpeedMul;
+      for (let i = 0; i < pulseNodes.length; i++) {
+        const t = (elapsed * pulseSpeed + pulseNodeOffsets[i]) % 1;
+        const y = -0.66 + t * 1.02;
+        const swirl = elapsed * 2.6 + i * 1.7;
+        pulseNodes[i].position.set(Math.sin(swirl) * 0.03, y, 0.08 + Math.cos(swirl * 0.9) * 0.025);
+        const pulseBody = Math.max(0, 1 - Math.abs(t - 0.5) * 2);
+        pulseNodes[i].scale.setScalar(0.75 + pulseBody * 0.9);
+        pulseNodeMaterials[i].opacity = (0.13 + pulseBody * 0.32) * threatIntensityMul;
+        if (t > 0.83) {
+          brainImpact = Math.max(brainImpact, (t - 0.83) / 0.17);
+        }
       }
-      let blinkStrength = 0;
-      if (elapsed >= blinkWindowStart && elapsed <= blinkWindowEnd) {
-        const t = (elapsed - blinkWindowStart) / Math.max(0.001, blinkWindowEnd - blinkWindowStart);
-        blinkStrength = 1 - Math.abs(t * 2 - 1);
-      }
+      const processBoost = isProcessingRef.current ? 0.08 : 0;
+      energyColumnMaterial.opacity = (0.12 + Math.sin(elapsed * 1.4 * threatSpeedMul) * 0.03 + processBoost) * threatIntensityMul;
+      energyColumnMaterial.emissiveIntensity = 0.14 + brainImpact * 0.85 + (isProcessingRef.current ? 0.2 : 0);
+      brainGlowMaterial.opacity = (0.06 + brainImpact * 0.46 + processBoost) * threatIntensityMul;
+      brainGlow.scale.setScalar(1 + brainImpact * 0.65);
       
       // Head movement - subtle scanning like reading data
       if (model) {
@@ -676,7 +701,7 @@ export default function SentinelAvatar3D({
 
       for (let i = 0; i < faceCoreMaterials.length; i++) {
         const flicker = 0.105 + Math.sin(elapsed * 2.7 * threatSpeedMul + i * 0.09) * 0.035;
-        faceCoreMaterials[i].emissiveIntensity = flicker + (speakingRef.current ? 0.055 : 0);
+        faceCoreMaterials[i].emissiveIntensity = flicker + brainImpact * 0.32 + (speakingRef.current ? 0.055 : 0);
       }
 
       for (let i = 0; i < faceWireframeMaterials.length; i++) {
@@ -688,25 +713,7 @@ export default function SentinelAvatar3D({
        camera.position.y = 0.08 + Math.sin(elapsed * 0.22) * 0.006;
        camera.lookAt(0, 0.05, 0);
 
-      // Eye glow pulsation
-      const eyePulse = 0.33 + Math.sin(elapsed * 2.7 * threatSpeedMul) * 0.06 + (speakingRef.current ? 0.09 : 0);
-      const blinkOpacityDrop = 1 - blinkStrength * 0.72;
-      eyeGlowMaterial.opacity = eyePulse * blinkOpacityDrop;
-      (rightEyeGlow.material as THREE.MeshBasicMaterial).opacity = eyePulse * blinkOpacityDrop;
-      const auraPulse = 0.075 + Math.sin(elapsed * 2.3 * threatSpeedMul) * 0.026;
-      eyeAuraMaterial.opacity = auraPulse * (1 - blinkStrength * 0.5);
-      (rightEyeAura.material as THREE.MeshBasicMaterial).opacity = auraPulse * (1 - blinkStrength * 0.5);
-      const eyeScale = 1 + Math.sin(elapsed * 2.8) * 0.06;
-      const blinkSquash = 1 - blinkStrength * 0.82;
-      leftEyeGlow.scale.set(1.28 * eyeScale, 0.75 * eyeScale * blinkSquash, 0.9);
-      rightEyeGlow.scale.set(1.28 * eyeScale, 0.75 * eyeScale * blinkSquash, 0.9);
-      const gazeX = attentionCurrent.x * 0.42;
-      const gazeY = attentionCurrent.y * 0.28;
-      leftEyeGlow.position.set(leftEyeBasePos.x + gazeX, leftEyeBasePos.y + gazeY, leftEyeBasePos.z);
-      rightEyeGlow.position.set(rightEyeBasePos.x + gazeX, rightEyeBasePos.y + gazeY, rightEyeBasePos.z);
-      leftEyeAura.position.set(leftAuraBasePos.x + gazeX * 0.9, leftAuraBasePos.y + gazeY * 0.9, leftAuraBasePos.z);
-      rightEyeAura.position.set(rightAuraBasePos.x + gazeX * 0.9, rightAuraBasePos.y + gazeY * 0.9, rightAuraBasePos.z);
-      coreGlowMaterial.opacity = 0.034 + Math.sin(elapsed * 1.6 * threatSpeedMul) * 0.012 + (speakingRef.current ? 0.02 : 0);
+      coreGlowMaterial.opacity = 0.034 + Math.sin(elapsed * 1.6 * threatSpeedMul) * 0.012 + brainImpact * 0.1 + (speakingRef.current ? 0.02 : 0);
 
       dataBand.position.x = Math.sin(elapsed * 0.95 * threatSpeedMul) * 0.11;
       dataBandMaterial.opacity = 0.09 + Math.sin(elapsed * 2.8 * threatSpeedMul) * 0.035;
@@ -885,12 +892,6 @@ export default function SentinelAvatar3D({
       particleMaterial.dispose();
       scanLineGeometry.dispose();
       scanLineMaterial.dispose();
-      eyeGlowGeometry.dispose();
-      eyeGlowMaterial.dispose();
-      eyeAuraGeometry.dispose();
-      eyeAuraMaterial.dispose();
-      (rightEyeGlow.material as THREE.Material).dispose();
-      (rightEyeAura.material as THREE.Material).dispose();
       coreGlowGeometry.dispose();
       coreGlowMaterial.dispose();
       dataBandGeometry.dispose();
@@ -902,6 +903,14 @@ export default function SentinelAvatar3D({
       (rightBridgeBar.material as THREE.Material).dispose();
       faceNodeGeometry.dispose();
       faceNodeMaterial.dispose();
+      energyColumnGeometry.dispose();
+      energyColumnMaterial.dispose();
+      pulseNodeGeometry.dispose();
+      for (const mat of pulseNodeMaterials) {
+        mat.dispose();
+      }
+      brainGlowGeometry.dispose();
+      brainGlowMaterial.dispose();
       for (const ring of haloRings) {
         ((ring.geometry) as THREE.BufferGeometry).dispose();
       }
@@ -926,9 +935,6 @@ export default function SentinelAvatar3D({
       orbMaterial.dispose();
       baseGeometry.dispose();
       baseMaterial.dispose();
-      for (const geom of overlayGeometries) {
-        geom.dispose();
-      }
       scene.clear();
     };
   }, [resolvedModelUrl, modelYawOffsetDeg]);
@@ -947,6 +953,26 @@ export default function SentinelAvatar3D({
         height: '100%',
         display: 'block',
       }} />
+      {loadFailed && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "radial-gradient(circle at center, rgba(37, 73, 112, 0.24), rgba(6, 12, 22, 0.7))",
+            color: "#b7dcff",
+            fontSize: "0.82rem",
+            letterSpacing: "0.05em",
+            textTransform: "uppercase",
+            border: "1px solid rgba(122, 192, 255, 0.2)",
+            pointerEvents: "none",
+          }}
+        >
+          3D signal unavailable
+        </div>
+      )}
     </div>
   );
 }
