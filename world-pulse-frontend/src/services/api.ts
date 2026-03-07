@@ -83,8 +83,21 @@ export type LiveCommandFeed = {
 
 export type RiskMapPoint = {
   country: string;
-  risk: number;
+  risk: number | null;
   timestamp?: string;
+  feature_timestamp?: string | null;
+  validated_today?: boolean;
+  data_quality?: "verified" | "synthetic" | "stale" | "unknown";
+  source_count?: number;
+};
+
+export type RiskMapCoverage = {
+  total: number;
+  verified: number;
+  no_data: number;
+  stale: number;
+  remaining: number;
+  coverage_pct: number;
 };
 
 export type CountryDrilldownData = {
@@ -115,8 +128,22 @@ export async function getLiveCommandFeed(): Promise<LiveCommandFeed> {
 }
 
 export async function getRiskMap(): Promise<RiskMapPoint[]> {
-  const res = await API.get("/dashboard/risk-map", { headers: API_HEADERS, params: { mode: "online" } });
+  const res = await API.get("/dashboard/risk-map", { headers: API_HEADERS, params: { mode: "online", verified_only: false } });
   return Array.isArray(res.data) ? (res.data as RiskMapPoint[]) : [];
+}
+
+export async function getRiskMapCoverage(): Promise<RiskMapCoverage> {
+  const res = await API.get("/dashboard/risk-map/coverage", { headers: API_HEADERS, params: { mode: "online" } });
+  return res.data as RiskMapCoverage;
+}
+
+export async function refreshRiskMapBatch(batchSize = 50): Promise<boolean> {
+  try {
+    await API.post("/dashboard/risk-map/refresh", { batch_size: batchSize, max_records: 4 }, { headers: API_HEADERS });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function getCountryDrilldown(country: string): Promise<CountryDrilldownData> {

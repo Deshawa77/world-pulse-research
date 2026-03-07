@@ -1,4 +1,3 @@
-"""
 Stack Overflow API Collector
 Fetches developer sentiment, technology trends, and tech industry health
 """

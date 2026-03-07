@@ -962,9 +962,10 @@ export default function TrendPrediction() {
   const activeGlobeData = useMemo(() => {
     const playbackAnchor = deepHistoryForPanels[deepHistoryForPanels.length - 1];
     const playbackRisk = playbackAnchor ? normalizeRisk(playbackAnchor.score) : null;
+    const validRiskMap = riskMap.filter((r): r is RiskMapPoint & { risk: number } => typeof r.risk === "number");
 
-    if (riskMap.length) {
-      return riskMap.map((r) => {
+    if (validRiskMap.length) {
+      return validRiskMap.map((r) => {
         const code = (r.country || "").toUpperCase();
         if (!playbackActive || playbackRisk === null) {
           return {
@@ -1003,8 +1004,8 @@ export default function TrendPrediction() {
       stock_volatility: 0,
       weather_anomaly: 0,
     };
-    const fromRiskMap = riskMap.map((r) => {
-      const risk = normalizeRisk(r.risk);
+    const fromRiskMap = riskMap.filter((r) => typeof r.risk === "number").map((r) => {
+      const risk = normalizeRisk(r.risk ?? 0);
       const code = (r.country || "").toUpperCase();
       const h = hashCountryCode(code);
       const driftA = ((h % 23) - 11) / 110;

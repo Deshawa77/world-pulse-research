@@ -24,9 +24,12 @@ import API, {
   getCountryDrilldown,
   getLiveCommandFeed,
   getRiskMap,
+  getRiskMapCoverage,
   postAlertAction,
+  refreshRiskMapBatch,
   type CountryDrilldownData,
   type LiveCommandFeed,
+  type RiskMapCoverage,
   type RiskMapPoint,
 } from "../services/api";
 
@@ -112,6 +115,7 @@ export default function Dashboard() {
     lastUpdated: new Date().toISOString(),
   });
   const [riskMap, setRiskMap] = useState<RiskMapPoint[]>([]);
+  const [riskCoverage, setRiskCoverage] = useState<RiskMapCoverage>({ total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 });
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [fpsLow, setFpsLow] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
@@ -124,11 +128,12 @@ export default function Dashboard() {
 
   const [countryLoading, setCountryLoading] = useState(false);
   const [operatorEvents, setOperatorEvents] = useState<OperatorEvent[]>(() => readJson(EVENTS_KEY, [] as OperatorEvent[]));
-  const [mapHover, setMapHover] = useState<{ country: string; risk: number } | null>(null);
+  const [mapHover, setMapHover] = useState<{ country: string; risk: number; quality: string } | null>(null);
   const [dataBurstOpen, setDataBurstOpen] = useState(false);
   const [dataBurstCountry, setDataBurstCountry] = useState<string>("");
   const [dataBurstRisk, setDataBurstRisk] = useState<number>(0);
   const [errorText, setErrorText] = useState("");
+  const [refreshingMap, setRefreshingMap] = useState(false);
 
   const [lastKnownGood, setLastKnownGood] = useState<Snapshot | null>(null);
   const [retries, setRetries] = useState(0);
@@ -138,10 +143,12 @@ export default function Dashboard() {
   const cacheRef = useRef<{
     liveFeed: { data: LiveCommandFeed | null; timestamp: number; ttl: number };
     riskMap: { data: RiskMapPoint[] | null; timestamp: number; ttl: number };
+    riskCoverage: { data: RiskMapCoverage | null; timestamp: number; ttl: number };
     global: { data: any | null; timestamp: number; ttl: number };
   }>({
     liveFeed: { data: null, timestamp: 0, ttl: 3000 },
     riskMap: { data: null, timestamp: 0, ttl: 5000 },
+    riskCoverage: { data: null, timestamp: 0, ttl: 5000 },
     global: { data: null, timestamp: 0, ttl: 2000 },
   });
 
@@ -167,6 +174,8 @@ export default function Dashboard() {
 
   const active = history[history.length - 1] ?? null;
   const riskDelta = active && lastKnownGood ? active.score - lastKnownGood.score : 0;
+  const verifiedRiskMap = useMemo(() => riskMap.filter((row): row is RiskMapPoint & { risk: number } => Boolean(row.validated_today) && typeof row.risk === "number"), [riskMap]);
+  const unverifiedRiskMap = useMemo(() => riskMap.filter((row) => !row.validated_today), [riskMap]);
   
   const panelStale = useMemo(() => {
     const now = Date.now();
@@ -176,7 +185,7 @@ export default function Dashboard() {
       stream: staleFor(now - panelUpdated.current.stream, 12000),
       ops: staleFor(now - panelUpdated.current.ops, 30000),
     };
-  }, [history.length, operatorEvents.length, riskMap.length]);
+  }, [history.length, operatorEvents.length, riskMap.length, riskCoverage.verified]);
 
   useEffect(() => {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-MAX_HISTORY)));
@@ -246,9 +255,10 @@ export default function Dashboard() {
       if (stop) return;
       setConnectionState(retriesRef.current > 0 ? "reconnecting" : "connecting");
       try {
-        const [live, mapRows, global] = await Promise.all([
+        const [live, mapRows, coverage, global] = await Promise.all([
           getCachedOrFetch("liveFeed", getLiveCommandFeed),
           getCachedOrFetch("riskMap", getRiskMap),
+          getCachedOrFetch("riskCoverage", getRiskMapCoverage),
           getCachedOrFetch("global", () => 
             API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } }).then(r => r.data)
           ),
@@ -269,6 +279,7 @@ export default function Dashboard() {
 
         setLiveFeed(live);
         setRiskMap(mapRows);
+        setRiskCoverage(coverage);
         panelUpdated.current.map = Date.now();
         setErrorText("");
         retriesRef.current = 0;
@@ -283,6 +294,7 @@ export default function Dashboard() {
         if (e?.response?.status === 429) {
           cacheRef.current.liveFeed.timestamp = 0;
           cacheRef.current.riskMap.timestamp = 0;
+          cacheRef.current.riskCoverage.timestamp = 0;
           cacheRef.current.global.timestamp = 0;
         }
       } finally {
@@ -323,8 +335,23 @@ export default function Dashboard() {
             {
               type: "choropleth",
               locationmode: "ISO-3",
-              locations: riskMap.map((r) => r.country),
-              z: riskMap.map((r) => normalizeRisk(r.risk)),
+              locations: unverifiedRiskMap.map((r) => r.country),
+              z: unverifiedRiskMap.map(() => 1),
+              zmin: 0,
+              zmax: 1,
+              colorscale: [
+                [0, "#334155"],
+                [1, "#64748b"],
+              ],
+              customdata: unverifiedRiskMap.map((r) => [r.data_quality ?? "unknown"]),
+              hovertemplate: "%{location}<br>Status: %{customdata[0]}<br>No verified same-day risk yet<extra></extra>",
+              showscale: false,
+            },
+            {
+              type: "choropleth",
+              locationmode: "ISO-3",
+              locations: verifiedRiskMap.map((r) => r.country),
+              z: verifiedRiskMap.map((r) => normalizeRisk(r.risk ?? 0)),
               zmin: 0,
               zmax: 100,
               colorscale: [
@@ -333,7 +360,9 @@ export default function Dashboard() {
                 [0.7, "#fb923c"],
                 [1, "#ef4444"],
               ],
-              hovertemplate: "%{location}<br>Risk: %{z:.1f}<extra></extra>",
+              customdata: verifiedRiskMap.map((r) => [r.data_quality ?? "verified"]),
+              hovertemplate: "%{location}<br>Risk: %{z:.1f}<br>Status: %{customdata[0]}<extra></extra>",
+              showscale: false,
             },
           ] as any,
           {
@@ -355,7 +384,8 @@ export default function Dashboard() {
 
             const p = e?.points?.[0];
             if (!p) return;
-            setMapHover({ country: String(p.location), risk: Number(p.z) });
+            const quality = String(p.customdata?.[0] ?? "unknown");
+            setMapHover({ country: String(p.location), risk: Number(p.z), quality });
           });
           (mapRef.current as any).on?.("plotly_click", (e: any) => {
             const p = e?.points?.[0];
@@ -377,7 +407,7 @@ export default function Dashboard() {
     return () => {
       stopped = true;
     };
-  }, [riskMap]);
+  }, [verifiedRiskMap, unverifiedRiskMap]);
 
   const startAutoRotation = (Plotly: any) => {
     if (isRotatingRef.current || !mapRef.current) return;
@@ -441,6 +471,18 @@ export default function Dashboard() {
       closed = true;
     };
   }, [selectedCountry, liveFeed.lastUpdated]);
+
+  const triggerMapRefresh = async () => {
+    setRefreshingMap(true);
+    try {
+      const ok = await refreshRiskMapBatch(50);
+      cacheRef.current.riskMap.timestamp = 0;
+      cacheRef.current.riskCoverage.timestamp = 0;
+      if (!ok) setErrorText("Manual map refresh failed");
+    } finally {
+      setRefreshingMap(false);
+    }
+  };
 
   const addEvent = async (action: OperatorEvent["action"], comment?: string, owner = "ops-team") => {
     const evt: OperatorEvent = {
@@ -540,6 +582,7 @@ export default function Dashboard() {
             <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`}>
               <div className="panel-head">
                 <h3>Map Intelligence</h3>
+                <button onClick={triggerMapRefresh} disabled={refreshingMap}>{refreshingMap ? "Refreshing..." : "Refresh Next 50"}</button>
               </div>
               {panelStale.map ? <div className="panel-stale">stale</div> : null}
               <div className="panel-content wp-map-surface map-surface-advanced" style={{ position: "relative" }}>
@@ -554,10 +597,12 @@ export default function Dashboard() {
                 {mapHover ? (
                   <div className="map-hover-box map-hover-card">
                     <strong className="map-hover-title">{mapHover.country}</strong>
-                    <span className="map-hover-risk">Risk Score: {mapHover.risk.toFixed(1)}</span>
+                    <span className="map-hover-risk">{mapHover.quality === "verified" ? `Risk Score: ${mapHover.risk.toFixed(1)}` : `Status: ${mapHover.quality}`}</span>
                   </div>
                 ) : null}
-                <p style={{ marginTop: 8, fontSize: 12, color: "#888", position: "relative", zIndex: 1, flexShrink: 0 }}>Click country for deep dive analysis.</p>
+                <p style={{ marginTop: 8, fontSize: 12, color: "#d1d5db", position: "relative", zIndex: 1, flexShrink: 0 }}>
+                  {riskCoverage.verified} / {riskCoverage.total || riskMap.length} countries verified today. Gray countries have no same-day source data yet. Click country for deep dive analysis.
+                </p>
               </div>
             </article>
 

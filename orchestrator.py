@@ -224,6 +224,7 @@ from database.mongo import db, write_global_features_v2
 from processing.preprocess_data import main as preprocess_main, process_record as preprocess_record
 from processing.nlp_analysis import clean_text, analyze_text
 from processing.daily_feature_builder import build_hourly_features, load_hourly_features
+from processing.country_daily_risk import country_daily_refresh_if_due
 from processing.topic_modeling_with_nlp import process_record as topic_modeling_process_record
 from processing.global_crisis_detector import detect_crisis
 from feature_store.feature_store import FeatureStore
@@ -559,15 +560,18 @@ def flush_batch_to_csv(batch, csv_path="./data/raw_stream.csv"):
         return
     df_batch = pd.DataFrame(batch)
 
-    if os.path.exists(csv_path):
-        df_existing = pd.read_csv(csv_path)
-        for col in df_existing.columns:
-            if col not in df_batch.columns:
-                df_batch[col] = 0.0
-        for col in df_batch.columns:
-            if col not in df_existing.columns:
-                df_existing[col] = 0.0
-        df_combined = pd.concat([df_existing, df_batch], ignore_index=True)
+    if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
+        try:
+            df_existing = pd.read_csv(csv_path)
+            for col in df_existing.columns:
+                if col not in df_batch.columns:
+                    df_batch[col] = 0.0
+            for col in df_batch.columns:
+                if col not in df_existing.columns:
+                    df_existing[col] = 0.0
+            df_combined = pd.concat([df_existing, df_batch], ignore_index=True)
+        except pd.errors.EmptyDataError:
+            df_combined = df_batch
     else:
         df_combined = df_batch
 
@@ -733,6 +737,20 @@ if __name__=="__main__":
                 traceback.print_exc()
 
     Thread(target=hourly_feature_loop, daemon=True).start()
+
+    # -------------------------------
+    # Daily country risk refresh from country_news/GDELT
+    # -------------------------------
+    def country_risk_loop(interval_sec=3600):
+        while True:
+            try:
+                summary = country_daily_refresh_if_due(max_records=4, batch_size=50)
+                log_event(f"Country daily risk refresh: {summary}")
+            except Exception as e:
+                log_event(f"Country daily risk loop error: {e}")
+            time.sleep(interval_sec)
+
+    Thread(target=country_risk_loop, daemon=True).start()
 
     # -------------------------------
     # Start collectors

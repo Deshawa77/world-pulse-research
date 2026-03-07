@@ -10,7 +10,15 @@ import time
 
 BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 
-def fetch_gdelt_articles(query="earthquake", max_records=10, retries=3, wait_seconds=5):
+def fetch_gdelt_articles(
+    query="earthquake",
+    max_records=10,
+    retries=3,
+    wait_seconds=5,
+    startdatetime=None,
+    enddatetime=None,
+    sort="datedesc",
+):
     """
     Fetch global news articles from GDELT and return standardized records.
     Retries on 429 errors.
@@ -22,8 +30,13 @@ def fetch_gdelt_articles(query="earthquake", max_records=10, retries=3, wait_sec
         "query": query,
         "mode": "artlist",
         "format": "json",
-        "maxrecords": max_records
+        "maxrecords": max_records,
+        "sort": sort,
     }
+    if startdatetime:
+        params["startdatetime"] = startdatetime
+    if enddatetime:
+        params["enddatetime"] = enddatetime
 
     for attempt in range(retries):
         try:

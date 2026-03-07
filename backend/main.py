@@ -1,7 +1,7 @@
 import sys
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import time
 import uuid
@@ -50,7 +50,10 @@ def hash_password(password: str):
 
 
 from processing.global_risk import compute_global_risk
+from processing.country_daily_risk import country_daily_refresh_if_due
+from collectors.country_news import get_country_catalog
 from processing.sentinel_analysis import compute_sentinel_analysis, get_sentinel_history
+from processing.country_risk_validation import latest_country_risk_validation, run_country_risk_validation
 from feature_store.model_registry import get_production_model, list_models
 
 from backend.observability import (
@@ -253,15 +256,42 @@ fake_users_db = {}  # legacy fallback; auth now uses Mongo users collection
 # =====================================================
 # Security: API Key Verification
 # =====================================================
-def verify_api_key(x_api_key: str = Header(...)):
-    key = (x_api_key or "").strip()
+def _identity_from_api_key(key: str | None):
+    candidate = (key or "").strip()
+    if not candidate:
+        return None
     for admin_key in ADMIN_API_KEYS:
-        if hmac.compare_digest(key, admin_key):
-            return {"api_key": key, "role": "admin"}
+        if hmac.compare_digest(candidate, admin_key):
+            return {"auth_type": "api_key", "api_key": candidate, "role": "admin"}
     for user_key in USER_API_KEYS:
-        if hmac.compare_digest(key, user_key):
-            return {"api_key": key, "role": "user"}
-    raise HTTPException(status_code=403, detail="Invalid API Key")
+        if hmac.compare_digest(candidate, user_key):
+            return {"auth_type": "api_key", "api_key": candidate, "role": "user"}
+    return None
+
+
+def decode_access_token(token: str):
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        role = str(payload.get("role") or "user")
+        subject = str(payload.get("sub") or "")
+        if not subject:
+            raise HTTPException(status_code=401, detail="Invalid token subject")
+        return {"auth_type": "jwt", "sub": subject, "role": role}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+
+
+def verify_api_key(x_api_key: str | None = Header(None), authorization: str | None = Header(None)):
+    identity = _identity_from_api_key(x_api_key)
+    if identity:
+        return identity
+    bearer = (authorization or "").strip()
+    if bearer.lower().startswith("bearer "):
+        return decode_access_token(bearer.split(" ", 1)[1].strip())
+    raise HTTPException(status_code=401, detail="Missing or invalid API key / bearer token")
+
 
 # Role-Based Access Control
 def check_role(identity: dict = Depends(verify_api_key)):
@@ -295,6 +325,43 @@ def create_access_token(data: dict):
         JWT_SECRET,
         algorithm=JWT_ALGORITHM
     )
+
+
+def get_country_risk_dependency_health(mode: str = "online"):
+    status = {
+        "database": "connected",
+        "model_loaded": False,
+        "country_features_latest": None,
+        "country_news_latest": None,
+        "reddit_latest": None,
+        "trends_latest": None,
+        "weather_latest": None,
+        "validation_status": latest_country_risk_validation().get("status"),
+    }
+    model, version = load_production_model()
+    status["model_loaded"] = model is not None
+    status["model_version"] = version
+
+    for name, collection_name in [("country_features_latest", "country_features"), ("country_news_latest", "country_news"), ("reddit_latest", "reddit"), ("trends_latest", "trends"), ("weather_latest", "weather")]:
+        doc = db[collection_name].find_one(sort=[("_id", DESCENDING)])
+        if not doc:
+            status[name] = None
+            continue
+        stamp = doc.get("timestamp") or doc.get("collected_at") or ((doc.get("data") or {}).get("published_at")) or doc.get("data_timestamp")
+        status[name] = str(stamp) if stamp is not None else None
+
+    latest_country_doc = db.country_features.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
+    if latest_country_doc:
+        features = latest_country_doc.get("features", {})
+        status["country_features_latest"] = {
+            "country": latest_country_doc.get("country"),
+            "timestamp": str(latest_country_doc.get("timestamp")),
+            "feature_timestamp": str(features.get("timestamp")),
+            "source_count": int(features.get("source_count", 0) or 0),
+        }
+    return status
+
+
 def serialize_doc(doc: dict) -> dict:
     doc = doc.copy()
     if "_id" in doc:
@@ -441,6 +508,11 @@ class ScenarioStep(BaseModel):
 
 class ScenarioRunRequest(BaseModel):
     steps: list[ScenarioStep]
+
+
+class CountryRefreshRequest(BaseModel):
+    batch_size: int = 50
+    max_records: int = 4
 
 
 class SentinelQuestionRequest(BaseModel):
@@ -713,6 +785,50 @@ ISO2_TO_ISO3 = {
     "UK": "GBR",  # Common non-standard code
 }
 
+PLACEHOLDER_TOPICS = {"global_expansion", "no data"}
+
+
+def parse_feature_timestamp(value):
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not value or not isinstance(value, str):
+        return None
+
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def assess_country_risk_quality(topics, feature_timestamp):
+    normalized_topics = [str(topic).strip().lower() for topic in (topics or []) if str(topic).strip()]
+    is_placeholder = not normalized_topics or any(topic in PLACEHOLDER_TOPICS for topic in normalized_topics)
+    parsed_timestamp = parse_feature_timestamp(feature_timestamp)
+    updated_today = bool(parsed_timestamp and parsed_timestamp.date() == datetime.now(timezone.utc).date())
+    validated_today = updated_today and not is_placeholder
+
+    if validated_today:
+        data_quality = "verified"
+    elif is_placeholder:
+        data_quality = "synthetic"
+    elif parsed_timestamp:
+        data_quality = "stale"
+    else:
+        data_quality = "unknown"
+
+    return {
+        "feature_timestamp": parsed_timestamp.isoformat() if parsed_timestamp else None,
+        "validated_today": validated_today,
+        "data_quality": data_quality,
+    }
+
 def convert_country_code(code: str) -> str:
     """Convert 2-letter country code to 3-letter ISO code"""
     if not code:
@@ -725,21 +841,87 @@ def convert_country_code(code: str) -> str:
 
 @app.get("/dashboard/risk-map")
 @limiter.limit("30/minute")
-def dashboard_risk_map(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+def dashboard_risk_map(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    verified_only: bool = Query(False),
+):
 
     pipeline = [
         {"$match": {"mode": mode}},
         {"$sort": {"timestamp": -1}},
         {"$group": {"_id": "$country", "doc": {"$first": "$$ROOT"}}},
-        {"$project": {"country": "$_id", "risk": "$doc.features.global_risk_score", "timestamp": "$doc.timestamp"}},
+        {
+            "$project": {
+                "country": "$_id",
+                "risk": "$doc.features.global_risk_score",
+                "timestamp": "$doc.timestamp",
+                "feature_timestamp": "$doc.features.timestamp",
+                "topics": {"$ifNull": ["$doc.features.top_topics", []]},
+                "source_count": {"$ifNull": ["$doc.features.source_count", 0]},
+                "social_unrest_score": {"$ifNull": ["$doc.features.social_unrest_score", 0.0]},
+                "google_trends_pressure": {"$ifNull": ["$doc.features.google_trends_pressure", 0.0]},
+                "weather_stress": {"$ifNull": ["$doc.features.weather_stress", 0.0]},
+                "external_signal_freshness": {"$ifNull": ["$doc.features.external_signal_freshness", 0.0]},
+                "war_state_rules": {"$ifNull": ["$doc.features.war_state_rules", []]},
+            }
+        },
     ]
     docs = list(db.country_features.aggregate(pipeline))
-    
-    # Convert 2-letter country codes to 3-letter ISO codes for Plotly
+
+    response_docs = []
     for doc in docs:
+        quality = assess_country_risk_quality(doc.get("topics"), doc.get("feature_timestamp"))
+        if verified_only and not quality["validated_today"]:
+            continue
+
+        risk_value = doc.get("risk")
         doc["country"] = convert_country_code(doc.get("country", ""))
-    
-    return [serialize_doc(d) for d in docs]
+        doc["risk"] = float(risk_value) if risk_value is not None else 0.0
+        doc["source_count"] = int(doc.get("source_count") or 0)
+        doc["social_unrest_score"] = float(doc.get("social_unrest_score") or 0.0)
+        doc["google_trends_pressure"] = float(doc.get("google_trends_pressure") or 0.0)
+        doc["weather_stress"] = float(doc.get("weather_stress") or 0.0)
+        doc["external_signal_freshness"] = float(doc.get("external_signal_freshness") or 0.0)
+        doc.update(quality)
+        doc.pop("topics", None)
+        response_docs.append(doc)
+
+    return [serialize_doc(d) for d in response_docs]
+
+
+@app.get("/dashboard/risk-map/coverage")
+@limiter.limit("30/minute")
+def dashboard_risk_map_coverage(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+    docs = dashboard_risk_map(request=request, role=role, mode=mode, verified_only=False)
+    total = len(docs)
+    verified = sum(1 for doc in docs if doc.get("validated_today"))
+    no_data = sum(1 for doc in docs if doc.get("data_quality") == "synthetic")
+    stale = sum(1 for doc in docs if doc.get("data_quality") == "stale")
+    latest_validation = latest_country_risk_validation()
+    return {
+        "total": total,
+        "verified": verified,
+        "no_data": no_data,
+        "stale": stale,
+        "remaining": max(total - verified, 0),
+        "coverage_pct": round((verified / total) * 100, 2) if total else 0.0,
+        "latest_validation": {
+            "status": latest_validation.get("status"),
+            "sample_count": int(latest_validation.get("sample_count", 0) or 0),
+            "brier_score": float((((latest_validation.get("metrics") or {}).get("brier_score", 0.0)) or 0.0)),
+        },
+    }
+
+
+@app.post("/dashboard/risk-map/refresh")
+@limiter.limit("10/minute")
+def dashboard_risk_map_refresh(request: Request, payload: CountryRefreshRequest, role: str = Depends(check_role)):
+    batch_size = max(1, min(int(payload.batch_size), len(get_country_catalog())))
+    max_records = max(1, min(int(payload.max_records), 10))
+    summary = country_daily_refresh_if_due(max_records=max_records, batch_size=batch_size)
+    return serialize_doc(summary)
 
 
 @app.get("/dashboard/global-intelligence-feed")
@@ -1976,6 +2158,16 @@ def health(request: Request, role: str = Depends(check_role)):
         return {"status": "unhealthy", "error": str(e)}
 
 
+@app.get("/health/dependencies")
+@limiter.limit("10/minute")
+def health_dependencies(request: Request, role: str = Depends(require_admin), mode: str = Query("online")):
+    try:
+        db.command("ping")
+        return {"status": "ok", "dependencies": get_country_risk_dependency_health(mode=mode)}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Dependency check failed: {e}")
+
+
 @app.get("/observability/metrics")
 @limiter.limit("10/minute")
 def observability_metrics(request: Request, role: str = Depends(require_admin)):
@@ -1994,6 +2186,18 @@ def observability_metrics(request: Request, role: str = Depends(require_admin)):
 @limiter.limit("10/minute")
 def observability_model(request: Request, window: int = Query(200, ge=10, le=5000), role: str = Depends(require_admin)):
     return build_monitoring_summary(model_monitoring_collection, window=window)
+
+
+@app.get("/observability/country-risk-validation")
+@limiter.limit("10/minute")
+def observability_country_risk_validation(request: Request, role: str = Depends(require_admin)):
+    return latest_country_risk_validation()
+
+
+@app.post("/observability/country-risk-validation/run")
+@limiter.limit("5/minute")
+def observability_country_risk_validation_run(request: Request, role: str = Depends(require_admin)):
+    return run_country_risk_validation()
 
 
 # =====================================================
