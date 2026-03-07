@@ -1,350 +1,108 @@
 import { Link } from "react-router-dom";
-import { 
-  Activity, 
-  Globe, 
-  Brain, 
-  Shield, 
-  Zap, 
-  TrendingUp, 
-  Database, 
-  Lock,
-  ArrowRight,
-  PlayCircle,
-  BarChart3,
-  Users,
-  Clock
-} from "lucide-react";
+import { ArrowRight, BrainCircuit, Globe2, ShieldCheck, TimerReset, Users } from "lucide-react";
+import { ProposalPublicLayout, ProposalStatBoard } from "../components/ProposalShell";
 
+const objectives = [
+  { title: "Combine multi-source data", text: "Fuse social, news, financial, and environmental streams into one operational picture instead of isolated dashboards.", icon: Globe2 },
+  { title: "Process live behavior signals", text: "Apply NLP, sentiment analysis, filtering, and trend extraction on incoming data within a practical monitoring window.", icon: TimerReset },
+  { title: "Deliver predictive intelligence", text: "Turn raw behavior signals into forecasts, alerts, and decision support for crisis response and long-range monitoring.", icon: BrainCircuit },
+  { title: "Keep it secure and usable", text: "Support researchers, policy teams, students, and administrators with scalable, secure, role-aware access.", icon: ShieldCheck },
+];
+
+const stakeholders = ["Researchers / Analysts", "Policy Makers / NGO", "Students / Educators", "Developers / Admin"];
+const timeline = [
+  { phase: "January", focus: "Requirements, literature review, architecture, dashboard planning" },
+  { phase: "February", focus: "Backend pipelines, preprocessing, NLP, predictive models, security, dashboard integration" },
+  { phase: "March", focus: "Testing, feedback, documentation, presentation, and final submission" },
+];
 
 export default function Landing() {
   return (
-    <div className="wp-landing-page">
-      {/* Navigation */}
-      <nav className="wp-landing-nav">
-        <div className="wp-landing-nav-content">
-          <div className="wp-landing-logo">
-            <Activity className="wp-landing-logo-icon" />
-            <span>THE WORLD'S <span className="wp-landing-logo-accent">PULSE</span></span>
+    <ProposalPublicLayout
+      eyebrow="Proposal concept"
+      title="Real-time global human behavior intelligence."
+      subtitle="The World's Pulse is a cross-domain analytics platform designed to capture how societies, markets, media, and environmental systems react to major global events in one live operating picture."
+      aside={<ProposalStatBoard />}
+      cta={
+        <>
+          <Link to="/register" className="proposal-button proposal-button-primary">Open the platform <ArrowRight size={16} /></Link>
+          <Link to="/about" className="proposal-button proposal-button-ghost">Read the proposal</Link>
+        </>
+      }
+    >
+      <section className="proposal-section">
+        <div className="proposal-section-head">
+          <div>
+            <span className="proposal-eyebrow">Problem statement</span>
+            <h2>Fragmented signals hide the real human response.</h2>
           </div>
-          <div className="wp-landing-nav-links">
-            <Link to="/about" className="wp-landing-nav-link">About</Link>
-            <Link to="/contact" className="wp-landing-nav-link">Contact</Link>
-            <Link to="/login" className="wp-landing-nav-link wp-landing-nav-link-primary">Login</Link>
-            <Link to="/register" className="wp-landing-nav-link wp-landing-nav-link-highlight">Get Started</Link>
-          </div>
+          <p>Existing tools usually monitor one domain at a time. Social sentiment, market reactions, search behavior, headlines, and weather alerts stay disconnected even when the same event drives them all.</p>
         </div>
-      </nav>
-
-      {/* Hero Section */}
-      <section className="wp-landing-hero">
-        <div className="wp-landing-hero-bg">
-          <div className="wp-landing-hero-grid"></div>
-          <div className="wp-landing-hero-glow"></div>
-        </div>
-        <div className="wp-landing-hero-content">
-          <div className="wp-landing-hero-badge">
-            <Zap className="wp-landing-hero-badge-icon" />
-            <span>Real-Time Global Intelligence</span>
-          </div>
-          <h1 className="wp-landing-hero-title">
-            Experience the <span className="wp-landing-hero-title-accent">Pulse</span> of Humanity
-          </h1>
-          <p className="wp-landing-hero-subtitle">
-            The World's Pulse is an intelligent analytics platform that captures and visualizes 
-            global human behavior in real-time. Monitor emotions, trends, and reactions across 
-            social media, financial markets, and news streams—all in one unified dashboard.
-          </p>
-          <div className="wp-landing-hero-cta">
-            <Link to="/register" className="wp-landing-hero-btn wp-landing-hero-btn-primary">
-              Start Exploring
-              <ArrowRight className="wp-landing-hero-btn-icon" />
-            </Link>
-            <Link to="/login" className="wp-landing-hero-btn wp-landing-hero-btn-secondary">
-              <PlayCircle className="wp-landing-hero-btn-icon" />
-              Live Demo
-            </Link>
-          </div>
-          <div className="wp-landing-hero-stats">
-            <div className="wp-landing-hero-stat">
-              <span className="wp-landing-hero-stat-value">50+</span>
-              <span className="wp-landing-hero-stat-label">Data Sources</span>
-            </div>
-            <div className="wp-landing-hero-stat">
-              <span className="wp-landing-hero-stat-value">{"<5s"}</span>
-              <span className="wp-landing-hero-stat-label">Real-time Updates</span>
-            </div>
-
-            <div className="wp-landing-hero-stat">
-              <span className="wp-landing-hero-stat-value">195</span>
-              <span className="wp-landing-hero-stat-label">Countries Monitored</span>
-            </div>
-            <div className="wp-landing-hero-stat">
-              <span className="wp-landing-hero-stat-value">99.9%</span>
-              <span className="wp-landing-hero-stat-label">Uptime</span>
-            </div>
-          </div>
+        <div className="proposal-grid-2">
+          <article className="proposal-card">
+            <span className="proposal-card-kicker">Current gap</span>
+            <h3>No unified behavioral intelligence layer</h3>
+            <p>When disasters, pandemics, political instability, or economic shocks occur, organizations often need to piece together multiple dashboards manually before they can understand the global mood and likely consequences.</p>
+          </article>
+          <article className="proposal-card">
+            <span className="proposal-card-kicker">World's Pulse answer</span>
+            <h3>One dashboard, many streams, faster interpretation</h3>
+            <p>The platform turns fragmented public signals into live dashboards, predictive models, and historical evidence that can support researchers, humanitarian actors, and policy teams.</p>
+          </article>
         </div>
       </section>
 
-      {/* What is World's Pulse Section */}
-      <section className="wp-landing-section wp-landing-about">
-        <div className="wp-landing-section-content">
-          <div className="wp-landing-section-header">
-            <h2 className="wp-landing-section-title">What is <span className="wp-landing-section-title-accent">World's Pulse</span>?</h2>
-            <p className="wp-landing-section-subtitle">
-              A revolutionary platform that transforms fragmented global data into actionable intelligence
-            </p>
+      <section className="proposal-section">
+        <div className="proposal-section-head">
+          <div>
+            <span className="proposal-eyebrow">Core objectives</span>
+            <h2>Built directly from the proposal requirements.</h2>
           </div>
-          <div className="wp-landing-about-grid">
-            <div className="wp-landing-about-card">
-              <div className="wp-landing-about-card-icon">
-                <Globe className="wp-landing-about-card-icon-svg" />
-              </div>
-              <h3 className="wp-landing-about-card-title">Global Reach</h3>
-              <p className="wp-landing-about-card-text">
-                Monitor human behavior across 195 countries in real-time. From Tokyo to New York, 
-                capture the collective emotional response to world events as they unfold.
-              </p>
-            </div>
-            <div className="wp-landing-about-card">
-              <div className="wp-landing-about-card-icon">
-                <Brain className="wp-landing-about-card-icon-svg" />
-              </div>
-              <h3 className="wp-landing-about-card-title">AI-Powered Insights</h3>
-              <p className="wp-landing-about-card-text">
-                Advanced NLP and machine learning models analyze sentiment, detect trends, 
-                and predict behavioral shifts before they become mainstream news.
-              </p>
-            </div>
-            <div className="wp-landing-about-card">
-              <div className="wp-landing-about-card-icon">
-                <Database className="wp-landing-about-card-icon-svg" />
-              </div>
-              <h3 className="wp-landing-about-card-title">Multi-Source Fusion</h3>
-              <p className="wp-landing-about-card-text">
-                Integrate social media, financial markets, news feeds, and environmental data 
-                into a single coherent view of global human behavior.
-              </p>
-            </div>
-          </div>
+          <p>The design is not generic product marketing. Each area maps to the project scope, expected outcomes, and non-functional targets described in the coursework proposal.</p>
+        </div>
+        <div className="proposal-grid-2">
+          {objectives.map(({ title, text, icon: Icon }) => (
+            <article key={title} className="proposal-card">
+              <span className="proposal-card-kicker"><Icon size={14} /> Objective</span>
+              <h3>{title}</h3>
+              <p>{text}</p>
+            </article>
+          ))}
         </div>
       </section>
 
-      {/* Key Features Section */}
-      <section className="wp-landing-section wp-landing-features">
-        <div className="wp-landing-section-content">
-          <div className="wp-landing-section-header">
-            <h2 className="wp-landing-section-title">Key <span className="wp-landing-section-title-accent">Features</span></h2>
-            <p className="wp-landing-section-subtitle">
-              Everything you need to understand the global human condition
-            </p>
+      <section className="proposal-section">
+        <div className="proposal-section-head">
+          <div>
+            <span className="proposal-eyebrow">Primary users</span>
+            <h2>Made for evidence-based action, not passive charts.</h2>
           </div>
-          <div className="wp-landing-features-grid">
-            <div className="wp-landing-feature">
-              <div className="wp-landing-feature-icon">
-                <Clock className="wp-landing-feature-icon-svg" />
-              </div>
-              <h3 className="wp-landing-feature-title">Real-Time Analytics</h3>
-              <p className="wp-landing-feature-text">
-                Live dashboards update every 5-10 seconds with fresh data from across the globe. 
-                Watch events unfold in real-time as humanity reacts.
-              </p>
-            </div>
-            <div className="wp-landing-feature">
-              <div className="wp-landing-feature-icon">
-                <BarChart3 className="wp-landing-feature-icon-svg" />
-              </div>
-              <h3 className="wp-landing-feature-title">Sentiment Analysis</h3>
-              <p className="wp-landing-feature-text">
-                Natural Language Processing models analyze emotions across millions of data points, 
-                tracking fear, optimism, sadness, and more.
-              </p>
-            </div>
-            <div className="wp-landing-feature">
-              <div className="wp-landing-feature-icon">
-                <TrendingUp className="wp-landing-feature-icon-svg" />
-              </div>
-              <h3 className="wp-landing-feature-title">Predictive Intelligence</h3>
-              <p className="wp-landing-feature-text">
-                Machine learning models forecast trends and predict behavioral shifts, 
-                giving you advance warning of significant global events.
-              </p>
-            </div>
-            <div className="wp-landing-feature">
-              <div className="wp-landing-feature-icon">
-                <Shield className="wp-landing-feature-icon-svg" />
-              </div>
-              <h3 className="wp-landing-feature-title">Secure & Scalable</h3>
-              <p className="wp-landing-feature-text">
-                Enterprise-grade security with encrypted API keys, HTTPS/SSL communication, 
-                and role-based access control. Built to scale.
-              </p>
-            </div>
-            <div className="wp-landing-feature">
-              <div className="wp-landing-feature-icon">
-                <Users className="wp-landing-feature-icon-svg" />
-              </div>
-              <h3 className="wp-landing-feature-title">Crisis Detection</h3>
-              <p className="wp-landing-feature-text">
-                Automated alerts for natural disasters, economic shocks, pandemics, and political 
-                events with impact assessment across regions.
-              </p>
-            </div>
-            <div className="wp-landing-feature">
-              <div className="wp-landing-feature-icon">
-                <Lock className="wp-landing-feature-icon-svg" />
-              </div>
-              <h3 className="wp-landing-feature-title">Privacy First</h3>
-              <p className="wp-landing-feature-text">
-                We only process publicly available data streams. No private user data is collected 
-                or stored, ensuring ethical analytics.
-              </p>
-            </div>
-          </div>
+          <p>The interface has to support both technical and non-technical users who need clarity, not just visual spectacle.</p>
+        </div>
+        <div className="proposal-audience-row">
+          {stakeholders.map((stakeholder) => (
+            <span key={stakeholder} className="proposal-audience-pill"><Users size={14} /> {stakeholder}</span>
+          ))}
         </div>
       </section>
 
-      {/* Live Demo Preview Section */}
-      <section className="wp-landing-section wp-landing-demo">
-        <div className="wp-landing-section-content">
-          <div className="wp-landing-demo-container">
-            <div className="wp-landing-demo-content">
-              <h2 className="wp-landing-demo-title">
-                See the <span className="wp-landing-demo-title-accent">World's Pulse</span> in Action
-              </h2>
-              <p className="wp-landing-demo-text">
-                Experience our interactive dashboard with real-time visualizations, 
-                global sentiment maps, and predictive analytics. Monitor how humanity 
-                responds to major events as they happen.
-              </p>
-              <ul className="wp-landing-demo-list">
-                <li className="wp-landing-demo-list-item">
-                  <Activity className="wp-landing-demo-list-icon" />
-                  <span>Live global sentiment tracking</span>
-                </li>
-                <li className="wp-landing-demo-list-item">
-                  <Activity className="wp-landing-demo-list-icon" />
-                  <span>Interactive world heat maps</span>
-                </li>
-                <li className="wp-landing-demo-list-item">
-                  <Activity className="wp-landing-demo-list-icon" />
-                  <span>Real-time event detection</span>
-                </li>
-                <li className="wp-landing-demo-list-item">
-                  <Activity className="wp-landing-demo-list-icon" />
-                  <span>Predictive trend forecasting</span>
-                </li>
-              </ul>
-              <Link to="/login" className="wp-landing-demo-btn">
-                Access Live Dashboard
-                <ArrowRight className="wp-landing-demo-btn-icon" />
-              </Link>
-            </div>
-            <div className="wp-landing-demo-preview">
-              <div className="wp-landing-demo-preview-frame">
-                <div className="wp-landing-demo-preview-header">
-                  <div className="wp-landing-demo-preview-dots">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                  </div>
-                  <span className="wp-landing-demo-preview-title">World's Pulse Dashboard</span>
-                </div>
-                <div className="wp-landing-demo-preview-content">
-                  <div className="wp-landing-demo-preview-grid">
-                    <div className="wp-landing-demo-preview-panel wp-landing-demo-preview-panel-large">
-                      <div className="wp-landing-demo-preview-panel-header">Global Sentiment</div>
-                      <div className="wp-landing-demo-preview-chart">
-                        <div className="wp-landing-demo-preview-bars">
-                          <span style={{ height: "60%" }}></span>
-                          <span style={{ height: "80%" }}></span>
-                          <span style={{ height: "45%" }}></span>
-                          <span style={{ height: "90%" }}></span>
-                          <span style={{ height: "70%" }}></span>
-                          <span style={{ height: "55%" }}></span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="wp-landing-demo-preview-panel">
-                      <div className="wp-landing-demo-preview-panel-header">Risk Level</div>
-                      <div className="wp-landing-demo-preview-gauge">
-                        <div className="wp-landing-demo-preview-gauge-value">42</div>
-                      </div>
-                    </div>
-                    <div className="wp-landing-demo-preview-panel">
-                      <div className="wp-landing-demo-preview-panel-header">Active Events</div>
-                      <div className="wp-landing-demo-preview-number">12</div>
-                    </div>
-                    <div className="wp-landing-demo-preview-panel wp-landing-demo-preview-panel-wide">
-                      <div className="wp-landing-demo-preview-panel-header">Trending Topics</div>
-                      <div className="wp-landing-demo-preview-tags">
-                        <span>#Climate</span>
-                        <span>#Economy</span>
-                        <span>#Elections</span>
-                        <span>#Technology</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
+      <section className="proposal-section">
+        <div className="proposal-section-head">
+          <div>
+            <span className="proposal-eyebrow">Delivery rhythm</span>
+            <h2>Requirements in January, systems in February, validation in March.</h2>
           </div>
+          <p>The page structure reflects the proposal timeline: analysis first, then architecture and implementation, then testing, documentation, and submission.</p>
+        </div>
+        <div className="proposal-grid-3">
+          {timeline.map((item) => (
+            <article key={item.phase} className="proposal-card">
+              <span className="proposal-card-kicker">{item.phase}</span>
+              <h3>{item.focus}</h3>
+            </article>
+          ))}
         </div>
       </section>
-
-      {/* CTA Section */}
-      <section className="wp-landing-section wp-landing-cta">
-        <div className="wp-landing-section-content">
-          <div className="wp-landing-cta-container">
-            <h2 className="wp-landing-cta-title">Ready to Feel the Pulse?</h2>
-            <p className="wp-landing-cta-text">
-              Join researchers, policymakers, and analysts worldwide who use World's Pulse 
-              to understand global human behavior in real-time.
-            </p>
-            <div className="wp-landing-cta-buttons">
-              <Link to="/register" className="wp-landing-cta-btn wp-landing-cta-btn-primary">
-                Create Free Account
-              </Link>
-              <Link to="/login" className="wp-landing-cta-btn wp-landing-cta-btn-secondary">
-                Sign In
-              </Link>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="wp-landing-footer">
-        <div className="wp-landing-footer-content">
-          <div className="wp-landing-footer-main">
-            <div className="wp-landing-footer-brand">
-              <Activity className="wp-landing-footer-brand-icon" />
-              <span>THE WORLD'S <span className="wp-landing-footer-brand-accent">PULSE</span></span>
-            </div>
-            <p className="wp-landing-footer-tagline">
-              Real-Time Global Human Behavior Intelligence
-            </p>
-          </div>
-          <div className="wp-landing-footer-links">
-            <div className="wp-landing-footer-links-group">
-              <h4 className="wp-landing-footer-links-title">Platform</h4>
-              <Link to="/about" className="wp-landing-footer-link">About</Link>
-              <Link to="/contact" className="wp-landing-footer-link">Contact</Link>
-              <Link to="/login" className="wp-landing-footer-link">Login</Link>
-            </div>
-            <div className="wp-landing-footer-links-group">
-              <h4 className="wp-landing-footer-links-title">Legal</h4>
-              <span className="wp-landing-footer-link">Privacy Policy</span>
-              <span className="wp-landing-footer-link">Terms of Service</span>
-            </div>
-          </div>
-        </div>
-        <div className="wp-landing-footer-bottom">
-          <p className="wp-landing-footer-copyright">
-            © 2025 World's Pulse. PUSL2021 Computing Group Project. Plymouth University.
-          </p>
-        </div>
-      </footer>
-    </div>
+    </ProposalPublicLayout>
   );
 }

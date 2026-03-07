@@ -1,30 +1,24 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { register } from "../services/authService";
+import { ProposalAuthLayout } from "../components/ProposalShell";
 
-const ROLES = [
+const roles = [
   { value: "researcher", label: "Researcher" },
-  { value: "policy", label: "Policy Maker" },
+  { value: "policy", label: "Policy maker" },
   { value: "student", label: "Student" },
   { value: "admin", label: "Admin" },
 ];
 
 export default function Register() {
-  const [formData, setFormData] = useState({
-    name: "",
-    email: "",
-    password: "",
-    role: "researcher",
-    organization: "",
-  });
+  const navigate = useNavigate();
+  const [formData, setFormData] = useState({ name: "", email: "", password: "", role: "researcher", organization: "" });
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const navigate = useNavigate();
-
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    setFormData((current) => ({ ...current, [e.target.name]: e.target.value }));
   };
 
   async function handleSubmit(e: React.FormEvent) {
@@ -32,12 +26,10 @@ export default function Register() {
     setError("");
     setSuccess("");
     setLoading(true);
-
     try {
       await register(formData.name, formData.email, formData.password, formData.role, formData.organization);
-
-      setSuccess("Account created successfully! Redirecting to login...");
-      setTimeout(() => navigate("/login"), 2000);
+      setSuccess("Account created successfully. Redirecting to login...");
+      setTimeout(() => navigate("/login"), 1500);
     } catch (err: any) {
       setError(err.response?.data?.detail || "Registration failed. Please try again.");
     } finally {
@@ -46,82 +38,34 @@ export default function Register() {
   }
 
   return (
-    <div className="wp-auth-page">
-      <div className="wp-auth-card">
-        <h1>THE WORLD'S <span>PULSE</span></h1>
-        <p className="wp-auth-subtitle">Create Your Account</p>
-
-        {error && <div className="wp-auth-error">{error}</div>}
-        {success && <div className="wp-auth-success">{success}</div>}
-
-        <form onSubmit={handleSubmit} className="wp-auth-form">
-          <div className="wp-auth-field">
-            <label>Full Name</label>
-            <input
-              type="text"
-              name="name"
-              placeholder="Enter your full name"
-              value={formData.name}
-              onChange={handleChange}
-              required
-            />
-          </div>
-
-          <div className="wp-auth-field">
-            <label>Email Address</label>
-            <input
-              type="email"
-              name="email"
-              placeholder="Enter your email"
-              value={formData.email}
-              onChange={handleChange}
-              required
-            />
-          </div>
-
-          <div className="wp-auth-field">
-            <label>Password</label>
-            <input
-              type="password"
-              name="password"
-              placeholder="Create a password"
-              value={formData.password}
-              onChange={handleChange}
-              required
-            />
-          </div>
-
-          <div className="wp-auth-field">
-            <label>Select Role</label>
-            <select name="role" value={formData.role} onChange={handleChange} required>
-              {ROLES.map((role) => (
-                <option key={role.value} value={role.value}>
-                  {role.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="wp-auth-field">
-            <label>Organization (Optional)</label>
-            <input
-              type="text"
-              name="organization"
-              placeholder="Your organization"
-              value={formData.organization}
-              onChange={handleChange}
-            />
-          </div>
-
-          <button type="submit" className="wp-auth-btn" disabled={loading}>
-            {loading ? "Creating Account..." : "Register"}
-          </button>
-        </form>
-
-        <div className="wp-auth-links">
-          <Link to="/login">Already have an account? Login</Link>
+    <ProposalAuthLayout
+      eyebrow="Onboarding"
+      title="Register for the intelligence workspace."
+      subtitle="Choose the role that best matches how you will use the system: research, policy, education, or administration."
+      bullets={[
+        "Researchers and analysts need filtering, evidence, and historical visibility.",
+        "Policy and NGO users need rapid clarity after major events and crises.",
+        "Students and educators need a simplified but credible global behavior view.",
+      ]}
+      metrics={[{ label: "User roles", value: "4" }, { label: "Scope", value: "Public data" }, { label: "Architecture", value: "Secure + scalable" }]}
+    >
+      <h2>Create account</h2>
+      <p>Provision access for the live dashboard, prediction workspace, historical analysis, and scenario simulation.</p>
+      {error ? <div className="proposal-auth-error">{error}</div> : null}
+      {success ? <div className="proposal-auth-success">{success}</div> : null}
+      <form className="proposal-contact-form" onSubmit={handleSubmit}>
+        <label>Full name<input name="name" value={formData.name} onChange={handleChange} placeholder="Enter your full name" required /></label>
+        <div className="proposal-field-grid">
+          <label>Email address<input name="email" type="email" value={formData.email} onChange={handleChange} placeholder="Enter your email" required /></label>
+          <label>Organization<input name="organization" value={formData.organization} onChange={handleChange} placeholder="University, NGO, agency..." /></label>
         </div>
-      </div>
-    </div>
+        <div className="proposal-field-grid">
+          <label>Password<input name="password" type="password" value={formData.password} onChange={handleChange} placeholder="Create a password" required /></label>
+          <label>Role<select name="role" value={formData.role} onChange={handleChange} required>{roles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
+        </div>
+        <div className="proposal-form-actions"><button type="submit" className="proposal-button proposal-button-primary" disabled={loading}>{loading ? "Creating account" : "Create account"}</button></div>
+      </form>
+      <div className="proposal-auth-links"><Link to="/login">Already have an account?</Link></div>
+    </ProposalAuthLayout>
   );
 }

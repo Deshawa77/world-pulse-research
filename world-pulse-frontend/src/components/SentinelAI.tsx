@@ -9,7 +9,7 @@ import {
 import TypewriterText from "./TypewriterText";
 import PulseIndicator from "./PulseIndicator";
 import HolographicAvatar from "./HolographicAvatar";
-import SentinelAvatar3D from "./SentinelAvatar3D";
+import WorldPulseCore from "./WorldPulseCore";
 import MoodIndicator from "./MoodIndicator";
 import useSentinel from "./useSentinel";
 import TimeSeriesChart from "./TimeSeriesChart";
@@ -246,23 +246,16 @@ export default function SentinelAI({
   const threatColor = getThreatColor(data?.threat_level || "stable");
   const connectionLabel = wsConnected ? "Live stream connected" : wsReconnecting ? "Reconnecting stream" : "Offline stream";
   const lastUpdateLabel = data?.timestamp ? new Date(data.timestamp).toLocaleTimeString() : "Unknown";
-
+  const activeSignalCount = (data?.active_domains?.length || data?.top_drivers?.length || 0) + (data?.multi_domain_signal ? 1 : 0);
+  const leadDriver = data?.top_drivers?.[0]?.display_name || data?.top_drivers?.[0]?.feature || "Cross-domain signals";
+  const trendSummary = data?.risk_trend === "increasing"
+    ? "Global risk trend: rising"
+    : data?.risk_trend === "decreasing"
+      ? "Global risk trend: cooling"
+      : "Global risk trend: stable";
 
   return (
     <>
-      {/* Active Alerts Toast */}
-      {activeAlerts.length > 0 && (
-        <div className="sentinel-alerts-container">
-          {activeAlerts.map(alert => (
-            <div key={alert.id} className="sentinel-alert-toast" style={{ borderColor: threatColor }}>
-              <AlertTriangle size={16} style={{ color: threatColor }} />
-              <span>Risk alert: {alert.condition} {alert.threshold}</span>
-              <button onClick={() => dismissAlert(alert.id)}><X size={14} /></button>
-            </div>
-          ))}
-        </div>
-      )}
-
       <div className={`sentinel-hologram ${isActive ? "active" : ""} ${reactivePulse ? "reactive-pulse" : ""} ${className}`}>
         {/* Connection Status */}
         <div className="sentinel-connection-status">
@@ -291,13 +284,14 @@ export default function SentinelAI({
           <span className="holo-corner holo-corner-bl" />
           <span className="holo-corner holo-corner-br" />
           <div className="holo-reticle" />
-          <SentinelAvatar3D 
-            className="sentinel-face-projection"
+          <WorldPulseCore
+            className="sentinel-face-projection sentinel-world-pulse"
             isSpeaking={isSpeaking || isListening}
             isProcessing={isLoading || isProcessingQA}
             threatLevel={data?.threat_level || "stable"}
-            modelUrl="/models/sentinel-scan.glb"
-            modelYawOffsetDeg={-90}
+            riskScore={data?.risk_score || 0}
+            riskTrend={data?.risk_trend || "stable"}
+            signalCount={activeSignalCount}
           />
           
           {/* Voice indicator */}
@@ -318,7 +312,10 @@ export default function SentinelAI({
         >
           {/* Header */}
           <div className="hologram-header">
-            <span className="hologram-label">SENTINEL AI</span>
+            <div className="hologram-header-copy">
+              <span className="hologram-label">PREDICTIVE INTELLIGENCE</span>
+              <span className="hologram-subtitle">Executive risk synthesis for cross-domain monitoring</span>
+            </div>
             <div className="hologram-controls">
               <button 
                 onClick={() => setShowQA(!showQA)}
@@ -327,6 +324,7 @@ export default function SentinelAI({
                 aria-label="Toggle Q and A panel"
               >
                 <MessageSquare size={14} />
+                <span>Ask</span>
               </button>
               <button 
                 onClick={() => setVoiceEnabled(!voiceEnabled)}
@@ -335,6 +333,7 @@ export default function SentinelAI({
                 aria-label={voiceEnabled ? "Disable voice output" : "Enable voice output"}
               >
                 {voiceEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+                <span>{voiceEnabled ? "Audio" : "Voice"}</span>
               </button>
               <button 
                 onClick={() => setExpanded(!expanded)}
@@ -342,13 +341,54 @@ export default function SentinelAI({
                 aria-label={expanded ? "Collapse Sentinel panel" : "Expand Sentinel panel"}
               >
                 {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                <span>{expanded ? "Close" : "Expand"}</span>
               </button>
             </div>
           </div>
 
+          {activeAlerts.length > 0 && (
+            <div className="sentinel-alert-rail">
+              {activeAlerts.map((alert) => (
+                <div key={alert.id} className="sentinel-alert-inline" style={{ borderColor: threatColor }}>
+                  <div className="sentinel-alert-copy">
+                    <AlertTriangle size={15} style={{ color: threatColor }} />
+                    <span className="sentinel-alert-label">Alert</span>
+                    <strong>Risk {alert.condition} {alert.threshold}</strong>
+                  </div>
+                  <button onClick={() => dismissAlert(alert.id)} aria-label="Dismiss risk alert">
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="hologram-summary-grid">
+            <div className="hologram-summary-card primary">
+              <span className="summary-kicker">{trendSummary}</span>
+              <strong>{(data?.risk_score || 0).toFixed(0)} / 100</strong>
+              <span className="summary-detail">Primary driver: {leadDriver}</span>
+            </div>
+            <div className="hologram-summary-card">
+              <span className="summary-kicker">24h change</span>
+              <strong>{(data?.risk_delta || 0) > 0 ? "+" : ""}{(data?.risk_delta || 0).toFixed(1)}</strong>
+              <span className="summary-detail">{connectionLabel}</span>
+            </div>
+            <div className="hologram-summary-card">
+              <span className="summary-kicker">Live signals</span>
+              <strong>{activeSignalCount}</strong>
+              <span className="summary-detail">Confidence {((data?.confidence || 0) * 100).toFixed(0)}%</span>
+            </div>
+          </div>
 
           {/* Analysis Text */}
           <div className="hologram-body">
+            <div className="hologram-analysis-header">
+              <span className="analysis-kicker">Narrative assessment</span>
+              <span className="analysis-state" style={{ color: threatColor }}>
+                {(data?.threat_level || "stable").toUpperCase()}
+              </span>
+            </div>
             <TypewriterText 
               text={data?.analysis_text || ""} 
               speed={35}
@@ -452,7 +492,7 @@ export default function SentinelAI({
             </div>
             {feedbackState !== "none" && (
               <div className="feedback-status">
-                Feedback recorded. Sentinel AI will learn from this input.
+                Feedback recorded. The predictive model will incorporate this input.
               </div>
             )}
           </div>
@@ -471,7 +511,7 @@ export default function SentinelAI({
       {showQA && (
         <div className="sentinel-qa-panel">
           <div className="qa-header">
-            <h4>Ask Sentinel</h4>
+            <h4>Ask Predictive Intelligence</h4>
             <button onClick={() => setShowQA(false)}><X size={14} /></button>
           </div>
           <div className="qa-messages" ref={qaScrollRef}>
@@ -537,7 +577,7 @@ export default function SentinelAI({
               <div className="modal-avatar">
                 <HolographicAvatar isSpeaking={isSpeaking} threatLevel={data?.threat_level || "stable"} />
               </div>
-              <h2>Sentinel Analysis</h2>
+              <h2>Predictive Intelligence Analysis</h2>
               <div className="modal-header-actions">
                 <button 
                   onClick={() => exportAnalysis("json")} 
@@ -727,7 +767,7 @@ export default function SentinelAI({
         <div className="sentinel-settings-overlay" onClick={() => setShowSettings(false)}>
           <div className="sentinel-settings-modal" onClick={e => e.stopPropagation()}>
             <div className="settings-header">
-              <h3>Sentinel Settings</h3>
+              <h3>Predictive Intelligence Settings</h3>
               <button onClick={() => setShowSettings(false)}><X size={18} /></button>
             </div>
             

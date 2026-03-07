@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, Query, Header, Depends, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import JSONResponse
+from backend.kafka_client import get_consumer
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -56,6 +57,7 @@ from processing.sentinel_analysis import compute_sentinel_analysis, get_sentinel
 from processing.country_risk_validation import latest_country_risk_validation, run_country_risk_validation
 from feature_store.model_registry import get_production_model, list_models
 
+from backend.country_risk_stream import country_risk_stream_health
 from backend.observability import (
     build_logger,
     RuntimeMetrics,
@@ -2163,7 +2165,9 @@ def health(request: Request, role: str = Depends(check_role)):
 def health_dependencies(request: Request, role: str = Depends(require_admin), mode: str = Query("online")):
     try:
         db.command("ping")
-        return {"status": "ok", "dependencies": get_country_risk_dependency_health(mode=mode)}
+        deps = get_country_risk_dependency_health(mode=mode)
+        deps["country_risk_stream"] = country_risk_stream_health()
+        return {"status": "ok", "dependencies": deps}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Dependency check failed: {e}")
 
@@ -2186,6 +2190,12 @@ def observability_metrics(request: Request, role: str = Depends(require_admin)):
 @limiter.limit("10/minute")
 def observability_model(request: Request, window: int = Query(200, ge=10, le=5000), role: str = Depends(require_admin)):
     return build_monitoring_summary(model_monitoring_collection, window=window)
+
+
+@app.get("/observability/streaming")
+@limiter.limit("10/minute")
+def observability_streaming(request: Request, role: str = Depends(require_admin)):
+    return country_risk_stream_health()
 
 
 @app.get("/observability/country-risk-validation")
@@ -2242,6 +2252,39 @@ async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(None), ap
 # =====================================================
 # SENTINEL AI REAL-TIME WEBSOCKET
 # =====================================================
+@app.websocket("/ws/country-risk-map")
+async def websocket_country_risk_map(websocket: WebSocket, x_api_key: str = Header(None), api_key: str = Query(None)):
+    key = (x_api_key or api_key or "").strip()
+    valid_key = any(hmac.compare_digest(key, k) for k in USER_API_KEYS.union(ADMIN_API_KEYS))
+    if not valid_key:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    consumer = get_consumer(
+        topics=["country_risk_updates"],
+        group_id=f"dashboard-country-risk-{uuid.uuid4()}",
+        auto_offset_reset="latest",
+        enable_auto_commit=True,
+        consumer_timeout_ms=1000,
+    )
+    try:
+        while True:
+            sent_any = False
+            for message in consumer:
+                await websocket.send_json(message.value)
+                sent_any = True
+            if not sent_any:
+                await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        return
+    finally:
+        try:
+            consumer.close()
+        except Exception:
+            pass
+
+
 @app.websocket("/ws/sentinel")
 async def websocket_sentinel(websocket: WebSocket, x_api_key: str = Header(None), api_key: str = Query(None)):
     """

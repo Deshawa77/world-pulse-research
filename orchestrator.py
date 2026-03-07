@@ -216,6 +216,7 @@ import collectors.frankfurter as frankfurter
 import collectors.who as who
 import collectors.twelvedata as twelvedata
 import collectors.worldbank as worldbank
+import collectors.reddit as reddit
 
 # -------------------------------
 # Database & Processing
@@ -233,6 +234,7 @@ from backend import observability as obs
 from populate_hourly_features import populate_hourly_features
 from populate_hourly_features import populate_hourly_features
 from backend.observability import health_check
+from backend.country_risk_stream import run_normalizer_loop, run_risk_loop
 from config import HOURLY_FEATURES_CSV, FEATURE_COLUMNS
 fs = FeatureStore()
 db_connection = db
@@ -259,7 +261,8 @@ COLLECTOR_TASKS = {
     "exchange_rates": (lambda: frankfurter.fetch_exchange_rates("USD"), "exchange_rates_topic"),
     "who": (lambda: who.fetch_who_indicator("WHOSIS_000001", max_results=5), "who_topic"),
     "stocks": (lambda: twelvedata.fetch_stock("AAPL","1day",5), "stocks_topic"),
-    "worldbank": (lambda: worldbank.fetch_worldbank_data(date="2020:2025", per_page=5), "worldbank_topic")
+    "worldbank": (lambda: worldbank.fetch_worldbank_data(date="2020:2025", per_page=5), "worldbank_topic"),
+    "reddit": (lambda: reddit.fetch_reddit_posts("worldnews", limit=5), "reddit_topic")
 }
 
 topic_feature_map = {topic: build_hourly_features for _, topic in COLLECTOR_TASKS.values()}
@@ -758,6 +761,11 @@ if __name__=="__main__":
     start_all_collectors()
 
     # -------------------------------
+    # Start country-risk normalization and incremental scoring streams
+    # -------------------------------
+    threading.Thread(target=run_normalizer_loop, daemon=True).start()
+    threading.Thread(target=run_risk_loop, daemon=True).start()
+
     # Start Kafka streaming & batch processing
     # -------------------------------
     start_kafka_stream(parallel_workers=8)

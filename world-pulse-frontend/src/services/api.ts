@@ -2,6 +2,7 @@ import axios from "axios";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 const API_KEY = import.meta.env.VITE_API_KEY || "super_secure_api_key";
+export const COUNTRY_RISK_WS_URL = `${API_URL.replace(/^http/, "ws")}/ws/country-risk-map?api_key=${encodeURIComponent(API_KEY)}`;
 
 // Simple response cache to reduce 429 errors
 interface CacheEntry {
@@ -89,6 +90,11 @@ export type RiskMapPoint = {
   validated_today?: boolean;
   data_quality?: "verified" | "synthetic" | "stale" | "unknown";
   source_count?: number;
+  social_unrest_score?: number;
+  google_trends_pressure?: number;
+  weather_stress?: number;
+  external_signal_freshness?: number;
+  war_state_rules?: string[];
 };
 
 export type RiskMapCoverage = {
@@ -98,6 +104,11 @@ export type RiskMapCoverage = {
   stale: number;
   remaining: number;
   coverage_pct: number;
+  latest_validation?: {
+    status?: string;
+    sample_count?: number;
+    brier_score?: number;
+  };
 };
 
 export type CountryDrilldownData = {

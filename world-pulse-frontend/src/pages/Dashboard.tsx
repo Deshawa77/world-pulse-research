@@ -3,13 +3,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
-import CommandCenterHeader from "../components/CommandCenterHeader";
 
 import CountryDrilldown from "../components/CountryDrilldown";
 import EventLog, { type OperatorEvent } from "../components/EventLog";
 import SentinelAI from "../components/SentinelAI";
 import DataBurstModal from "../components/DataBurstModal";
-import LiveDataStreams from "../components/LiveDataStreams";
 import GlobalIntelligenceFeed from "../components/GlobalIntelligenceFeed";
 import CryptoMarketPulse from "../components/CryptoMarketPulse";
 import GlobalDisasterMonitor from "../components/GlobalDisasterMonitor";
@@ -21,6 +19,7 @@ import GoogleTrendsRadar from "../components/GoogleTrendsRadar";
 import API, {
 
   API_HEADERS,
+  COUNTRY_RISK_WS_URL,
   getCountryDrilldown,
   getLiveCommandFeed,
   getRiskMap,
@@ -105,6 +104,35 @@ function staleFor(msSinceUpdate: number, thresholdMs: number): boolean {
   return msSinceUpdate > thresholdMs;
 }
 
+function coverageFromRows(rows: RiskMapPoint[]): RiskMapCoverage {
+  const total = rows.length;
+  const verified = rows.filter((row) => row.validated_today).length;
+  const no_data = rows.filter((row) => row.data_quality === "synthetic" || row.data_quality === "unknown").length;
+  const stale = rows.filter((row) => row.data_quality === "stale").length;
+  return {
+    total,
+    verified,
+    no_data,
+    stale,
+    remaining: Math.max(total - verified, 0),
+    coverage_pct: total ? Number(((verified / total) * 100).toFixed(2)) : 0,
+  };
+}
+
+function formatRelativeTime(value?: string | null): string {
+  if (!value) return "No recent update";
+  const stamp = new Date(value).getTime();
+  if (!Number.isFinite(stamp)) return "No recent update";
+  const deltaSec = Math.max(0, Math.floor((Date.now() - stamp) / 1000));
+  if (deltaSec < 15) return "Just now";
+  if (deltaSec < 60) return `${deltaSec}s ago`;
+  const deltaMin = Math.floor(deltaSec / 60);
+  if (deltaMin < 60) return `${deltaMin}m ago`;
+  const deltaHr = Math.floor(deltaMin / 60);
+  if (deltaHr < 24) return `${deltaHr}h ago`;
+  return `${Math.floor(deltaHr / 24)}d ago`;
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [history, setHistory] = useState<Snapshot[]>(() => readJson(HISTORY_KEY, [] as Snapshot[]));
@@ -176,6 +204,35 @@ export default function Dashboard() {
   const riskDelta = active && lastKnownGood ? active.score - lastKnownGood.score : 0;
   const verifiedRiskMap = useMemo(() => riskMap.filter((row): row is RiskMapPoint & { risk: number } => Boolean(row.validated_today) && typeof row.risk === "number"), [riskMap]);
   const unverifiedRiskMap = useMemo(() => riskMap.filter((row) => !row.validated_today), [riskMap]);
+  const topTopic = active?.topics?.find((topic) => topic && topic !== "no data") ?? "No dominant topic";
+  const validationSummary = riskCoverage.latest_validation;
+  const liveFreshness = formatRelativeTime(liveFeed.lastUpdated);
+  const featureFreshness = formatRelativeTime(active?.timestamp);
+  const verifiedCoverageLabel = `${riskCoverage.verified} / ${riskCoverage.total || riskMap.length || 233}`;
+  const domainCards = [
+    {
+      title: "Multi-Source Signal Fusion",
+      value: verifiedCoverageLabel,
+      detail: "Countries with verified same-day intelligence on the live map",
+    },
+    {
+      title: "Sentiment + NLP",
+      value: topTopic,
+      detail: "Leading behavior topic extracted from the latest global intelligence signals",
+    },
+    {
+      title: "Predictive Outlook",
+      value: `${(active?.score ?? 50).toFixed(1)} / 100`,
+      detail: `Global risk forecast with ${riskDelta >= 0 ? "rising" : "cooling"} momentum ${riskDelta >= 0 ? "+" : ""}${riskDelta.toFixed(2)}`,
+    },
+    {
+      title: "Reliability + Validation",
+      value: validationSummary?.status === "ok" ? "Validated" : connectionState,
+      detail: validationSummary?.sample_count
+        ? `${validationSummary.sample_count} benchmark rows, Brier ${safeN(validationSummary.brier_score).toFixed(3)}`
+        : `Feed ${connectionState}, latest stream ${liveFreshness}`,
+    },
+  ];
   
   const panelStale = useMemo(() => {
     const now = Date.now();
@@ -312,6 +369,57 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    let socket: WebSocket | null = null;
+    let retryTimer = 0;
+    let closed = false;
+
+    const connect = () => {
+      if (closed) return;
+      try {
+        socket = new WebSocket(COUNTRY_RISK_WS_URL);
+      } catch {
+        retryTimer = window.setTimeout(connect, 3000);
+        return;
+      }
+
+      socket.onmessage = (event) => {
+        try {
+          const update = JSON.parse(event.data) as RiskMapPoint;
+          if (!update?.country) return;
+          setRiskMap((prev) => {
+            const next = [...prev];
+            const idx = next.findIndex((row) => row.country === update.country);
+            const merged = { ...(idx >= 0 ? next[idx] : {}), ...update } as RiskMapPoint;
+            if (idx >= 0) next[idx] = merged;
+            else next.push(merged);
+            setRiskCoverage((current) => ({ ...coverageFromRows(next), latest_validation: current.latest_validation }));
+            panelUpdated.current.map = Date.now();
+            return next;
+          });
+        } catch {
+          // ignore malformed websocket payloads
+        }
+      };
+
+      socket.onclose = () => {
+        if (closed) return;
+        retryTimer = window.setTimeout(connect, 3000);
+      };
+
+      socket.onerror = () => {
+        try { socket?.close(); } catch {}
+      };
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      window.clearTimeout(retryTimer);
+      try { socket?.close(); } catch {}
+    };
+  }, []);
+
+  useEffect(() => {
     let stopped = false;
     const loadPlotly = async () => {
       if (plotlyRef.current) return plotlyRef.current;
@@ -392,6 +500,7 @@ export default function Dashboard() {
             if (!p?.location) return;
             const country = String(p.location);
             const risk = Number(p.z);
+            setSelectedCountry(country);
             setDataBurstCountry(country);
             setDataBurstRisk(risk);
             setDataBurstOpen(true);
@@ -507,72 +616,118 @@ export default function Dashboard() {
   return (
     <main className={`wp-shell dashboard-v2 ${fpsLow ? "motion-low" : "motion-rich"}`}>
       <div className="parallax-grid" />
-      <header className="wp-top">
-        <div className="wp-burger"><span /><span /><span /></div>
-        <div>
-          <h1>THE WORLD'S <span>PULSE</span></h1>
-          <p>Operational Intelligence Dashboard</p>
+      <header className="wp-top wp-top-refined">
+        <div className="wp-brand-block">
+          <div className="wp-burger" aria-hidden="true"><span /><span /><span /></div>
+          <div>
+            <h1>THE WORLD'S <span>PULSE</span></h1>
+            <p>Real-Time Global Human Behavior Intelligence</p>
+          </div>
         </div>
-        <div className="wp-actions-inline">
-          <button onClick={() => navigate("/trend-prediction")}>Predictions</button>
-          <button onClick={() => navigate("/historical-trends")}>Historical</button>
-          <button onClick={() => navigate("/scenario")}>Scenario Studio</button>
-          <button onClick={() => navigate("/about")}>About</button>
-          <button onClick={() => navigate("/contact")}>Contact</button>
-          <button 
-            onClick={() => {
-              localStorage.removeItem("token");
-              navigate("/login");
-            }}
-            style={{ color: "#ff6b6b" }}
-          >
-            Logout
-          </button>
+        <div className="wp-header-meta">
+          <div className="wp-header-status">
+            <span className="wp-status-pill">{connectionState}</span>
+            <span className="wp-status-text">Heartbeat {liveFeed.ingestionHeartbeatSec.toFixed(1)}s</span>
+            <span className="wp-status-text">Verified {verifiedCoverageLabel}</span>
+          </div>
+          <div className="wp-actions-inline wp-actions-compact">
+            <button className="wp-nav-btn" onClick={() => navigate("/trend-prediction")}>Predictions</button>
+            <button className="wp-nav-btn" onClick={() => navigate("/historical-trends")}>Historical</button>
+            <button className="wp-nav-btn" onClick={() => navigate("/scenario")}>Scenario Studio</button>
+            <button className="wp-nav-btn" onClick={() => navigate("/about")}>About</button>
+            <button className="wp-nav-btn" onClick={() => navigate("/contact")}>Contact</button>
+            <button
+              className="wp-nav-btn wp-nav-btn-logout"
+              onClick={() => {
+                localStorage.removeItem("token");
+                navigate("/login");
+              }}
+            >
+              Logout
+            </button>
+          </div>
         </div>
       </header>
 
-      <CommandCenterHeader
-        incidents={liveFeed.incidents || []}
-        ingestionHeartbeatSec={liveFeed.ingestionHeartbeatSec}
-        modelDrift={liveFeed.modelDrift}
-        connectionState={connectionState}
-        lastUpdated={liveFeed.lastUpdated}
-      />
+      <section className="wp-intelligence-bar">
+        <div className="wp-intelligence-primary">
+          <span className="wp-intelligence-kicker">Live Intelligence</span>
+          <span className="wp-intelligence-topic">Topic pressure {topTopic}</span>
+          <span className="wp-intelligence-sep" />
+          <span>{liveFeed.incidents?.length ?? 0} active incidents</span>
+        </div>
+        <div className="wp-intelligence-secondary">
+          <span>{new Date(liveFeed.lastUpdated).toISOString().replace("T", " ").slice(0, 19)} UTC</span>
+          <span>Heartbeat {liveFeed.ingestionHeartbeatSec.toFixed(1)}s</span>
+          <span>Drift {liveFeed.modelDrift.toFixed(2)}</span>
+          <span>Feed {connectionState}</span>
+          <span>Updated {new Date(liveFeed.lastUpdated).toLocaleTimeString()}</span>
+        </div>
+      </section>
 
-
-
-
-
-
-      <section className="wp-strip">
-        <article className="wp-card">
-          <h3>Layout</h3>
-          <div className="wp-mini-meta"><span>Preset</span><strong>{activePreset}</strong></div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={() => setActivePreset("analyst")}>Analyst</button>
-            <button onClick={() => setActivePreset("ops")}>Ops</button>
-            <button onClick={() => setActivePreset("executive")}>Executive</button>
-          </div>
-        </article>
-        <article className="wp-card">
-          <h3>Reliability</h3>
-          <div className="wp-mini-meta"><span>Feed</span><strong>{connectionState}</strong></div>
-          <div className="wp-mini-meta"><span>Retries</span><strong>{retries}</strong></div>
-          {errorText ? <div className="map-fallback-error">{errorText}</div> : null}
-        </article>
-        <article className="wp-card">
-          <h3>Global Risk</h3>
+      <section className="wp-exec-grid">
+        <article className="wp-card wp-exec-card">
+          <div className="wp-exec-label">Global Mood</div>
           <strong className="wp-highlight">{(active?.score ?? 50).toFixed(2)} / 100</strong>
-          <div className="wp-mini-meta"><span>Last-known-good delta</span><strong>{riskDelta >= 0 ? "+" : ""}{riskDelta.toFixed(2)}</strong></div>
+          <div className="wp-mini-meta"><span>Latest topic</span><strong>{topTopic}</strong></div>
+          <div className="wp-mini-meta"><span>Feature update</span><strong>{featureFreshness}</strong></div>
         </article>
-        <article className="wp-card">
-          <h3>Commands</h3>
-          <div className="feed">
+        <article className="wp-card wp-exec-card">
+          <div className="wp-exec-label">Verified Countries</div>
+          <strong className="wp-highlight">{verifiedCoverageLabel}</strong>
+          <div className="wp-mini-meta"><span>Coverage</span><strong>{riskCoverage.coverage_pct.toFixed(1)}%</strong></div>
+          <div className="wp-mini-meta"><span>No-data / stale</span><strong>{riskCoverage.no_data + riskCoverage.stale}</strong></div>
+        </article>
+        <article className="wp-card wp-exec-card">
+          <div className="wp-exec-label">Live Feed</div>
+          <strong className="wp-highlight wp-highlight-compact">{connectionState}</strong>
+          <div className="wp-mini-meta"><span>Last live pulse</span><strong>{liveFreshness}</strong></div>
+          <div className="wp-mini-meta"><span>Retries</span><strong>{retries}</strong></div>
+        </article>
+        <article className="wp-card wp-exec-card">
+          <div className="wp-exec-label">Forecast</div>
+          <strong className="wp-highlight">{(active?.score ?? 50).toFixed(1)} / 100</strong>
+          <div className="wp-mini-meta"><span>Momentum</span><strong>{riskDelta >= 0 ? "+" : ""}{riskDelta.toFixed(2)}</strong></div>
+          <div className="wp-mini-meta"><span>Validation</span><strong>{validationSummary?.status ?? "pending"}</strong></div>
+        </article>
+      </section>
+
+      <section className="wp-ops-strip wp-ops-strip-flat">
+        <div className="wp-ops-inline-block">
+          <span className="wp-ops-label">Preset</span>
+          <div className="wp-preset-group">
+            <button className={activePreset === "analyst" ? "is-active" : ""} onClick={() => setActivePreset("analyst")}>Analyst</button>
+            <button className={activePreset === "ops" ? "is-active" : ""} onClick={() => setActivePreset("ops")}>Ops</button>
+            <button className={activePreset === "executive" ? "is-active" : ""} onClick={() => setActivePreset("executive")}>Executive</button>
+          </div>
+        </div>
+        <div className="wp-ops-inline-block">
+          <span className="wp-ops-label">Actions</span>
+          <div className="wp-command-row">
             <button onClick={() => addEvent("acknowledge", "global acknowledge")}>Acknowledge</button>
             <button onClick={() => addEvent("snooze", "15m snooze")}>Snooze</button>
             <button onClick={() => addEvent("assign", "escalated", "analyst-1")}>Assign</button>
           </div>
-        </article>
+        </div>
+        <div className="wp-ops-inline-block wp-ops-inline-status">
+          <span className="wp-ops-label">Status</span>
+          <div className="wp-ops-status-line">
+            <span>Retries {retries}</span>
+            <span>Validation {validationSummary?.status ?? "pending"}</span>
+            <span>No-data / stale {riskCoverage.no_data + riskCoverage.stale}</span>
+          </div>
+          {errorText ? <div className="map-fallback-error">{errorText}</div> : null}
+        </div>
+      </section>
+
+      <section className="proposal-summary-grid">
+        {domainCards.map((card) => (
+          <article key={card.title} className="wp-card proposal-summary-card">
+            <h3>{card.title}</h3>
+            <strong className="wp-highlight proposal-summary-value">{card.value}</strong>
+            <p className="proposal-summary-detail">{card.detail}</p>
+          </article>
+        ))}
       </section>
 
       {/* Unified Intelligence Panel - Map + Global Intelligence (left) | Sentinel AI (right) */}
@@ -581,28 +736,28 @@ export default function Dashboard() {
             {/* Map Intelligence - Top Left */}
             <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`}>
               <div className="panel-head">
-                <h3>Map Intelligence</h3>
+                <h3>Global Behavior Map</h3>
                 <button onClick={triggerMapRefresh} disabled={refreshingMap}>{refreshingMap ? "Refreshing..." : "Refresh Next 50"}</button>
               </div>
               {panelStale.map ? <div className="panel-stale">stale</div> : null}
-              <div className="panel-content wp-map-surface map-surface-advanced" style={{ position: "relative" }}>
-                <div style={{ position: "absolute", inset: 0, zIndex: 0, opacity: 0.6 }}>
-                  <LiveDataStreams 
-                    isActive={true} 
-                    threatLevel={active && active.score > 75 ? "critical" : active && active.score > 50 ? "elevated" : "stable"}
-                    streamCount={5}
-                  />
+              <div className="panel-content wp-map-surface map-surface-advanced">
+                <div className="proposal-map-stage">
+                  <div ref={mapRef} className="echart-map" />
+                  {mapHover ? (
+                    <div className="map-hover-box map-hover-card">
+                      <strong className="map-hover-title">{mapHover.country}</strong>
+                      <span className="map-hover-risk">{mapHover.quality === "verified" ? `Risk Score: ${mapHover.risk.toFixed(1)}` : `Status: ${mapHover.quality}`}</span>
+                    </div>
+                  ) : null}
                 </div>
-                <div ref={mapRef} className="echart-map" style={{ position: "relative", zIndex: 1, height: "100%" }} />
-                {mapHover ? (
-                  <div className="map-hover-box map-hover-card">
-                    <strong className="map-hover-title">{mapHover.country}</strong>
-                    <span className="map-hover-risk">{mapHover.quality === "verified" ? `Risk Score: ${mapHover.risk.toFixed(1)}` : `Status: ${mapHover.quality}`}</span>
-                  </div>
-                ) : null}
-                <p style={{ marginTop: 8, fontSize: 12, color: "#d1d5db", position: "relative", zIndex: 1, flexShrink: 0 }}>
-                  {riskCoverage.verified} / {riskCoverage.total || riskMap.length} countries verified today. Gray countries have no same-day source data yet. Click country for deep dive analysis.
-                </p>
+                <div className="proposal-map-meta">
+                  <p style={{ fontSize: 12, color: "#d1d5db" }}>
+                    {riskCoverage.verified} / {riskCoverage.total || riskMap.length} countries verified today. Gray countries have no same-day source data yet. Click a country for drilldown analysis.
+                  </p>
+                  <p style={{ fontSize: 12, color: "#94a3b8" }}>
+                    Latest validation: {validationSummary?.status ?? "not available"}{validationSummary?.sample_count ? `, ${validationSummary.sample_count} benchmark rows, Brier ${safeN(validationSummary.brier_score).toFixed(3)}` : ""}.
+                  </p>
+                </div>
               </div>
             </article>
 
@@ -629,11 +784,14 @@ export default function Dashboard() {
                 <div className="header-glow pink"></div>
                 <h3>
                   <span className="header-icon">🤖</span>
-                  Sentinel AI
-                  <span className="header-badge">AI</span>
+                  Predictive Intelligence
+                  <span className="header-badge">Live</span>
                 </h3>
               </div>
               <div className="panel-content sentinel-advanced-container">
+                <div className="proposal-sentinel-intro">
+                  This panel summarizes cross-domain risk drivers, predictive intelligence, and country-level explanations for researchers, analysts, and policymakers.
+                </div>
                 <SentinelAI />
               </div>
             </article>
@@ -641,84 +799,85 @@ export default function Dashboard() {
       </section>
 
 
-      {/* Real-Time Intelligence Grid - 2 Columns */}
-      <section style={{ margin: "16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-        {/* Crypto Market Pulse */}
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "500px", display: "flex", flexDirection: "column" }}>
 
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(245,158,11,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(245,158,11,0.4) 0%, transparent 70%)" }}></div>
+      {/* Real-Time Intelligence Grid - 2 Columns */}
+      <section className="realtime-intelligence-grid">
+        {/* Crypto Market Pulse */}
+        <article className={`wp-card panel-frame realtime-domain-card ${fpsLow ? "" : "panel-animated"}`}>
+
+          <div className="panel-head futuristic-panel-header domain-header domain-header-amber">
+            <div className="header-glow domain-header-glow domain-header-glow-amber"></div>
             <h3>
               <span className="header-icon">₿</span>
               Crypto Market Pulse
-              <span className="header-badge" style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.4)" }}>LIVE</span>
+              <span className="header-badge domain-badge domain-badge-amber">LIVE</span>
             </h3>
           </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+          <div className="panel-content panel-content-scrollless">
             <CryptoMarketPulse maxItems={5} refreshInterval={15000} />
           </div>
         </article>
 
         {/* Global Disaster Monitor */}
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "500px", display: "flex", flexDirection: "column" }}>
+        <article className={`wp-card panel-frame realtime-domain-card ${fpsLow ? "" : "panel-animated"}`}>
 
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(239,68,68,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(239,68,68,0.4) 0%, transparent 70%)" }}></div>
+          <div className="panel-head futuristic-panel-header domain-header domain-header-red">
+            <div className="header-glow domain-header-glow domain-header-glow-red"></div>
             <h3>
               <span className="header-icon">🌋</span>
               Global Disaster Monitor
-              <span className="header-badge" style={{ background: "rgba(239,68,68,0.2)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.4)" }}>LIVE</span>
+              <span className="header-badge domain-badge domain-badge-red">LIVE</span>
             </h3>
           </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+          <div className="panel-content panel-content-scrollless">
             <GlobalDisasterMonitor maxItems={6} refreshInterval={20000} />
           </div>
         </article>
 
         {/* Economic Indicators Feed */}
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "500px", display: "flex", flexDirection: "column" }}>
+        <article className={`wp-card panel-frame realtime-domain-card ${fpsLow ? "" : "panel-animated"}`}>
 
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(34,197,94,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(34,197,94,0.4) 0%, transparent 70%)" }}></div>
+          <div className="panel-head futuristic-panel-header domain-header domain-header-green">
+            <div className="header-glow domain-header-glow domain-header-glow-green"></div>
             <h3>
               <span className="header-icon">📊</span>
               Economic Indicators
-              <span className="header-badge" style={{ background: "rgba(34,197,94,0.2)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.4)" }}>LIVE</span>
+              <span className="header-badge domain-badge domain-badge-green">LIVE</span>
             </h3>
           </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+          <div className="panel-content panel-content-scrollless">
             <EconomicIndicatorsFeed refreshInterval={30000} />
           </div>
         </article>
 
         {/* Health Alert Stream */}
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "500px", display: "flex", flexDirection: "column" }}>
+        <article className={`wp-card panel-frame realtime-domain-card ${fpsLow ? "" : "panel-animated"}`}>
 
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(236,72,153,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(236,72,153,0.4) 0%, transparent 70%)" }}></div>
+          <div className="panel-head futuristic-panel-header domain-header domain-header-pink">
+            <div className="header-glow domain-header-glow domain-header-glow-pink"></div>
             <h3>
               <span className="header-icon">🏥</span>
               Health Alert Stream
-              <span className="header-badge" style={{ background: "rgba(236,72,153,0.2)", color: "#ec4899", border: "1px solid rgba(236,72,153,0.4)" }}>LIVE</span>
+              <span className="header-badge domain-badge domain-badge-pink">LIVE</span>
             </h3>
           </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+          <div className="panel-content panel-content-scrollless">
             <HealthAlertStream maxItems={6} refreshInterval={25000} />
           </div>
         </article>
 
         {/* Google Trends Radar - Full Width */}
-        <article className={`wp-card panel-frame ${fpsLow ? "" : "panel-animated"}`} style={{ height: "500px", display: "flex", flexDirection: "column", gridColumn: "span 2" }}>
+        <article className={`wp-card panel-frame realtime-domain-card realtime-domain-card-wide ${fpsLow ? "" : "panel-animated"}`}>
 
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(139,92,246,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(139,92,246,0.4) 0%, transparent 70%)" }}></div>
+          <div className="panel-head futuristic-panel-header domain-header domain-header-violet">
+            <div className="header-glow domain-header-glow domain-header-glow-violet"></div>
             <h3>
               <span className="header-icon">📈</span>
               Google Trends Radar
-              <span className="header-badge" style={{ background: "rgba(139,92,246,0.2)", color: "#8b5cf6", border: "1px solid rgba(139,92,246,0.4)" }}>LIVE</span>
+              <span className="header-badge domain-badge domain-badge-violet">LIVE</span>
             </h3>
           </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+          <div className="panel-content panel-content-scrollless">
             <GoogleTrendsRadar maxItems={8} refreshInterval={30000} />
           </div>
         </article>
@@ -726,16 +885,16 @@ export default function Dashboard() {
 
       {/* Operator Workflow - Full Width */}
       <section style={{ margin: "0 16px 16px" }}>
-        <article className={`wp-card panel-frame operator-panel ${fpsLow ? "" : "panel-animated"}`} style={{ height: "350px", display: "flex", flexDirection: "column" }}>
-          <div className="panel-head futuristic-panel-header" style={{ borderBottom: "1px solid rgba(249,115,22,0.3)" }}>
-            <div className="header-glow" style={{ background: "radial-gradient(circle, rgba(249,115,22,0.4) 0%, transparent 70%)" }}></div>
+        <article className={`wp-card panel-frame operator-panel operator-panel-card ${fpsLow ? "" : "panel-animated"}`}>
+          <div className="panel-head futuristic-panel-header domain-header domain-header-orange">
+            <div className="header-glow domain-header-glow domain-header-glow-orange"></div>
             <h3>
               <span className="header-icon">⚡</span>
-              Operator Workflow
-              <span className="header-badge" style={{ background: "rgba(249,115,22,0.2)", color: "#f97316", border: "1px solid rgba(249,115,22,0.4)" }}>OPS</span>
+              Operator Workflow And Reliability Log
+              <span className="header-badge domain-badge domain-badge-orange">OPS</span>
             </h3>
           </div>
-          <div className="panel-content" style={{ flex: 1, overflow: "hidden" }}>
+          <div className="panel-content panel-content-scrollless">
             {panelStale.ops ? <div className="panel-stale">stale</div> : null}
             <EventLog events={operatorEvents} />
           </div>
@@ -788,19 +947,12 @@ export default function Dashboard() {
 
       <button
         onClick={() => setSentinelEnabled(!sentinelEnabled)}
-        className="fixed bottom-4 left-4 z-40 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-300"
-        style={{
-          background: sentinelEnabled 
-            ? "rgba(255, 105, 180, 0.3)" 
-            : "rgba(100, 100, 100, 0.2)",
-          border: `1px solid ${sentinelEnabled ? "rgba(255, 105, 180, 0.5)" : "rgba(100, 100, 100, 0.3)"}`,
-          color: sentinelEnabled ? "#ff69b4" : "#888",
-          backdropFilter: "blur(8px)",
-        }}
+        className={`sentinel-toggle ${sentinelEnabled ? "is-enabled" : "is-disabled"}`}
       >
         {sentinelEnabled ? "🤖 Sentinel AI ON" : "🤖 Sentinel AI OFF"}
       </button>
     </main>
   );
 }
+
 
