@@ -759,9 +759,15 @@ export default function Dashboard() {
             <span className="wp-status-text">Verified {verifiedCoverageLabel}</span>
           </div>
         )}
+        sectionTabs={[
+          { label: "Overview", targetId: "dashboard-overview" },
+          { label: "Global Behavior", targetId: "dashboard-global-behavior" },
+          { label: "Live Domains", targetId: "dashboard-live-domains" },
+          { label: "Operator Log", targetId: "dashboard-operator-log" },
+        ]}
       />
 
-      <section className="wp-intelligence-bar">
+      <section id="dashboard-overview" className="wp-intelligence-bar">
         <div className="wp-intelligence-primary">
           <span className="wp-intelligence-kicker">Live Intelligence</span>
           <span className="wp-intelligence-topic">Topic pressure {topTopic}</span>
@@ -843,7 +849,7 @@ export default function Dashboard() {
       </section>
 
       {/* Unified Intelligence Panel - Map + Global Intelligence (left) | Sentinel AI (right) */}
-      <section className="dashboard-layout">
+      <section id="dashboard-global-behavior" className="dashboard-layout">
         <div className="left-column">
             {/* Map Intelligence - Top Left */}
             <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`}>
@@ -952,7 +958,7 @@ export default function Dashboard() {
 
 
       {/* Real-Time Intelligence Grid - 2 Columns */}
-      <section className="realtime-intelligence-grid">
+      <section id="dashboard-live-domains" className="realtime-intelligence-grid">
         {/* Crypto Market Pulse */}
         <article className={`wp-card panel-frame realtime-domain-card ${fpsLow ? "" : "panel-animated"}`}>
 
@@ -1065,7 +1071,7 @@ export default function Dashboard() {
       </section>
 
       {/* Operator Workflow - Full Width */}
-      <section style={{ margin: "0 16px 16px" }}>
+      <section id="dashboard-operator-log" style={{ margin: "0 16px 16px" }}>
         <article className={`wp-card panel-frame operator-panel operator-panel-card ${fpsLow ? "" : "panel-animated"}`}>
           <div className="panel-head futuristic-panel-header domain-header domain-header-orange">
             <div className="header-glow domain-header-glow domain-header-glow-orange"></div>

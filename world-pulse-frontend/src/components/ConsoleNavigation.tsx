@@ -22,12 +22,17 @@ type ConsoleNavigationProps = {
   title: ReactNode;
   subtitle: string;
   rightSlot?: ReactNode;
+  sectionTabs?: Array<{
+    label: string;
+    targetId: string;
+  }>;
 };
 
 export default function ConsoleNavigation({
   title,
   subtitle,
   rightSlot,
+  sectionTabs = [],
 }: ConsoleNavigationProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -61,6 +66,12 @@ export default function ConsoleNavigation({
 
     setNavOpen(false);
     navigate(item.path);
+  };
+
+  const handleSectionTabClick = (targetId: string) => {
+    const element = document.getElementById(targetId);
+    if (!element) return;
+    element.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   return (
@@ -115,6 +126,20 @@ export default function ConsoleNavigation({
         </div>
         {rightSlot ? <div className="wp-header-meta">{rightSlot}</div> : null}
       </header>
+      {sectionTabs.length ? (
+        <div className="console-section-tabs" role="navigation" aria-label="Page sections">
+          {sectionTabs.map((tab) => (
+            <button
+              key={tab.targetId}
+              type="button"
+              className="console-section-tab"
+              onClick={() => handleSectionTabClick(tab.targetId)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </>
   );
 }

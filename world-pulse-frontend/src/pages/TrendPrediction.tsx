@@ -395,13 +395,6 @@ export default function TrendPrediction() {
         headers: API_HEADERS,
         params: { mode: "online" },
       });
-      const forecastPromise = predictionService.getSentimentForecast();
-      const reactionsPromise = predictionService.getMarketReactions(30);
-      const eventsPromise = predictionService.getEventPredictions();
-      const governancePromise = getGovernanceData();
-      const mapPromise = getRiskMap();
-      const historyPromise = predictionService.getHistoricalData(start, end, selectedTimeframe === "7d" ? 1000 : 400);
-
       let logs: PredictionLog[] = readPredictionLogsCache();
       try {
         const logsRes = await logsPromise;
@@ -510,12 +503,12 @@ export default function TrendPrediction() {
       finishPrimaryLoad(requestId);
 
       const [forecastResult, reactionsResult, eventsResult, governanceResult, mapResult, historyResult] = await Promise.allSettled([
-        forecastPromise,
-        reactionsPromise,
-        eventsPromise,
-        governancePromise,
-        mapPromise,
-        historyPromise,
+        predictionService.getSentimentForecast(),
+        predictionService.getMarketReactions(30),
+        predictionService.getEventPredictions(),
+        getGovernanceData(),
+        getRiskMap(),
+        predictionService.getHistoricalData(start, end, selectedTimeframe === "7d" ? 1000 : 400),
       ]);
 
       if (requestId !== loadRequestIdRef.current) return;
@@ -1148,9 +1141,16 @@ export default function TrendPrediction() {
       <ConsoleNavigation
         title={<>TREND <span>PREDICTION</span></>}
         subtitle="ML-Powered Risk Forecasting and market intelligence."
+        sectionTabs={[
+          { label: "Summary", targetId: "prediction-summary" },
+          { label: "Deep Intel", targetId: "prediction-deep-intel" },
+          { label: "Prediction History", targetId: "prediction-history" },
+          { label: "Signals", targetId: "prediction-signals" },
+          { label: "Support", targetId: "prediction-support" },
+        ]}
       />
 
-      <section className="prediction-summary-sticky">
+      <section id="prediction-summary" className="prediction-summary-sticky">
         <article className="wp-card prediction-summary-card">
           <span className="prediction-summary-label">Risk Score</span>
           <strong className="prediction-summary-value">
@@ -1210,7 +1210,7 @@ export default function TrendPrediction() {
         </article>
       </section>
 
-      <section className="prediction-deep-intel">
+      <section id="prediction-deep-intel" className="prediction-deep-intel">
         <div className="prediction-deep-intel-grid">
           <article className="wp-card panel-animated prediction-deep-card">
             <PanelHeader
@@ -1319,7 +1319,7 @@ export default function TrendPrediction() {
         </div>
       </section>
 
-      <section className="prediction-row prediction-row-core">
+      <section id="prediction-history" className="prediction-row prediction-row-core">
         <article className="wp-card panel-animated prediction-card-large">
           <PanelHeader
             title="ML Prediction History"
@@ -1373,7 +1373,7 @@ export default function TrendPrediction() {
         </article>
       </section>
 
-      <section className="prediction-row prediction-row-signals">
+      <section id="prediction-signals" className="prediction-row prediction-row-signals">
         <article className="wp-card panel-animated prediction-card-medium">
           <PanelHeader
             title="Sentiment Forecast"
@@ -1426,7 +1426,7 @@ export default function TrendPrediction() {
         </article>
       </section>
 
-      <section className="prediction-row prediction-row-support">
+      <section id="prediction-support" className="prediction-row prediction-row-support">
         <article className="wp-card panel-animated prediction-card-medium">
           <PanelHeader
             title="Event-Based Predictions"

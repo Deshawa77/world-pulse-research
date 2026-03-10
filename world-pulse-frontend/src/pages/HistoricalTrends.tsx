@@ -410,10 +410,16 @@ export default function HistoricalTrends() {
       <ConsoleNavigation
         title={<>HISTORICAL <span>TRENDS</span></>}
         subtitle="Deep dive into past events, signal shifts, and sentiment patterns."
+        sectionTabs={[
+          { label: "Date Range", targetId: "historical-range" },
+          { label: "Timeline", targetId: "historical-timeline" },
+          { label: "Comparison", targetId: "historical-comparison" },
+          { label: "Data Table", targetId: "historical-table" },
+        ]}
       />
 
       {/* Date Range & Stats */}
-      <section className="wp-strip">
+      <section id="historical-range" className="wp-strip">
         <article className="wp-card date-range-card">
           <h3>Date Range</h3>
           <div className="date-range-buttons">
@@ -484,7 +490,7 @@ export default function HistoricalTrends() {
       </section>
 
       {/* Timeline Chart */}
-      <section className="wp-grid">
+      <section id="historical-timeline" className="wp-grid">
         <article className="wp-card panel-animated chart-card">
           <div className="chart-header">
             <h2>Sentiment Timeline</h2>
@@ -567,7 +573,7 @@ export default function HistoricalTrends() {
       </section>
 
       {/* Event Comparison */}
-      <section className="wp-grid">
+      <section id="historical-comparison" className="wp-grid">
         <article className="wp-card panel-animated">
           <h2>Compare Past Events</h2>
           <div className="events-list">
@@ -617,7 +623,7 @@ export default function HistoricalTrends() {
       </section>
 
       {/* Data Table */}
-      <section className="wp-grid">
+      <section id="historical-table" className="wp-grid">
         <article className="wp-card panel-animated data-table-card">
           <h2>Detailed Data Log</h2>
           <div className="data-table-container">
