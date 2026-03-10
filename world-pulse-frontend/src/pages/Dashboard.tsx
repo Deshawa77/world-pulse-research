@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useNavigate } from "react-router-dom";
 import "../components/futuristic-dashboard.css";
@@ -6,7 +6,7 @@ import "./Dashboard.css";
 
 import CountryDrilldown from "../components/CountryDrilldown";
 import EventLog, { type OperatorEvent } from "../components/EventLog";
-import SentinelAI from "../components/SentinelAI";
+import BrainModelViewer from "../components/BrainModelViewer";
 import DataBurstModal from "../components/DataBurstModal";
 import GlobalIntelligenceFeed from "../components/GlobalIntelligenceFeed";
 import CryptoMarketPulse from "../components/CryptoMarketPulse";
@@ -63,6 +63,16 @@ const HISTORY_KEY = "wp_v3_history";
 const EVENTS_KEY = "wp_v3_events";
 const MAX_HISTORY = 1200;
 
+const DRIVER_LABELS: Record<string, string> = {
+  news_sentiment: "News Sentiment",
+  gdelt_sentiment: "GDELT Sentiment",
+  crypto_return: "Crypto Return",
+  crypto_volatility: "Crypto Volatility",
+  stock_return: "Stock Return",
+  stock_volatility: "Stock Volatility",
+  weather_anomaly: "Weather Anomaly",
+};
+
 function safeN(value: unknown, fallback = 0): number {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -71,6 +81,34 @@ function safeN(value: unknown, fallback = 0): number {
 function normalizeRisk(score: number): number {
   const clamped = Math.max(0, Math.min(100, safeN(score, 50)));
   return Number(clamped.toFixed(2));
+}
+
+function formatDriverLabel(feature: string): string {
+  const known = DRIVER_LABELS[feature];
+  if (known) return known;
+  return feature
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function deriveThreatMeta(score: number): { label: string; tone: "stable" | "guarded" | "elevated" | "critical" } {
+  if (score >= 75) return { label: "Critical", tone: "critical" };
+  if (score >= 50) return { label: "Elevated", tone: "elevated" };
+  if (score >= 25) return { label: "Guarded", tone: "guarded" };
+  return { label: "Stable", tone: "stable" };
+}
+
+function deriveTrendMeta(delta: number): { label: string; tone: "up" | "down" | "stable" } {
+  if (delta >= 0.35) return { label: "Rising", tone: "up" };
+  if (delta <= -0.35) return { label: "Cooling", tone: "down" };
+  return { label: "Stable", tone: "stable" };
+}
+
+function formatTelemetryTime(value?: string | null): string {
+  if (!value) return "No recent update";
+  const stamp = new Date(value);
+  if (!Number.isFinite(stamp.getTime())) return "No recent update";
+  return stamp.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 function readJson<T>(key: string, fallback: T): T {
@@ -209,6 +247,27 @@ export default function Dashboard() {
   const liveFreshness = formatRelativeTime(liveFeed.lastUpdated);
   const featureFreshness = formatRelativeTime(active?.timestamp);
   const verifiedCoverageLabel = `${riskCoverage.verified} / ${riskCoverage.total || riskMap.length || 233}`;
+  const globalRiskScore = active?.score ?? 50;
+  const telemetryThreat = deriveThreatMeta(globalRiskScore);
+  const telemetryTrend = deriveTrendMeta(riskDelta);
+  const telemetryDrivers = (() => {
+    const countryDrivers = countryData?.drivers?.length
+      ? [...countryData.drivers]
+          .sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution))
+          .map((driver) => formatDriverLabel(driver.feature))
+      : [];
+    const topicDrivers = topTopic !== "No dominant topic" ? [topTopic] : [];
+    const globalDrivers = active?.features
+      ? Object.entries(active.features)
+          .sort((left, right) => Math.abs(right[1]) - Math.abs(left[1]))
+          .map(([feature]) => formatDriverLabel(feature))
+      : [];
+    const merged = Array.from(new Set([...countryDrivers, ...topicDrivers, ...globalDrivers])).filter(Boolean);
+    return merged.length ? merged.slice(0, 3) : ["Awaiting live signals"];
+  })();
+  const dockConnectionLabel = `${connectionState.charAt(0).toUpperCase()}${connectionState.slice(1)}`;
+  const liveSignalCount = riskCoverage.verified || verifiedRiskMap.length || liveFeed.incidents?.length || 0;
+  const telemetryStatusLine = `${dockConnectionLabel} • ${liveSignalCount} verified signals • Updated ${formatTelemetryTime(liveFeed.lastUpdated)}`;
   const domainCards = [
     {
       title: "Multi-Source Signal Fusion",
@@ -526,8 +585,6 @@ export default function Dashboard() {
       if (!isRotatingRef.current || !mapRef.current || selectedCountryRef.current) return;
       rotationRef.current = rotationRef.current + 0.5;
 
-
-
       Plotly.relayout(mapRef.current, {
         "geo.projection.rotation.lon": rotationRef.current,
       }).catch(() => {});
@@ -536,7 +593,6 @@ export default function Dashboard() {
     rotationRafRef.current = requestAnimationFrame(rotate);
   };
 
-
   const stopAutoRotation = () => {
     isRotatingRef.current = false;
     if (rotationRafRef.current) {
@@ -544,7 +600,6 @@ export default function Dashboard() {
       rotationRafRef.current = null;
     }
   };
-
   useEffect(() => {
     if (!mapMounted.current || !plotlyRef.current) return;
     if (selectedCountry) {
@@ -766,7 +821,7 @@ export default function Dashboard() {
               <div className="panel-head futuristic-panel-header">
                 <div className="header-glow cyan"></div>
                 <h3>
-                  <span className="header-icon">🌍</span>
+                  <span className="header-icon">ðŸŒ</span>
                   Global Intelligence Feed
                   <span className="header-badge">LIVE</span>
                 </h3>
@@ -778,21 +833,48 @@ export default function Dashboard() {
         </div>
 
         <div className="right-column">
-            {/* Sentinel AI - Right Side */}
-            <article className={`wp-card panel-frame sentinel-ai-panel ${fpsLow ? "" : "panel-animated"}`}>
+            {/* Brain Model - Right Side */}
+            <article className={`wp-card panel-frame sentinel-ai-panel brain-model-panel ${fpsLow ? "" : "panel-animated"}`}>
               <div className="panel-head futuristic-panel-header">
                 <div className="header-glow pink"></div>
                 <h3>
-                  <span className="header-icon">🤖</span>
-                  Predictive Intelligence
-                  <span className="header-badge">Live</span>
+                  <span className="header-icon">3D</span>
+                  Neural Brain Model
+                  <span className="header-badge">GLB</span>
                 </h3>
               </div>
-              <div className="panel-content sentinel-advanced-container">
-                <div className="proposal-sentinel-intro">
-                  This panel summarizes cross-domain risk drivers, predictive intelligence, and country-level explanations for researchers, analysts, and policymakers.
+              <div className="panel-content brain-model-panel-content">
+                <div className="brain-model-stage">
+                  <BrainModelViewer className="dashboard-brain-model" />
                 </div>
-                <SentinelAI />
+                <div className="brain-telemetry-dock" role="status" aria-live="polite">
+                  <div className="brain-telemetry-summary-row">
+                    <div className="brain-telemetry-card brain-telemetry-card-primary">
+                      <span className="brain-telemetry-card-label">Risk Score</span>
+                      <strong>{globalRiskScore.toFixed(1)}</strong>
+                    </div>
+                    <div className={`brain-telemetry-card brain-telemetry-card-tone tone-${telemetryThreat.tone}`}>
+                      <span className="brain-telemetry-card-label">Threat Level</span>
+                      <strong>{telemetryThreat.label}</strong>
+                    </div>
+                    <div className={`brain-telemetry-card brain-telemetry-card-tone tone-${telemetryTrend.tone}`}>
+                      <span className="brain-telemetry-card-label">Trend</span>
+                      <strong>{telemetryTrend.label}</strong>
+                    </div>
+                  </div>
+                  <div className="brain-telemetry-drivers-row">
+                    <span className="brain-telemetry-row-label">Top Drivers</span>
+                    <div className="brain-telemetry-chip-list">
+                      {telemetryDrivers.map((driver) => (
+                        <span key={driver} className="brain-telemetry-chip">{driver}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="brain-telemetry-status-row">
+                    <span className={`brain-telemetry-status-dot state-${connectionState}`} />
+                    <span className="brain-telemetry-status-line">{telemetryStatusLine}</span>
+                  </div>
+                </div>
               </div>
             </article>
         </div>
@@ -808,7 +890,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-amber">
             <div className="header-glow domain-header-glow domain-header-glow-amber"></div>
             <h3>
-              <span className="header-icon">₿</span>
+              <span className="header-icon">â‚¿</span>
               Crypto Market Pulse
               <span className="header-badge domain-badge domain-badge-amber">LIVE</span>
             </h3>
@@ -824,7 +906,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-red">
             <div className="header-glow domain-header-glow domain-header-glow-red"></div>
             <h3>
-              <span className="header-icon">🌋</span>
+              <span className="header-icon">ðŸŒ‹</span>
               Global Disaster Monitor
               <span className="header-badge domain-badge domain-badge-red">LIVE</span>
             </h3>
@@ -840,7 +922,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-green">
             <div className="header-glow domain-header-glow domain-header-glow-green"></div>
             <h3>
-              <span className="header-icon">📊</span>
+              <span className="header-icon">ðŸ“Š</span>
               Economic Indicators
               <span className="header-badge domain-badge domain-badge-green">LIVE</span>
             </h3>
@@ -856,7 +938,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-pink">
             <div className="header-glow domain-header-glow domain-header-glow-pink"></div>
             <h3>
-              <span className="header-icon">🏥</span>
+              <span className="header-icon">ðŸ¥</span>
               Health Alert Stream
               <span className="header-badge domain-badge domain-badge-pink">LIVE</span>
             </h3>
@@ -872,7 +954,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-violet">
             <div className="header-glow domain-header-glow domain-header-glow-violet"></div>
             <h3>
-              <span className="header-icon">📈</span>
+              <span className="header-icon">ðŸ“ˆ</span>
               Google Trends Radar
               <span className="header-badge domain-badge domain-badge-violet">LIVE</span>
             </h3>
@@ -889,7 +971,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-orange">
             <div className="header-glow domain-header-glow domain-header-glow-orange"></div>
             <h3>
-              <span className="header-icon">⚡</span>
+              <span className="header-icon">âš¡</span>
               Operator Workflow And Reliability Log
               <span className="header-badge domain-badge domain-badge-orange">OPS</span>
             </h3>
@@ -949,10 +1031,18 @@ export default function Dashboard() {
         onClick={() => setSentinelEnabled(!sentinelEnabled)}
         className={`sentinel-toggle ${sentinelEnabled ? "is-enabled" : "is-disabled"}`}
       >
-        {sentinelEnabled ? "🤖 Sentinel AI ON" : "🤖 Sentinel AI OFF"}
+        {sentinelEnabled ? "ðŸ¤– Sentinel AI ON" : "ðŸ¤– Sentinel AI OFF"}
       </button>
     </main>
   );
 }
+
+
+
+
+
+
+
+
 
 

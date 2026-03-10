@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+﻿import type { CSSProperties } from "react";
 
 interface WorldPulseCoreProps {
   isSpeaking?: boolean;
@@ -35,6 +35,7 @@ export default function WorldPulseCore({
 }: WorldPulseCoreProps) {
   const rootClass = [
     "world-pulse-core",
+    "world-pulse-brain-core",
     THREAT_CLASS[threatLevel],
     isSpeaking ? "is-speaking" : "",
     isProcessing ? "is-processing" : "",
@@ -57,6 +58,24 @@ export default function WorldPulseCore({
       "--point-delay": `${index * 0.16}s`,
     } as CSSProperties,
   }));
+
+  const cortexBands = Array.from({ length: 6 }, (_, index) => ({
+    key: index,
+    style: {
+      "--cortex-offset": `${-6 + index * 2.6}%`,
+      animationDelay: `${index * 0.15}s`,
+    } as CSSProperties,
+  }));
+
+  const neuralLinks = [
+    { key: "frontal-left", style: { "--link-left": "18%", "--link-top": "30%", "--link-width": "22%", "--link-rotate": "16deg", animationDelay: "0.08s" } as CSSProperties },
+    { key: "temporal-left", style: { "--link-left": "22%", "--link-top": "49%", "--link-width": "18%", "--link-rotate": "-10deg", animationDelay: "0.24s" } as CSSProperties },
+    { key: "bridge-upper", style: { "--link-left": "36%", "--link-top": "26%", "--link-width": "28%", "--link-rotate": "6deg", animationDelay: "0.14s" } as CSSProperties },
+    { key: "bridge-center", style: { "--link-left": "34%", "--link-top": "43%", "--link-width": "32%", "--link-rotate": "-3deg", animationDelay: "0.18s" } as CSSProperties },
+    { key: "bridge-lower", style: { "--link-left": "37%", "--link-top": "57%", "--link-width": "24%", "--link-rotate": "11deg", animationDelay: "0.34s" } as CSSProperties },
+    { key: "frontal-right", style: { "--link-left": "60%", "--link-top": "31%", "--link-width": "19%", "--link-rotate": "-14deg", animationDelay: "0.26s" } as CSSProperties },
+    { key: "temporal-right", style: { "--link-left": "58%", "--link-top": "51%", "--link-width": "18%", "--link-rotate": "12deg", animationDelay: "0.42s" } as CSSProperties },
+  ];
 
   const trendLabel =
     riskTrend === "increasing" ? "Rising" : riskTrend === "decreasing" ? "Cooling" : "Stable";
@@ -82,23 +101,48 @@ export default function WorldPulseCore({
         <span className="world-pulse-connector connector-weather" />
       </div>
 
-      <div className="world-pulse-core-sphere">
-        <div className="world-pulse-core-glow" />
-        <div className="world-pulse-core-shield" />
-        <div className="world-pulse-core-meridian world-pulse-core-meridian-a" />
-        <div className="world-pulse-core-meridian world-pulse-core-meridian-b" />
-        <div className="world-pulse-core-latitude world-pulse-core-latitude-a" />
-        <div className="world-pulse-core-latitude world-pulse-core-latitude-b" />
-        <div className="world-pulse-network-cluster">
-          {networkPoints.map((point) => (
-            <span key={point.key} className={`world-pulse-network-point point-${point.key + 1}`} style={point.style} />
-          ))}
-        </div>
-        <div className="world-pulse-core-heartbeat" />
-        <div className="world-pulse-center-readout">
-          <span className="world-pulse-center-label">Risk Score</span>
-          <strong>{riskScore.toFixed(0)}</strong>
-          <span className="world-pulse-center-trend">{trendLabel}</span>
+      <div className="world-pulse-brain-stage">
+        <div className="world-pulse-brain-halo world-pulse-brain-halo-outer" />
+        <div className="world-pulse-brain-halo world-pulse-brain-halo-inner" />
+
+        <div className="world-pulse-brain-shell">
+          <div className="world-pulse-brain-hemisphere world-pulse-brain-hemisphere-left">
+            {cortexBands.map((band) => (
+              <span key={`left-${band.key}`} className="world-pulse-cortex-band" style={band.style} />
+            ))}
+          </div>
+
+          <div className="world-pulse-brain-hemisphere world-pulse-brain-hemisphere-right">
+            {cortexBands.map((band) => (
+              <span key={`right-${band.key}`} className="world-pulse-cortex-band" style={band.style} />
+            ))}
+          </div>
+
+          <div className="world-pulse-brain-midline" />
+          <div className="world-pulse-brain-stem" />
+
+          <div className="world-pulse-neural-links">
+            {neuralLinks.map((link) => (
+              <span key={link.key} className="world-pulse-neural-link" style={link.style} />
+            ))}
+          </div>
+
+          <div className="world-pulse-network-cluster world-pulse-network-cluster-brain">
+            {networkPoints.map((point) => (
+              <span key={point.key} className={`world-pulse-network-point point-${point.key + 1}`} style={point.style} />
+            ))}
+          </div>
+
+          <div className="world-pulse-brain-core-node">
+            <div className="world-pulse-brain-core-ring" />
+            <div className="world-pulse-brain-impulse" />
+          </div>
+
+          <div className="world-pulse-center-readout">
+            <span className="world-pulse-center-label">Risk Score</span>
+            <strong>{riskScore.toFixed(0)}</strong>
+            <span className="world-pulse-center-trend">{trendLabel}</span>
+          </div>
         </div>
       </div>
 
@@ -122,7 +166,7 @@ export default function WorldPulseCore({
       </div>
 
       <div className="world-pulse-status-readout">
-        <span>GLOBAL SIGNAL CORE</span>
+        <span>NEURAL HOLOGRAM</span>
         <strong>{threatLevel.toUpperCase()}</strong>
       </div>
     </div>
