@@ -1,19 +1,11 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useNavigate } from "react-router-dom";
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
+import ConsoleNavigation from "../components/ConsoleNavigation";
+import { lazy, Suspense } from "react";
 
-import CountryDrilldown from "../components/CountryDrilldown";
-import EventLog, { type OperatorEvent } from "../components/EventLog";
-import BrainModelViewer from "../components/BrainModelViewer";
-import DataBurstModal from "../components/DataBurstModal";
-import GlobalIntelligenceFeed from "../components/GlobalIntelligenceFeed";
-import CryptoMarketPulse from "../components/CryptoMarketPulse";
-import GlobalDisasterMonitor from "../components/GlobalDisasterMonitor";
-import EconomicIndicatorsFeed from "../components/EconomicIndicatorsFeed";
-import HealthAlertStream from "../components/HealthAlertStream";
-import GoogleTrendsRadar from "../components/GoogleTrendsRadar";
+import type { OperatorEvent } from "../components/EventLog";
 
 
 import API, {
@@ -31,6 +23,17 @@ import API, {
   type RiskMapCoverage,
   type RiskMapPoint,
 } from "../services/api";
+
+const CountryDrilldown = lazy(() => import("../components/CountryDrilldown"));
+const EventLog = lazy(() => import("../components/EventLog"));
+const BrainModelViewer = lazy(() => import("../components/BrainModelViewer"));
+const DataBurstModal = lazy(() => import("../components/DataBurstModal"));
+const GlobalIntelligenceFeed = lazy(() => import("../components/GlobalIntelligenceFeed"));
+const CryptoMarketPulse = lazy(() => import("../components/CryptoMarketPulse"));
+const GlobalDisasterMonitor = lazy(() => import("../components/GlobalDisasterMonitor"));
+const EconomicIndicatorsFeed = lazy(() => import("../components/EconomicIndicatorsFeed"));
+const HealthAlertStream = lazy(() => import("../components/HealthAlertStream"));
+const GoogleTrendsRadar = lazy(() => import("../components/GoogleTrendsRadar"));
 
 type Features = {
   news_sentiment: number;
@@ -171,8 +174,35 @@ function formatRelativeTime(value?: string | null): string {
   return `${Math.floor(deltaHr / 24)}d ago`;
 }
 
+function describeDashboardError(error: unknown): string {
+  const message = String((error as { message?: string } | null)?.message || "Failed to refresh dashboard feed");
+  const status = Number((error as { response?: { status?: number } } | null)?.response?.status || 0);
+
+  if (message.includes("timeout") || (error as { code?: string } | null)?.code === "ECONNABORTED") {
+    return "Dashboard request timed out. The backend is responding too slowly.";
+  }
+  if (status === 429) {
+    return "Dashboard refresh is being rate-limited. Retry in a moment.";
+  }
+  if (status >= 500) {
+    return "Dashboard service is temporarily unavailable.";
+  }
+  if (message === "Network Error") {
+    return "Dashboard cannot reach the backend service.";
+  }
+
+  return message;
+}
+
+function DeferredPanelPlaceholder({ label }: { label: string }) {
+  return (
+    <div className="prediction-empty">
+      <p>{label}</p>
+    </div>
+  );
+}
+
 export default function Dashboard() {
-  const navigate = useNavigate();
   const [history, setHistory] = useState<Snapshot[]>(() => readJson(HISTORY_KEY, [] as Snapshot[]));
   const [liveFeed, setLiveFeed] = useState<LiveCommandFeed>({
     incidents: [],
@@ -189,6 +219,13 @@ export default function Dashboard() {
   useEffect(() => {
     selectedCountryRef.current = selectedCountry;
   }, [selectedCountry]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setShowDeferredPanels(true);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, []);
   
   const [countryData, setCountryData] = useState<CountryDrilldownData | null>(null);
 
@@ -205,6 +242,7 @@ export default function Dashboard() {
   const [retries, setRetries] = useState(0);
   const [activePreset, setActivePreset] = useState<"analyst" | "ops" | "executive">("analyst");
   const [sentinelEnabled, setSentinelEnabled] = useState(true);
+  const [showDeferredPanels, setShowDeferredPanels] = useState(false);
 
   const cacheRef = useRef<{
     liveFeed: { data: LiveCommandFeed | null; timestamp: number; ttl: number };
@@ -237,16 +275,24 @@ export default function Dashboard() {
   const isRotatingRef = useRef<boolean>(false);
   const selectedCountryRef = useRef<string | null>(null);
 
+  const riskMapRows = Array.isArray(riskMap) ? riskMap : [];
+  const coverageState = riskCoverage ?? { total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 };
+  const liveFeedState = liveFeed ?? {
+    incidents: [],
+    ingestionHeartbeatSec: 0,
+    modelDrift: 0,
+    lastUpdated: new Date().toISOString(),
+  };
 
   const active = history[history.length - 1] ?? null;
   const riskDelta = active && lastKnownGood ? active.score - lastKnownGood.score : 0;
-  const verifiedRiskMap = useMemo(() => riskMap.filter((row): row is RiskMapPoint & { risk: number } => Boolean(row.validated_today) && typeof row.risk === "number"), [riskMap]);
-  const unverifiedRiskMap = useMemo(() => riskMap.filter((row) => !row.validated_today), [riskMap]);
+  const verifiedRiskMap = useMemo(() => riskMapRows.filter((row): row is RiskMapPoint & { risk: number } => Boolean(row.validated_today) && typeof row.risk === "number"), [riskMapRows]);
+  const unverifiedRiskMap = useMemo(() => riskMapRows.filter((row) => !row.validated_today), [riskMapRows]);
   const topTopic = active?.topics?.find((topic) => topic && topic !== "no data") ?? "No dominant topic";
-  const validationSummary = riskCoverage.latest_validation;
-  const liveFreshness = formatRelativeTime(liveFeed.lastUpdated);
+  const validationSummary = coverageState.latest_validation;
+  const liveFreshness = formatRelativeTime(liveFeedState.lastUpdated);
   const featureFreshness = formatRelativeTime(active?.timestamp);
-  const verifiedCoverageLabel = `${riskCoverage.verified} / ${riskCoverage.total || riskMap.length || 233}`;
+  const verifiedCoverageLabel = `${coverageState.verified} / ${coverageState.total || riskMapRows.length || 233}`;
   const globalRiskScore = active?.score ?? 50;
   const telemetryThreat = deriveThreatMeta(globalRiskScore);
   const telemetryTrend = deriveTrendMeta(riskDelta);
@@ -266,8 +312,8 @@ export default function Dashboard() {
     return merged.length ? merged.slice(0, 3) : ["Awaiting live signals"];
   })();
   const dockConnectionLabel = `${connectionState.charAt(0).toUpperCase()}${connectionState.slice(1)}`;
-  const liveSignalCount = riskCoverage.verified || verifiedRiskMap.length || liveFeed.incidents?.length || 0;
-  const telemetryStatusLine = `${dockConnectionLabel} • ${liveSignalCount} verified signals • Updated ${formatTelemetryTime(liveFeed.lastUpdated)}`;
+  const liveSignalCount = coverageState.verified || verifiedRiskMap.length || liveFeedState.incidents?.length || 0;
+  const telemetryStatusLine = `${dockConnectionLabel} • ${liveSignalCount} verified signals • Updated ${formatTelemetryTime(liveFeedState.lastUpdated)}`;
   const domainCards = [
     {
       title: "Multi-Source Signal Fusion",
@@ -301,7 +347,7 @@ export default function Dashboard() {
       stream: staleFor(now - panelUpdated.current.stream, 12000),
       ops: staleFor(now - panelUpdated.current.ops, 30000),
     };
-  }, [history.length, operatorEvents.length, riskMap.length, riskCoverage.verified]);
+  }, [history.length, operatorEvents.length, riskMapRows.length, coverageState.verified]);
 
   useEffect(() => {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-MAX_HISTORY)));
@@ -353,7 +399,11 @@ export default function Dashboard() {
           await new Promise(r => setTimeout(r, 50));
         }
         if (stop) throw new Error("Stopped");
-        return cacheRef.current[key].data as T;
+        const cachedAfterWait = cacheRef.current[key].data;
+        if (cachedAfterWait == null) {
+          throw new Error(`Failed to load ${String(key)}`);
+        }
+        return cachedAfterWait as T;
       }
 
       inFlightRef.current.add(key);
@@ -393,9 +443,9 @@ export default function Dashboard() {
           panelUpdated.current.stream = Date.now();
         }
 
-        setLiveFeed(live);
-        setRiskMap(mapRows);
-        setRiskCoverage(coverage);
+        setLiveFeed(live ?? { incidents: [], ingestionHeartbeatSec: 0, modelDrift: 0, lastUpdated: new Date().toISOString() });
+        setRiskMap(Array.isArray(mapRows) ? mapRows : []);
+        setRiskCoverage(coverage ?? { total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 });
         panelUpdated.current.map = Date.now();
         setErrorText("");
         retriesRef.current = 0;
@@ -405,7 +455,7 @@ export default function Dashboard() {
         retriesRef.current += 1;
         setRetries(retriesRef.current);
         setConnectionState(retriesRef.current > 3 ? "disconnected" : "reconnecting");
-        setErrorText(String(e?.message ?? "Failed to refresh dashboard feed"));
+        setErrorText(describeDashboardError(e));
         
         if (e?.response?.status === 429) {
           cacheRef.current.liveFeed.timestamp = 0;
@@ -446,12 +496,12 @@ export default function Dashboard() {
           const update = JSON.parse(event.data) as RiskMapPoint;
           if (!update?.country) return;
           setRiskMap((prev) => {
-            const next = [...prev];
+            const next = Array.isArray(prev) ? [...prev] : [];
             const idx = next.findIndex((row) => row.country === update.country);
             const merged = { ...(idx >= 0 ? next[idx] : {}), ...update } as RiskMapPoint;
             if (idx >= 0) next[idx] = merged;
             else next.push(merged);
-            setRiskCoverage((current) => ({ ...coverageFromRows(next), latest_validation: current.latest_validation }));
+            setRiskCoverage((current) => ({ ...coverageFromRows(next), latest_validation: current?.latest_validation }));
             panelUpdated.current.map = Date.now();
             return next;
           });
@@ -466,7 +516,7 @@ export default function Dashboard() {
       };
 
       socket.onerror = () => {
-        try { socket?.close(); } catch {}
+        // Let the browser/socket lifecycle handle failed connection attempts.
       };
     };
 
@@ -492,51 +542,79 @@ export default function Dashboard() {
     };
 
     const drawMap = async () => {
-      if (!mapRef.current || riskMap.length === 0) return;
+      if (!mapRef.current) return;
       try {
         const Plotly = await loadPlotly();
         if (stopped || !mapRef.current) return;
+        const traces = riskMapRows.length ? [
+          {
+            type: "choropleth",
+            locationmode: "ISO-3",
+            locations: unverifiedRiskMap.map((r) => r.country),
+            z: unverifiedRiskMap.map(() => 1),
+            zmin: 0,
+            zmax: 1,
+            colorscale: [
+              [0, "#334155"],
+              [1, "#64748b"],
+            ],
+            customdata: unverifiedRiskMap.map((r) => [r.data_quality ?? "unknown"]),
+            hovertemplate: "%{location}<br>Status: %{customdata[0]}<br>No verified same-day risk yet<extra></extra>",
+            showscale: false,
+          },
+          {
+            type: "choropleth",
+            locationmode: "ISO-3",
+            locations: verifiedRiskMap.map((r) => r.country),
+            z: verifiedRiskMap.map((r) => normalizeRisk(r.risk ?? 0)),
+            zmin: 0,
+            zmax: 100,
+            colorscale: [
+              [0, "#22c55e"],
+              [0.4, "#facc15"],
+              [0.7, "#fb923c"],
+              [1, "#ef4444"],
+            ],
+            customdata: verifiedRiskMap.map((r) => [r.data_quality ?? "verified"]),
+            hovertemplate: "%{location}<br>Risk: %{z:.1f}<br>Status: %{customdata[0]}<extra></extra>",
+            showscale: false,
+          },
+        ] as any : [
+          {
+            type: "scattergeo",
+            lon: [],
+            lat: [],
+            mode: "markers",
+            hoverinfo: "skip",
+            showlegend: false,
+          },
+        ] as any;
         await Plotly.react(
           mapRef.current,
-          [
-            {
-              type: "choropleth",
-              locationmode: "ISO-3",
-              locations: unverifiedRiskMap.map((r) => r.country),
-              z: unverifiedRiskMap.map(() => 1),
-              zmin: 0,
-              zmax: 1,
-              colorscale: [
-                [0, "#334155"],
-                [1, "#64748b"],
-              ],
-              customdata: unverifiedRiskMap.map((r) => [r.data_quality ?? "unknown"]),
-              hovertemplate: "%{location}<br>Status: %{customdata[0]}<br>No verified same-day risk yet<extra></extra>",
-              showscale: false,
-            },
-            {
-              type: "choropleth",
-              locationmode: "ISO-3",
-              locations: verifiedRiskMap.map((r) => r.country),
-              z: verifiedRiskMap.map((r) => normalizeRisk(r.risk ?? 0)),
-              zmin: 0,
-              zmax: 100,
-              colorscale: [
-                [0, "#22c55e"],
-                [0.4, "#facc15"],
-                [0.7, "#fb923c"],
-                [1, "#ef4444"],
-              ],
-              customdata: verifiedRiskMap.map((r) => [r.data_quality ?? "verified"]),
-              hovertemplate: "%{location}<br>Risk: %{z:.1f}<br>Status: %{customdata[0]}<extra></extra>",
-              showscale: false,
-            },
-          ] as any,
+          traces,
           {
             margin: { l: 0, r: 0, b: 0, t: 0 },
             paper_bgcolor: "rgba(0,0,0,0)",
             plot_bgcolor: "rgba(0,0,0,0)",
-            geo: { projection: { type: "natural earth" }, showframe: false, bgcolor: "rgba(0,0,0,0)" },
+            geo: {
+              projection: { type: "natural earth" },
+              showframe: false,
+              bgcolor: "rgba(0,0,0,0)",
+              showland: true,
+              landcolor: "rgba(51,65,85,0.45)",
+              showcountries: true,
+              countrycolor: "rgba(148,163,184,0.22)",
+              coastlinecolor: "rgba(148,163,184,0.15)",
+            },
+              annotations: riskMapRows.length ? [] : [{
+                text: "No live country risk data yet",
+                x: 0.5,
+                y: 0.02,
+                xref: "paper",
+                yref: "paper",
+                showarrow: false,
+                font: { color: "#94a3b8", size: 12 },
+              }],
           } as any,
           { displayModeBar: false, responsive: true },
         );
@@ -610,7 +688,7 @@ export default function Dashboard() {
     return () => {
       stopAutoRotation();
     };
-  }, [selectedCountry, riskMap.length]);
+  }, [selectedCountry, riskMapRows.length]);
 
 
   useEffect(() => {
@@ -634,7 +712,7 @@ export default function Dashboard() {
     return () => {
       closed = true;
     };
-  }, [selectedCountry, liveFeed.lastUpdated]);
+  }, [selectedCountry, liveFeedState.lastUpdated]);
 
   const triggerMapRefresh = async () => {
     setRefreshingMap(true);
@@ -671,52 +749,31 @@ export default function Dashboard() {
   return (
     <main className={`wp-shell dashboard-v2 ${fpsLow ? "motion-low" : "motion-rich"}`}>
       <div className="parallax-grid" />
-      <header className="wp-top wp-top-refined">
-        <div className="wp-brand-block">
-          <div className="wp-burger" aria-hidden="true"><span /><span /><span /></div>
-          <div>
-            <h1>THE WORLD'S <span>PULSE</span></h1>
-            <p>Real-Time Global Human Behavior Intelligence</p>
-          </div>
-        </div>
-        <div className="wp-header-meta">
+      <ConsoleNavigation
+        title={<>THE WORLD'S <span>PULSE</span></>}
+        subtitle="Real-Time Global Human Behavior Intelligence"
+        rightSlot={(
           <div className="wp-header-status">
             <span className="wp-status-pill">{connectionState}</span>
-            <span className="wp-status-text">Heartbeat {liveFeed.ingestionHeartbeatSec.toFixed(1)}s</span>
+            <span className="wp-status-text">Heartbeat {liveFeedState.ingestionHeartbeatSec.toFixed(1)}s</span>
             <span className="wp-status-text">Verified {verifiedCoverageLabel}</span>
           </div>
-          <div className="wp-actions-inline wp-actions-compact">
-            <button className="wp-nav-btn" onClick={() => navigate("/trend-prediction")}>Predictions</button>
-            <button className="wp-nav-btn" onClick={() => navigate("/historical-trends")}>Historical</button>
-            <button className="wp-nav-btn" onClick={() => navigate("/scenario")}>Scenario Studio</button>
-            <button className="wp-nav-btn" onClick={() => navigate("/about")}>About</button>
-            <button className="wp-nav-btn" onClick={() => navigate("/contact")}>Contact</button>
-            <button
-              className="wp-nav-btn wp-nav-btn-logout"
-              onClick={() => {
-                localStorage.removeItem("token");
-                navigate("/login");
-              }}
-            >
-              Logout
-            </button>
-          </div>
-        </div>
-      </header>
+        )}
+      />
 
       <section className="wp-intelligence-bar">
         <div className="wp-intelligence-primary">
           <span className="wp-intelligence-kicker">Live Intelligence</span>
           <span className="wp-intelligence-topic">Topic pressure {topTopic}</span>
           <span className="wp-intelligence-sep" />
-          <span>{liveFeed.incidents?.length ?? 0} active incidents</span>
+          <span>{liveFeedState.incidents?.length ?? 0} active incidents</span>
         </div>
         <div className="wp-intelligence-secondary">
-          <span>{new Date(liveFeed.lastUpdated).toISOString().replace("T", " ").slice(0, 19)} UTC</span>
-          <span>Heartbeat {liveFeed.ingestionHeartbeatSec.toFixed(1)}s</span>
-          <span>Drift {liveFeed.modelDrift.toFixed(2)}</span>
+          <span>{new Date(liveFeedState.lastUpdated).toISOString().replace("T", " ").slice(0, 19)} UTC</span>
+          <span>Heartbeat {liveFeedState.ingestionHeartbeatSec.toFixed(1)}s</span>
+          <span>Drift {liveFeedState.modelDrift.toFixed(2)}</span>
           <span>Feed {connectionState}</span>
-          <span>Updated {new Date(liveFeed.lastUpdated).toLocaleTimeString()}</span>
+          <span>Updated {new Date(liveFeedState.lastUpdated).toLocaleTimeString()}</span>
         </div>
       </section>
 
@@ -730,8 +787,8 @@ export default function Dashboard() {
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Verified Countries</div>
           <strong className="wp-highlight">{verifiedCoverageLabel}</strong>
-          <div className="wp-mini-meta"><span>Coverage</span><strong>{riskCoverage.coverage_pct.toFixed(1)}%</strong></div>
-          <div className="wp-mini-meta"><span>No-data / stale</span><strong>{riskCoverage.no_data + riskCoverage.stale}</strong></div>
+          <div className="wp-mini-meta"><span>Coverage</span><strong>{coverageState.coverage_pct.toFixed(1)}%</strong></div>
+          <div className="wp-mini-meta"><span>No-data / stale</span><strong>{coverageState.no_data + coverageState.stale}</strong></div>
         </article>
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Live Feed</div>
@@ -769,7 +826,7 @@ export default function Dashboard() {
           <div className="wp-ops-status-line">
             <span>Retries {retries}</span>
             <span>Validation {validationSummary?.status ?? "pending"}</span>
-            <span>No-data / stale {riskCoverage.no_data + riskCoverage.stale}</span>
+            <span>No-data / stale {coverageState.no_data + coverageState.stale}</span>
           </div>
           {errorText ? <div className="map-fallback-error">{errorText}</div> : null}
         </div>
@@ -807,7 +864,7 @@ export default function Dashboard() {
                 </div>
                 <div className="proposal-map-meta">
                   <p style={{ fontSize: 12, color: "#d1d5db" }}>
-                    {riskCoverage.verified} / {riskCoverage.total || riskMap.length} countries verified today. Gray countries have no same-day source data yet. Click a country for drilldown analysis.
+                    {coverageState.verified} / {coverageState.total || riskMapRows.length} countries verified today. Gray countries have no same-day source data yet. Click a country for drilldown analysis.
                   </p>
                   <p style={{ fontSize: 12, color: "#94a3b8" }}>
                     Latest validation: {validationSummary?.status ?? "not available"}{validationSummary?.sample_count ? `, ${validationSummary.sample_count} benchmark rows, Brier ${safeN(validationSummary.brier_score).toFixed(3)}` : ""}.
@@ -827,7 +884,13 @@ export default function Dashboard() {
                 </h3>
               </div>
               <div className="panel-content">
-                <GlobalIntelligenceFeed maxRows={3} refreshInterval={5000} />
+                {showDeferredPanels ? (
+                  <Suspense fallback={<DeferredPanelPlaceholder label="Loading global intelligence feed..." />}>
+                    <GlobalIntelligenceFeed maxRows={3} refreshInterval={5000} />
+                  </Suspense>
+                ) : (
+                  <DeferredPanelPlaceholder label="Preparing global intelligence feed..." />
+                )}
               </div>
             </article>
         </div>
@@ -845,7 +908,13 @@ export default function Dashboard() {
               </div>
               <div className="panel-content brain-model-panel-content">
                 <div className="brain-model-stage">
-                  <BrainModelViewer className="dashboard-brain-model" />
+                  {showDeferredPanels ? (
+                    <Suspense fallback={<DeferredPanelPlaceholder label="Loading neural brain model..." />}>
+                      <BrainModelViewer className="dashboard-brain-model" />
+                    </Suspense>
+                  ) : (
+                    <DeferredPanelPlaceholder label="Preparing neural brain model..." />
+                  )}
                 </div>
                 <div className="brain-telemetry-dock" role="status" aria-live="polite">
                   <div className="brain-telemetry-summary-row">
@@ -896,7 +965,13 @@ export default function Dashboard() {
             </h3>
           </div>
           <div className="panel-content panel-content-scrollless">
-            <CryptoMarketPulse maxItems={5} refreshInterval={15000} />
+            {showDeferredPanels ? (
+              <Suspense fallback={<DeferredPanelPlaceholder label="Loading crypto market pulse..." />}>
+                <CryptoMarketPulse maxItems={5} refreshInterval={15000} />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder label="Preparing crypto market pulse..." />
+            )}
           </div>
         </article>
 
@@ -912,7 +987,13 @@ export default function Dashboard() {
             </h3>
           </div>
           <div className="panel-content panel-content-scrollless">
-            <GlobalDisasterMonitor maxItems={6} refreshInterval={20000} />
+            {showDeferredPanels ? (
+              <Suspense fallback={<DeferredPanelPlaceholder label="Loading disaster monitor..." />}>
+                <GlobalDisasterMonitor maxItems={6} refreshInterval={20000} />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder label="Preparing disaster monitor..." />
+            )}
           </div>
         </article>
 
@@ -928,7 +1009,13 @@ export default function Dashboard() {
             </h3>
           </div>
           <div className="panel-content panel-content-scrollless">
-            <EconomicIndicatorsFeed refreshInterval={30000} />
+            {showDeferredPanels ? (
+              <Suspense fallback={<DeferredPanelPlaceholder label="Loading economic indicators..." />}>
+                <EconomicIndicatorsFeed refreshInterval={30000} />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder label="Preparing economic indicators..." />
+            )}
           </div>
         </article>
 
@@ -944,7 +1031,13 @@ export default function Dashboard() {
             </h3>
           </div>
           <div className="panel-content panel-content-scrollless">
-            <HealthAlertStream maxItems={6} refreshInterval={25000} />
+            {showDeferredPanels ? (
+              <Suspense fallback={<DeferredPanelPlaceholder label="Loading health alert stream..." />}>
+                <HealthAlertStream maxItems={6} refreshInterval={25000} />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder label="Preparing health alert stream..." />
+            )}
           </div>
         </article>
 
@@ -960,7 +1053,13 @@ export default function Dashboard() {
             </h3>
           </div>
           <div className="panel-content panel-content-scrollless">
-            <GoogleTrendsRadar maxItems={8} refreshInterval={30000} />
+            {showDeferredPanels ? (
+              <Suspense fallback={<DeferredPanelPlaceholder label="Loading trends radar..." />}>
+                <GoogleTrendsRadar maxItems={8} refreshInterval={30000} />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder label="Preparing trends radar..." />
+            )}
           </div>
         </article>
       </section>
@@ -978,54 +1077,64 @@ export default function Dashboard() {
           </div>
           <div className="panel-content panel-content-scrollless">
             {panelStale.ops ? <div className="panel-stale">stale</div> : null}
-            <EventLog events={operatorEvents} />
+            {showDeferredPanels ? (
+              <Suspense fallback={<DeferredPanelPlaceholder label="Loading operator log..." />}>
+                <EventLog events={operatorEvents} />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder label="Preparing operator log..." />
+            )}
           </div>
         </article>
       </section>
 
-      <CountryDrilldown
-        open={Boolean(selectedCountry)}
-        loading={countryLoading}
-        data={countryData}
-        events={operatorEvents}
-        onClose={() => setSelectedCountry(null)}
-        onAcknowledge={(comment) => {
-          void addEvent("acknowledge", comment);
-        }}
-        onSnooze={(comment) => {
-          void addEvent("snooze", comment);
-        }}
-        onAssign={(owner, comment) => {
-          void addEvent("assign", comment, owner);
-        }}
-      />
+      {showDeferredPanels ? (
+        <Suspense fallback={null}>
+          <CountryDrilldown
+            open={Boolean(selectedCountry)}
+            loading={countryLoading}
+            data={countryData}
+            events={operatorEvents}
+            onClose={() => setSelectedCountry(null)}
+            onAcknowledge={(comment) => {
+              void addEvent("acknowledge", comment);
+            }}
+            onSnooze={(comment) => {
+              void addEvent("snooze", comment);
+            }}
+            onAssign={(owner, comment) => {
+              void addEvent("assign", comment, owner);
+            }}
+          />
 
-      <DataBurstModal
-        isOpen={dataBurstOpen}
-        onClose={() => setDataBurstOpen(false)}
-        region={dataBurstCountry}
-        riskScore={dataBurstRisk}
-        threatLevel={dataBurstRisk > 75 ? "critical" : dataBurstRisk > 50 ? "elevated" : dataBurstRisk > 25 ? "guarded" : "stable"}
-        countryData={{
-          alerts: [
-            { id: "1", title: "Geopolitical tension rising", severity: "high", timestamp: new Date().toISOString(), source: "GDELT" },
-            { id: "2", title: "Market volatility detected", severity: "medium", timestamp: new Date().toISOString(), source: "Financial" },
-          ],
-          news: [
-            { id: "1", headline: "Regional stability concerns emerge", sentiment: -0.4, source: "Reuters", timestamp: new Date().toISOString() },
-            { id: "2", headline: "Economic indicators show mixed signals", sentiment: 0.1, source: "Bloomberg", timestamp: new Date().toISOString() },
-          ],
-          metrics: {
-            riskHistory: Array.from({ length: 24 }, (_, i) => ({
-              timestamp: new Date(Date.now() - i * 3600000).toISOString(),
-              value: Math.max(0, Math.min(100, dataBurstRisk + (Math.random() - 0.5) * 20)),
-            })).reverse(),
-            sentimentTrend: [],
-            volatilityIndex: Math.random() * 0.5 + 0.2,
-            eventCount: Math.floor(Math.random() * 10) + 1,
-          },
-        }}
-      />
+          <DataBurstModal
+            isOpen={dataBurstOpen}
+            onClose={() => setDataBurstOpen(false)}
+            region={dataBurstCountry}
+            riskScore={dataBurstRisk}
+            threatLevel={dataBurstRisk > 75 ? "critical" : dataBurstRisk > 50 ? "elevated" : dataBurstRisk > 25 ? "guarded" : "stable"}
+            countryData={{
+              alerts: [
+                { id: "1", title: "Geopolitical tension rising", severity: "high", timestamp: new Date().toISOString(), source: "GDELT" },
+                { id: "2", title: "Market volatility detected", severity: "medium", timestamp: new Date().toISOString(), source: "Financial" },
+              ],
+              news: [
+                { id: "1", headline: "Regional stability concerns emerge", sentiment: -0.4, source: "Reuters", timestamp: new Date().toISOString() },
+                { id: "2", headline: "Economic indicators show mixed signals", sentiment: 0.1, source: "Bloomberg", timestamp: new Date().toISOString() },
+              ],
+              metrics: {
+                riskHistory: Array.from({ length: 24 }, (_, i) => ({
+                  timestamp: new Date(Date.now() - i * 3600000).toISOString(),
+                  value: Math.max(0, Math.min(100, dataBurstRisk + (Math.random() - 0.5) * 20)),
+                })).reverse(),
+                sentimentTrend: [],
+                volatilityIndex: Math.random() * 0.5 + 0.2,
+                eventCount: Math.floor(Math.random() * 10) + 1,
+              },
+            }}
+          />
+        </Suspense>
+      ) : null}
 
       <button
         onClick={() => setSentinelEnabled(!sentinelEnabled)}

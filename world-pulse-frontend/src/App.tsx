@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Landing from "./pages/Landing";
 import About from "./pages/About";
@@ -6,11 +7,11 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
-import Dashboard from "./pages/Dashboard";
-import TrendPrediction from "./pages/TrendPrediction";
 import HistoricalTrends from "./pages/HistoricalTrends";
 import ScenarioStudio from "./pages/ScenarioStudio";
 
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const TrendPrediction = lazy(() => import("./pages/TrendPrediction"));
 
 
 function App() {
@@ -44,13 +45,25 @@ function App() {
         {/* Protected Dashboard */}
         <Route
           path="/dashboard"
-          element={token ? <Dashboard /> : <Navigate to="/login" />}
+          element={
+            token ? (
+              <Suspense fallback={<main className="wp-loading"><section className="wp-loading-card"><div className="wp-loading-spinner" /><p>Loading dashboard...</p></section></main>}>
+                <Dashboard />
+              </Suspense>
+            ) : <Navigate to="/login" />
+          }
         />
 
         {/* Protected Trend Prediction */}
         <Route
           path="/trend-prediction"
-          element={token ? <TrendPrediction /> : <Navigate to="/login" />}
+          element={
+            token ? (
+              <Suspense fallback={<main className="wp-loading"><section className="wp-loading-card"><div className="wp-loading-spinner" /><p>Loading trend prediction page...</p></section></main>}>
+                <TrendPrediction />
+              </Suspense>
+            ) : <Navigate to="/login" />
+          }
         />
 
         {/* Protected Historical Trends */}

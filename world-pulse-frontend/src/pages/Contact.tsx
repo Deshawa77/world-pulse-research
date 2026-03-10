@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Mail, MessageSquare, Send, Users } from "lucide-react";
+import ConsoleNavigation from "../components/ConsoleNavigation";
 import { ProposalPublicLayout } from "../components/ProposalShell";
 
 export default function Contact() {
@@ -25,13 +26,18 @@ export default function Contact() {
   };
 
   return (
-    <ProposalPublicLayout
-      eyebrow="Project communication"
-      title="Contact the team with feedback that improves the actual system."
-      subtitle="Use this page for supervisor comments, technical issues, usability feedback, collaboration requests, or questions about the proposal direction and implementation."
-      aside={<div className="proposal-stat-board"><div className="proposal-stat-board-head"><span className="proposal-eyebrow">Best uses</span><h2>What this page is for</h2></div><div className="proposal-brief-points"><div><Mail size={16} /><span>Project and supervisor communication</span></div><div><MessageSquare size={16} /><span>Usability, dashboard, and reporting feedback</span></div><div><Users size={16} /><span>Requests from researchers, NGOs, educators, and technical reviewers</span></div></div></div>}
-    >
-      <section className="proposal-section">
+    <>
+      <ConsoleNavigation
+        title={<>CONTACT <span>TEAM</span></>}
+        subtitle="Feedback, demo requests, and project communication from one shared console."
+      />
+      <ProposalPublicLayout
+        eyebrow="Project communication"
+        title="Contact the team with feedback that improves the actual system."
+        subtitle="Use this page for supervisor comments, technical issues, usability feedback, collaboration requests, or questions about the proposal direction and implementation."
+        aside={<div className="proposal-stat-board"><div className="proposal-stat-board-head"><span className="proposal-eyebrow">Best uses</span><h2>What this page is for</h2></div><div className="proposal-brief-points"><div><Mail size={16} /><span>Project and supervisor communication</span></div><div><MessageSquare size={16} /><span>Usability, dashboard, and reporting feedback</span></div><div><Users size={16} /><span>Requests from researchers, NGOs, educators, and technical reviewers</span></div></div></div>}
+      >
+        <section className="proposal-section">
         <div className="proposal-section-head">
           <div><span className="proposal-eyebrow">Feedback channel</span><h2>Keep comments tied to the proposal goals.</h2></div>
           <p>The most useful feedback connects directly to clarity, live data interpretation, predictive usefulness, security expectations, and how well the product serves its target users.</p>
@@ -66,7 +72,8 @@ export default function Contact() {
             </ul>
           </article>
         </div>
-      </section>
-    </ProposalPublicLayout>
+        </section>
+      </ProposalPublicLayout>
+    </>
   );
 }

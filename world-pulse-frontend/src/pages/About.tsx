@@ -1,4 +1,5 @@
 import { BookOpen, BriefcaseBusiness, Shield, Sparkles, Target } from "lucide-react";
+import ConsoleNavigation from "../components/ConsoleNavigation";
 import { ProposalPublicLayout, ProposalStatBoard } from "../components/ProposalShell";
 
 const teamMembers = [
@@ -27,13 +28,18 @@ const gaps = [
 
 export default function About() {
   return (
-    <ProposalPublicLayout
-      eyebrow="Module and rationale"
-      title="Why this project exists and what it promises to deliver."
-      subtitle="This proposal is framed as PUSL2021 coursework: The World's Pulse - Real-Time Global Human Behavior Intelligence. It combines data engineering, machine learning, visualization, and cybersecurity into one operational system."
-      aside={<ProposalStatBoard />}
-    >
-      <section className="proposal-section">
+    <>
+      <ConsoleNavigation
+        title={<>PROJECT <span>ABOUT</span></>}
+        subtitle="Project rationale, scope, and academic framing for The World's Pulse."
+      />
+      <ProposalPublicLayout
+        eyebrow="Module and rationale"
+        title="Why this project exists and what it promises to deliver."
+        subtitle="This proposal is framed as PUSL2021 coursework: The World's Pulse - Real-Time Global Human Behavior Intelligence. It combines data engineering, machine learning, visualization, and cybersecurity into one operational system."
+        aside={<ProposalStatBoard />}
+      >
+        <section className="proposal-section">
         <div className="proposal-section-head">
           <div>
             <span className="proposal-eyebrow">Coursework context</span>
@@ -45,9 +51,9 @@ export default function About() {
           <article className="proposal-card"><span className="proposal-card-kicker"><BookOpen size={14} /> Module</span><h3>PUSL2021 Computing Group Project</h3><p>Coursework title: The World's Pulse: Real-Time Global Human Behavior Intelligence.</p></article>
           <article className="proposal-card"><span className="proposal-card-kicker"><BriefcaseBusiness size={14} /> Intended outcomes</span><h3>Decision support for public-good use cases</h3><p>The system is aimed at researchers, analysts, policymakers, NGOs, students, and administrators who need timely, evidence-backed visibility into global sentiment and reaction patterns.</p></article>
         </div>
-      </section>
+        </section>
 
-      <section className="proposal-section">
+        <section className="proposal-section">
         <div className="proposal-section-head">
           <div><span className="proposal-eyebrow">Project objectives</span><h2>Five commitments that shape the platform.</h2></div>
           <p>These objectives anchor the product direction: integrated ingestion, live processing, visualization, predictive insights, and secure scale.</p>
@@ -57,9 +63,9 @@ export default function About() {
           <article className="proposal-card"><span className="proposal-card-kicker"><Sparkles size={14} /> Objective 02</span><h3>Run real-time processing</h3><p>Filter noise, analyze sentiment, detect trends, and update dashboards fast enough to matter operationally.</p></article>
           <article className="proposal-card"><span className="proposal-card-kicker"><Shield size={14} /> Objective 03</span><h3>Forecast and secure</h3><p>Use predictive models, secure data paths, and scalable storage without drifting outside public-data scope.</p></article>
         </div>
-      </section>
+        </section>
 
-      <section className="proposal-section">
+        <section className="proposal-section">
         <div className="proposal-section-head">
           <div><span className="proposal-eyebrow">Research gap</span><h2>The proposal is justified by what current systems fail to integrate.</h2></div>
           <p>The platform concept is strongest when it is explicit about its gap: current tools fragment behavior, context, and predictive understanding.</p>
@@ -69,9 +75,9 @@ export default function About() {
             <article key={title} className="proposal-card"><span className="proposal-card-kicker">Gap</span><h3>{title}</h3><p>{text}</p></article>
           ))}
         </div>
-      </section>
+        </section>
 
-      <section className="proposal-section">
+        <section className="proposal-section">
         <div className="proposal-section-head">
           <div><span className="proposal-eyebrow">Scope</span><h2>Clear boundaries keep the project academically coherent.</h2></div>
           <p>The proposal is broad, but it is not unlimited. Included and excluded scope need to stay visible throughout design and implementation.</p>
@@ -85,9 +91,9 @@ export default function About() {
             </article>
           ))}
         </div>
-      </section>
+        </section>
 
-      <section className="proposal-section">
+        <section className="proposal-section">
         <div className="proposal-section-head">
           <div><span className="proposal-eyebrow">Team</span><h2>Nine members, one interdisciplinary build.</h2></div>
           <p>The group structure reflects the proposal itself: software engineering, data engineering, machine learning, frontend delivery, security, and operations all have visible ownership.</p>
@@ -97,7 +103,8 @@ export default function About() {
             <article key={id} className="proposal-card proposal-team-card"><span className="proposal-card-kicker">Student {id}</span><h3>{name}</h3><p>{role}</p></article>
           ))}
         </div>
-      </section>
-    </ProposalPublicLayout>
+        </section>
+      </ProposalPublicLayout>
+    </>
   );
 }

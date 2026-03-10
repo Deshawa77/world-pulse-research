@@ -12,9 +12,11 @@ interface CacheEntry {
 }
 
 const responseCache = new Map<string, CacheEntry>();
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
 
 const API = axios.create({
   baseURL: API_URL,
+  timeout: 20000,
 });
 
 // Add response caching interceptor
@@ -53,11 +55,29 @@ API.interceptors.response.use(
     }
     return response;
   },
-  (error) => {
+  async (error) => {
     // Handle cached responses
     if (error.__cached) {
       return Promise.resolve(error.response);
     }
+
+     const config = error?.config as (typeof error.config & { __retryCount?: number }) | undefined;
+     const method = String(config?.method || "").toLowerCase();
+     const status = Number(error?.response?.status || 0);
+     const isRetryableNetworkError =
+       error?.code === "ECONNABORTED" ||
+       error?.message === "Network Error" ||
+       RETRYABLE_STATUS_CODES.has(status);
+
+     if (config && method === "get" && isRetryableNetworkError) {
+       const retryCount = config.__retryCount ?? 0;
+       if (retryCount < 2) {
+         config.__retryCount = retryCount + 1;
+         await new Promise((resolve) => setTimeout(resolve, 700 * (retryCount + 1)));
+         return API.request(config);
+       }
+     }
+
     return Promise.reject(error);
   }
 );
@@ -229,8 +249,12 @@ export type IntelligenceFeedItem = {
 };
 
 export async function getGlobalIntelligenceFeed(): Promise<IntelligenceFeedItem[]> {
-  const res = await API.get("/dashboard/global-intelligence-feed", { headers: API_HEADERS });
-  return Array.isArray(res.data) ? (res.data as IntelligenceFeedItem[]) : [];
+  try {
+    const res = await API.get("/dashboard/global-intelligence-feed", { headers: API_HEADERS });
+    return Array.isArray(res.data) ? (res.data as IntelligenceFeedItem[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function getSentinelData(): Promise<SentinelData> {
@@ -375,40 +399,129 @@ export type TrendsRadarData = {
 };
 
 export async function getCryptoPulse(limit: number = 10): Promise<CryptoPulseData> {
-  const res = await API.get("/dashboard/crypto-pulse", { 
-    headers: API_HEADERS, 
-    params: { limit } 
-  });
-  return res.data as CryptoPulseData;
+  try {
+    const res = await API.get("/dashboard/crypto-pulse", { 
+      headers: API_HEADERS, 
+      params: { limit } 
+    });
+    const data = (res.data ?? {}) as Partial<CryptoPulseData>;
+    return {
+      items: Array.isArray(data.items) ? data.items : [],
+      last_updated: typeof data.last_updated === "string" ? data.last_updated : new Date().toISOString(),
+      total_count: Number.isFinite(Number(data.total_count)) ? Number(data.total_count) : Array.isArray(data.items) ? data.items.length : 0,
+    };
+  } catch {
+    return { items: [], last_updated: new Date().toISOString(), total_count: 0 };
+  }
 }
 
 export async function getDisasterMonitor(limit: number = 20): Promise<DisasterMonitorData> {
-  const res = await API.get("/dashboard/disaster-monitor", { 
-    headers: API_HEADERS, 
-    params: { limit } 
-  });
-  return res.data as DisasterMonitorData;
+  try {
+    const res = await API.get("/dashboard/disaster-monitor", { 
+      headers: API_HEADERS, 
+      params: { limit } 
+    });
+    const data = (res.data ?? {}) as Partial<DisasterMonitorData>;
+    return {
+      items: Array.isArray(data.items) ? data.items : [],
+      last_updated: typeof data.last_updated === "string" ? data.last_updated : new Date().toISOString(),
+      total_count: Number.isFinite(Number(data.total_count)) ? Number(data.total_count) : Array.isArray(data.items) ? data.items.length : 0,
+    };
+  } catch {
+    return { items: [], last_updated: new Date().toISOString(), total_count: 0 };
+  }
 }
 
 export async function getEconomicIndicators(): Promise<EconomicIndicatorsData> {
-  const res = await API.get("/dashboard/economic-indicators", { headers: API_HEADERS });
-  return res.data as EconomicIndicatorsData;
+  try {
+    const res = await API.get("/dashboard/economic-indicators", { headers: API_HEADERS });
+    const data = (res.data ?? {}) as Partial<EconomicIndicatorsData>;
+    return {
+      currency_rates: Array.isArray(data.currency_rates) ? data.currency_rates : [],
+      economic_releases: Array.isArray(data.economic_releases) ? data.economic_releases : [],
+      key_indicators: data.key_indicators ?? {
+        interest_rate: { value: 0, change: 0, source: "Unavailable" },
+        inflation_rate: { value: 0, change: 0, source: "Unavailable" },
+        unemployment: { value: 0, change: 0, source: "Unavailable" },
+      },
+      last_updated: typeof data.last_updated === "string" ? data.last_updated : new Date().toISOString(),
+    };
+  } catch {
+    return {
+      currency_rates: [],
+      economic_releases: [],
+      key_indicators: {
+        interest_rate: { value: 0, change: 0, source: "Unavailable" },
+        inflation_rate: { value: 0, change: 0, source: "Unavailable" },
+        unemployment: { value: 0, change: 0, source: "Unavailable" },
+      },
+      last_updated: new Date().toISOString(),
+    };
+  }
 }
 
 export async function getHealthAlerts(limit: number = 10): Promise<HealthAlertsData> {
-  const res = await API.get("/dashboard/health-alerts", { 
-    headers: API_HEADERS, 
-    params: { limit } 
-  });
-  return res.data as HealthAlertsData;
+  try {
+    const res = await API.get("/dashboard/health-alerts", { 
+      headers: API_HEADERS, 
+      params: { limit } 
+    });
+    const data = (res.data ?? {}) as Partial<HealthAlertsData>;
+    return {
+      outbreaks: Array.isArray(data.outbreaks) ? data.outbreaks : [],
+      vaccination: data.vaccination ?? {
+        global_coverage: 0,
+        target_coverage: 0,
+        doses_administered: 0,
+        campaigns_active: 0,
+      },
+      last_updated: typeof data.last_updated === "string" ? data.last_updated : new Date().toISOString(),
+      total_active: Number.isFinite(Number(data.total_active)) ? Number(data.total_active) : Array.isArray(data.outbreaks) ? data.outbreaks.length : 0,
+    };
+  } catch {
+    return {
+      outbreaks: [],
+      vaccination: {
+        global_coverage: 0,
+        target_coverage: 0,
+        doses_administered: 0,
+        campaigns_active: 0,
+      },
+      last_updated: new Date().toISOString(),
+      total_active: 0,
+    };
+  }
 }
 
 export async function getTrendsRadar(limit: number = 20): Promise<TrendsRadarData> {
-  const res = await API.get("/dashboard/trends-radar", { 
-    headers: API_HEADERS, 
-    params: { limit } 
-  });
-  return res.data as TrendsRadarData;
+  try {
+    const res = await API.get("/dashboard/trends-radar", { 
+      headers: API_HEADERS, 
+      params: { limit } 
+    });
+    const data = (res.data ?? {}) as Partial<TrendsRadarData>;
+    return {
+      trends: Array.isArray(data.trends) ? data.trends : [],
+      summary: data.summary ?? {
+        total_trending: 0,
+        rising_topics: 0,
+        breakout_topics: 0,
+        top_category: "None",
+      },
+      last_updated: typeof data.last_updated === "string" ? data.last_updated : new Date().toISOString(),
+    };
+  } catch {
+    return {
+      trends: [],
+      summary: {
+        total_trending: 0,
+        rising_topics: 0,
+        breakout_topics: 0,
+        top_category: "None",
+      },
+      last_updated: new Date().toISOString(),
+    };
+  }
 }
 
 // =====================================================

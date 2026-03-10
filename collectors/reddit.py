@@ -2,6 +2,7 @@ import os
 import json
 from datetime import datetime, timezone
 import praw
+from praw.exceptions import MissingRequiredAttributeException
 from bson import ObjectId
 from dotenv import load_dotenv
 from database.mongo import insert
@@ -10,16 +11,35 @@ from backend.kafka_client import send_to_kafka  # Make sure this exists
 # Load environment variables
 load_dotenv()
 
-reddit = praw.Reddit(
-    client_id=os.getenv("REDDIT_CLIENT_ID"),
-    client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
-    user_agent="world_pulse_app"
-)
+def _create_reddit_client():
+    client_id = os.getenv("REDDIT_CLIENT_ID")
+    client_secret = os.getenv("REDDIT_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        return None
+
+    try:
+        return praw.Reddit(
+            client_id=client_id,
+            client_secret=client_secret,
+            user_agent=os.getenv("REDDIT_USER_AGENT", "world_pulse_app")
+        )
+    except MissingRequiredAttributeException:
+        return None
+
+reddit = _create_reddit_client()
+
+def reddit_configured() -> bool:
+    return reddit is not None
 
 def fetch_reddit_posts(query: str, limit: int = 5):
     """
     Fetch recent Reddit posts and return standardized records.
     """
+    if reddit is None:
+        print("Reddit collector skipped: missing REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET.")
+        return []
+
     collected_at = datetime.now(timezone.utc).isoformat()
     records = []
 

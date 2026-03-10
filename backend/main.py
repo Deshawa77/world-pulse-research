@@ -872,6 +872,25 @@ def dashboard_risk_map(
     ]
     docs = list(db.country_features.aggregate(pipeline))
 
+    if not docs:
+        placeholder_codes = sorted(set(ISO2_TO_ISO3.values()))
+        docs = [
+            {
+                "country": code,
+                "risk": 0.0,
+                "timestamp": datetime.utcnow().isoformat(),
+                "feature_timestamp": None,
+                "topics": [],
+                "source_count": 0,
+                "social_unrest_score": 0.0,
+                "google_trends_pressure": 0.0,
+                "weather_stress": 0.0,
+                "external_signal_freshness": 0.0,
+                "war_state_rules": [],
+            }
+            for code in placeholder_codes
+        ]
+
     response_docs = []
     for doc in docs:
         quality = assess_country_risk_quality(doc.get("topics"), doc.get("feature_timestamp"))
@@ -1339,6 +1358,42 @@ def dashboard_scenario_run(request: Request, payload: ScenarioRunRequest, role: 
 # REAL-TIME FEATURES ENDPOINTS
 # =====================================================
 
+def _pick_nested(doc: dict, *paths: str, default=None):
+    for path in paths:
+        current = doc
+        found = True
+        for part in path.split("."):
+            if isinstance(current, dict) and part in current:
+                current = current.get(part)
+            else:
+                found = False
+                break
+        if found and current not in (None, ""):
+            return current
+    return default
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        if value in (None, ""):
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_timestamp(doc: dict, *paths: str) -> str:
+    return str(_pick_nested(doc, *paths, default=datetime.utcnow().isoformat()))
+
 @app.get("/dashboard/crypto-pulse")
 @limiter.limit("60/minute")
 def dashboard_crypto_pulse(request: Request, role: str = Depends(check_role), limit: int = Query(10, ge=1, le=50)):
@@ -1353,12 +1408,12 @@ def dashboard_crypto_pulse(request: Request, role: str = Depends(check_role), li
     crypto_items = []
     
     for doc in crypto_docs:
-        coin_id = doc.get("data_coin_id", "unknown")
+        coin_id = str(_pick_nested(doc, "data_coin_id", "data.coin_id", "data.coin", "coin_id", default="unknown"))
         if coin_id in seen_coins:
             continue
         seen_coins.add(coin_id)
         
-        price = float(doc.get("data_price", 0))
+        price = _safe_float(_pick_nested(doc, "data_price", "data.price", "price", default=0.0))
         # Calculate 24h change (mock for now, would need historical data)
         change_24h = round((price * 0.02) * (1 if hash(coin_id) % 2 == 0 else -1), 2)
         change_percent = round((change_24h / price) * 100, 2) if price > 0 else 0
@@ -1373,7 +1428,7 @@ def dashboard_crypto_pulse(request: Request, role: str = Depends(check_role), li
             "change_percent": change_percent,
             "volume_24h": round(price * 1000000 * (0.5 + (hash(coin_id) % 100) / 100), 0),
             "market_cap": round(price * 10000000 * (1 + (hash(coin_id) % 50) / 100), 0),
-            "timestamp": str(doc.get("data_timestamp", datetime.utcnow().isoformat())),
+            "timestamp": _safe_timestamp(doc, "data_timestamp", "data.timestamp", "timestamp", "collected_at"),
             "sparkline": [round(price * (1 + (i - 5) * 0.01), 2) for i in range(11)]  # Mock sparkline
         })
         
@@ -1406,23 +1461,23 @@ def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role)
     
     # Process earthquakes
     for doc in earthquake_docs:
-        magnitude = float(doc.get("magnitude", 0))
+        magnitude = _safe_float(_pick_nested(doc, "magnitude", "data.magnitude", "data.mag", default=0.0))
         severity = "critical" if magnitude >= 7.0 else "elevated" if magnitude >= 5.0 else "guarded"
         
         disaster_items.append({
             "id": str(doc.get("_id", "")),
             "type": "earthquake",
             "title": f"Magnitude {magnitude} Earthquake",
-            "location": doc.get("place", "Unknown Location"),
+            "location": _pick_nested(doc, "place", "data.place", default="Unknown Location"),
             "coordinates": {
-                "lat": float(doc.get("latitude", 0)),
-                "lon": float(doc.get("longitude", 0))
+                "lat": _safe_float(_pick_nested(doc, "latitude", "data.latitude", default=0.0)),
+                "lon": _safe_float(_pick_nested(doc, "longitude", "data.longitude", default=0.0)),
             },
             "magnitude": magnitude,
             "severity": severity,
-            "depth_km": float(doc.get("depth", 0)),
-            "tsunami_risk": magnitude >= 7.0 and doc.get("tsunami", False),
-            "timestamp": str(doc.get("timestamp", datetime.utcnow().isoformat())),
+            "depth_km": _safe_float(_pick_nested(doc, "depth", "data.depth", default=0.0)),
+            "tsunami_risk": magnitude >= 7.0 and bool(_pick_nested(doc, "tsunami", "data.tsunami", default=False)),
+            "timestamp": _safe_timestamp(doc, "timestamp", "data.time", "collected_at"),
             "source": "USGS"
         })
     
@@ -1431,13 +1486,13 @@ def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role)
         disaster_items.append({
             "id": str(doc.get("_id", "")),
             "type": "weather",
-            "title": doc.get("event", "Weather Alert"),
-            "location": doc.get("location", "Unknown Location"),
-            "severity": doc.get("severity", "guarded").lower(),
-            "description": doc.get("description", ""),
-            "temperature": float(doc.get("temperature", 0)),
-            "wind_speed": float(doc.get("wind_speed", 0)),
-            "timestamp": str(doc.get("timestamp", datetime.utcnow().isoformat())),
+            "title": str(_pick_nested(doc, "event", "data_weather", "data.weather", default="Weather Alert")),
+            "location": str(_pick_nested(doc, "location", "data_city", "data.city", default="Unknown Location")),
+            "severity": str(_pick_nested(doc, "severity", "data_severity", default="guarded")).lower(),
+            "description": str(_pick_nested(doc, "description", "data_weather", default="")),
+            "temperature": _safe_float(_pick_nested(doc, "temperature", "data_temperature", default=0.0)),
+            "wind_speed": _safe_float(_pick_nested(doc, "wind_speed", "data_wind_speed", default=0.0)),
+            "timestamp": _safe_timestamp(doc, "timestamp", "data_timestamp", "collected_at"),
             "source": "Weather API"
         })
     
@@ -1484,10 +1539,10 @@ def dashboard_economic_indicators(request: Request, role: str = Depends(check_ro
     for doc in fred_docs:
         economic_releases.append({
             "id": str(doc.get("_id", "")),
-            "indicator": doc.get("series_id", "Unknown"),
-            "value": float(doc.get("value", 0)),
-            "date": str(doc.get("date", datetime.utcnow().isoformat())),
-            "timestamp": str(doc.get("timestamp", datetime.utcnow().isoformat()))
+            "indicator": str(_pick_nested(doc, "series_id", "data.indicator", "data.series_id", default="Unknown")),
+            "value": _safe_float(_pick_nested(doc, "value", "data.value", default=0.0)),
+            "date": str(_pick_nested(doc, "date", "data.date", default=datetime.utcnow().isoformat())),
+            "timestamp": _safe_timestamp(doc, "timestamp", "data.timestamp", "collected_at")
         })
     
     # Key indicators summary
@@ -1545,11 +1600,11 @@ def dashboard_health_alerts(request: Request, role: str = Depends(check_role), l
             "disease": template["disease"],
             "type": template["type"],
             "severity": template["severity"],
-            "location": doc.get("country", "Global"),
-            "cases": int(doc.get("cases", 1000 + (idx * 500))),
-            "deaths": int(doc.get("deaths", 50 + (idx * 10))),
+            "location": str(_pick_nested(doc, "country", "data.country", "data.SpatialDim", default="Global")),
+            "cases": _safe_int(_pick_nested(doc, "cases", "data.cases", "data.value", default=1000 + (idx * 500)), default=1000 + (idx * 500)),
+            "deaths": _safe_int(_pick_nested(doc, "deaths", "data.deaths", default=50 + (idx * 10)), default=50 + (idx * 10)),
             "status": "active" if idx < 3 else "monitoring",
-            "timestamp": str(doc.get("timestamp", datetime.utcnow().isoformat())),
+            "timestamp": _safe_timestamp(doc, "timestamp", "data.timestamp", "collected_at"),
             "source": "WHO",
             "description": f"Ongoing {template['disease']} situation requires continued monitoring and response."
         })
@@ -1588,7 +1643,7 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
     ]
     
     for idx, doc in enumerate(trends_docs):
-        topic = doc.get("topic", f"Trending Topic {idx + 1}")
+        topic = str(_pick_nested(doc, "topic", "data.topic", "data.query", default=f"Trending Topic {idx + 1}"))
         category = topic_categories[idx % len(topic_categories)]
         
         # Calculate trend velocity (mock)
@@ -1599,12 +1654,12 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
             "id": str(doc.get("_id", f"trend-{idx}")),
             "topic": topic,
             "category": category,
-            "search_volume": int(doc.get("value", base_interest * 1000)),
+            "search_volume": _safe_int(_pick_nested(doc, "value", "data.value", "search_volume", default=base_interest * 1000), default=base_interest * 1000),
             "interest_score": min(100, base_interest + int(velocity * 5)),
             "velocity": velocity,
             "trend_direction": "rising" if velocity > 5 else "stable" if velocity > 2 else "falling",
             "breakout": velocity > 8,
-            "timestamp": str(doc.get("timestamp", datetime.utcnow().isoformat())),
+            "timestamp": _safe_timestamp(doc, "timestamp", "data_timestamp", "collected_at"),
             "related_queries": [
                 f"{topic} news",
                 f"{topic} latest",
@@ -1625,7 +1680,13 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
             "total_trending": len(trend_items),
             "rising_topics": rising_count,
             "breakout_topics": breakout_count,
-            "top_category": max(set([t["category"] for t in trend_items]), key=lambda x: sum([t["interest_score"] for t in trend_items if t["category"] == x]))
+            "top_category": (
+                max(
+                    set([t["category"] for t in trend_items]),
+                    key=lambda x: sum([t["interest_score"] for t in trend_items if t["category"] == x])
+                )
+                if trend_items else "None"
+            )
         },
         "last_updated": datetime.utcnow().isoformat()
     }

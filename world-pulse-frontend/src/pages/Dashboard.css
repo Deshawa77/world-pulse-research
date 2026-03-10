@@ -1063,6 +1063,127 @@
   }
 }
 
+.dashboard-v2 {
+  position: relative;
+}
+
+.wp-burger-button {
+  align-items: center;
+  width: 48px;
+  padding: 10px 2px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.dashboard-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: min(320px, calc(100vw - 28px));
+  height: 100vh;
+  padding: 22px 18px;
+  background:
+    radial-gradient(circle at top left, rgba(34, 211, 238, 0.16), transparent 32%),
+    linear-gradient(180deg, rgba(4, 10, 21, 0.98), rgba(6, 16, 31, 0.99));
+  border-right: 1px solid rgba(56, 189, 248, 0.2);
+  box-shadow: 18px 0 44px rgba(2, 6, 23, 0.42);
+  transform: translateX(-104%);
+  transition: transform 180ms ease;
+}
+
+.dashboard-drawer.is-open {
+  transform: translateX(0);
+}
+
+.dashboard-drawer__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  border: 0;
+  background: rgba(2, 6, 23, 0.58);
+  backdrop-filter: blur(4px);
+  cursor: pointer;
+}
+
+.dashboard-drawer__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboard-drawer__eyebrow {
+  display: block;
+  margin-bottom: 4px;
+  color: rgba(103, 232, 249, 0.8);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.dashboard-drawer__header strong {
+  display: block;
+  color: #e0f2fe;
+  font-size: 22px;
+  line-height: 1.05;
+}
+
+.dashboard-drawer__close {
+  min-width: 64px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: 999px;
+  background: rgba(12, 31, 56, 0.78);
+  color: #dbeafe;
+  cursor: pointer;
+}
+
+.dashboard-drawer__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dashboard-drawer__link {
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  border-radius: 14px;
+  background: rgba(12, 31, 56, 0.72);
+  color: #e0f2fe;
+  text-align: left;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.dashboard-drawer__link:hover {
+  transform: translateX(4px);
+  border-color: rgba(103, 232, 249, 0.42);
+  background: rgba(14, 45, 78, 0.84);
+}
+
+.dashboard-drawer__link.is-active {
+  border-color: rgba(125, 211, 252, 0.55);
+  background: linear-gradient(90deg, rgba(8, 47, 73, 0.9), rgba(14, 65, 102, 0.88));
+  color: #f0f9ff;
+}
+
+.dashboard-drawer__link.is-logout {
+  color: #fecdd3;
+  border-color: rgba(251, 113, 133, 0.2);
+  background: rgba(68, 16, 32, 0.4);
+}
+
 
 
 

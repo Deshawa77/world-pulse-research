@@ -1,11 +1,10 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import ConsoleNavigation from "../components/ConsoleNavigation";
 import ScenarioEditor from "../components/ScenarioEditor";
 import ScenarioResults from "../components/ScenarioResults";
 import { runScenarioSimulation, type ScenarioResult, type ScenarioStep } from "../services/api";
 
 export default function ScenarioStudio() {
-  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ScenarioResult | null>(null);
 
@@ -18,29 +17,10 @@ export default function ScenarioStudio() {
 
   return (
     <main className="wp-shell proposal-runtime-shell">
-      <header className="wp-top proposal-runtime-top">
-        <div className="wp-burger" aria-hidden="true"><span /><span /><span /></div>
-        <div>
-          <h1>SCENARIO <span>STUDIO</span></h1>
-          <p>What-if modeling for cross-domain human behavior and risk response.</p>
-        </div>
-        <div className="wp-actions-inline">
-          <button onClick={() => navigate("/dashboard")}>Dashboard</button>
-          <button onClick={() => navigate("/trend-prediction")}>Predictions</button>
-          <button onClick={() => navigate("/historical-trends")}>Historical</button>
-          <button onClick={() => navigate("/about")}>Proposal</button>
-          <button onClick={() => navigate("/contact")}>Contact</button>
-          <button
-            onClick={() => {
-              localStorage.removeItem("token");
-              navigate("/login");
-            }}
-            style={{ color: "#fecaca" }}
-          >
-            Logout
-          </button>
-        </div>
-      </header>
+      <ConsoleNavigation
+        title={<>SCENARIO <span>STUDIO</span></>}
+        subtitle="What-if modeling for cross-domain human behavior and risk response."
+      />
 
       <section className="proposal-runtime-intro">
         <article className="proposal-runtime-panel">

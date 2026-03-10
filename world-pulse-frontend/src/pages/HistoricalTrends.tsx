@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import ConsoleNavigation from "../components/ConsoleNavigation";
 import predictionService, { type PredictionLog, type HistoricalDataPoint } from "../services/predictionService";
 
 type DateRange = "24h" | "7d" | "30d" | "90d" | "custom";
@@ -406,35 +407,10 @@ export default function HistoricalTrends() {
 
   return (
     <main className="wp-shell">
-      <header className="wp-top">
-        <div className="wp-burger" onClick={() => navigate("/dashboard")}>
-          <span />
-          <span />
-          <span />
-        </div>
-        <div>
-          <h1>
-            HISTORICAL <span>TRENDS</span>
-          </h1>
-          <p>Deep Dive into Past Events & Sentiment Patterns</p>
-        </div>
-        <div className="wp-actions-inline">
-          <button onClick={() => navigate("/dashboard")}>Dashboard</button>
-          <button onClick={() => navigate("/trend-prediction")}>Predictions</button>
-          <button onClick={() => navigate("/about")}>About</button>
-          <button onClick={() => navigate("/contact")}>Contact</button>
-          <button 
-            onClick={() => {
-              localStorage.removeItem("token");
-              navigate("/login");
-            }}
-            style={{ color: "#ff6b6b" }}
-          >
-            Logout
-          </button>
-        </div>
-
-      </header>
+      <ConsoleNavigation
+        title={<>HISTORICAL <span>TRENDS</span></>}
+        subtitle="Deep dive into past events, signal shifts, and sentiment patterns."
+      />
 
       {/* Date Range & Stats */}
       <section className="wp-strip">

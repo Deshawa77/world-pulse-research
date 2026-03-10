@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import predictionService, {
   type PredictionLog,
@@ -15,13 +15,15 @@ import API, {
   type GovernanceData,
   type RiskMapPoint,
 } from "../services/api";
-import ModelGovernance from "../components/ModelGovernance";
-import WorldGlobe3D from "../components/WorldGlobe3D";
-import RiskCorrelationMatrix from "../components/RiskCorrelationMatrix";
-import HistoricalPlayback from "../components/HistoricalPlayback";
-import CountryComparison from "../components/CountryComparison";
-import AdvancedAnalyticsPanel from "../components/AdvancedAnalyticsPanel";
+import ConsoleNavigation from "../components/ConsoleNavigation";
 import "../components/futuristic-dashboard.css";
+
+const ModelGovernance = lazy(() => import("../components/ModelGovernance"));
+const WorldGlobe3D = lazy(() => import("../components/WorldGlobe3D"));
+const RiskCorrelationMatrix = lazy(() => import("../components/RiskCorrelationMatrix"));
+const HistoricalPlayback = lazy(() => import("../components/HistoricalPlayback"));
+const CountryComparison = lazy(() => import("../components/CountryComparison"));
+const AdvancedAnalyticsPanel = lazy(() => import("../components/AdvancedAnalyticsPanel"));
 
 type MLModel = {
   name: string;
@@ -284,6 +286,14 @@ function PanelHeader({
   );
 }
 
+function DeferredPanelPlaceholder({ label }: { label: string }) {
+  return (
+    <div className="prediction-empty">
+      <p>{label}</p>
+    </div>
+  );
+}
+
 export default function TrendPrediction() {
   const navigate = useNavigate();
   const token = localStorage.getItem("token");
@@ -310,6 +320,7 @@ export default function TrendPrediction() {
   const [lastUpdatedAt, setLastUpdatedAt] = useState("");
   const [playbackFrame, setPlaybackFrame] = useState<SnapshotLike | null>(null);
   const [playbackActive, setPlaybackActive] = useState(false);
+  const [showHeavyPanels, setShowHeavyPanels] = useState(false);
 
   const mlChartRef = useRef<HTMLDivElement | null>(null);
   const sentimentChartRef = useRef<HTMLDivElement | null>(null);
@@ -318,6 +329,12 @@ export default function TrendPrediction() {
   const plotlyLoadingRef = useRef<Promise<any> | null>(null);
   const loadRequestIdRef = useRef(0);
 
+  function finishPrimaryLoad(requestId: number) {
+    if (requestId !== loadRequestIdRef.current) return;
+    setLastUpdatedAt(new Date().toISOString());
+    setLoading(false);
+  }
+
   useEffect(() => {
     if (!token) {
       navigate("/login");
@@ -325,6 +342,14 @@ export default function TrendPrediction() {
     }
     loadData();
   }, [token, navigate, selectedTimeframe]);
+
+  useEffect(() => {
+    setShowHeavyPanels(false);
+    const timer = window.setTimeout(() => {
+      setShowHeavyPanels(true);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   async function loadPlotly() {
     if (plotlyRef.current) return plotlyRef.current;
@@ -350,16 +375,36 @@ export default function TrendPrediction() {
     setLatestFeaturesLoaded(false);
 
     try {
-      await loadPlotly();
+      loadPlotly().catch((e) => {
+        console.error("Failed to load Plotly:", e);
+        if (requestId === loadRequestIdRef.current) {
+          setError((current) => current || "Failed to initialize chart engine");
+        }
+      });
+
       const logLimits: Record<Timeframe, number> = {
         "1h": 24,
         "6h": 120,
         "24h": 240,
         "7d": 1000,
       };
+      const { start, end } = computeRangeForTimeframe(selectedTimeframe);
+
+      const logsPromise = predictionService.getPredictionLogs(logLimits[selectedTimeframe]);
+      const featuresPromise = API.get("/features/global/latest", {
+        headers: API_HEADERS,
+        params: { mode: "online" },
+      });
+      const forecastPromise = predictionService.getSentimentForecast();
+      const reactionsPromise = predictionService.getMarketReactions(30);
+      const eventsPromise = predictionService.getEventPredictions();
+      const governancePromise = getGovernanceData();
+      const mapPromise = getRiskMap();
+      const historyPromise = predictionService.getHistoricalData(start, end, selectedTimeframe === "7d" ? 1000 : 400);
+
       let logs: PredictionLog[] = readPredictionLogsCache();
       try {
-        const logsRes = await predictionService.getPredictionLogs(logLimits[selectedTimeframe]);
+        const logsRes = await logsPromise;
         const fetchedLogs = Array.isArray(logsRes) ? logsRes : [];
         if (fetchedLogs.length) {
           logs = fetchedLogs;
@@ -381,17 +426,17 @@ export default function TrendPrediction() {
       if (requestId !== loadRequestIdRef.current) return;
       setPredictionLogs(effectiveLogs);
 
+      let resolvedHistory: HistoricalDataPoint[] = [];
+
       let features: any = null;
       try {
-        const featuresRes = await API.get("/features/global/latest", {
-          headers: API_HEADERS,
-          params: { mode: "online" },
-        });
+        const featuresRes = await featuresPromise;
         features = featuresRes.data?.features;
       } catch (e) {
         console.error("Latest features load failed:", e);
       }
 
+      let resolvedCurrentPrediction: PredictionData | null = currentPrediction;
       if (features) {
         const featureVector = [
           safeN(features.news_sentiment),
@@ -407,7 +452,7 @@ export default function TrendPrediction() {
 
         try {
           const predRes = await predictionService.getPrediction(featureVector);
-          const nextPrediction = {
+          const nextPrediction: PredictionData = {
             timestamp: new Date().toISOString(),
             prediction: predRes.prediction,
             probability: predRes.probability,
@@ -416,29 +461,68 @@ export default function TrendPrediction() {
           };
           setCurrentPrediction(nextPrediction);
           writeCurrentPredictionCache(nextPrediction);
+          resolvedCurrentPrediction = nextPrediction;
         } catch (e) {
           console.error("Current prediction load failed:", e);
         }
 
       }
 
-      const [forecastResult, reactionsResult, eventsResult, governanceResult] = await Promise.allSettled([
-        predictionService.getSentimentForecast(),
-        predictionService.getMarketReactions(30),
-        predictionService.getEventPredictions(),
-        getGovernanceData(),
+      // Real-data fallback #1: latest prediction-log features.
+      if (!features && Array.isArray(effectiveLogs) && effectiveLogs.length) {
+        const latestLogFeatures = Array.isArray(effectiveLogs[effectiveLogs.length - 1]?.features)
+          ? effectiveLogs[effectiveLogs.length - 1].features
+          : [];
+        if (latestLogFeatures.length >= 7) {
+          setLatestFeatures([
+            safeN(latestLogFeatures[0]),
+            safeN(latestLogFeatures[1]),
+            safeN(latestLogFeatures[2]),
+            safeN(latestLogFeatures[3]),
+            safeN(latestLogFeatures[4]),
+            safeN(latestLogFeatures[5]),
+            safeN(latestLogFeatures[6]),
+          ]);
+          setLatestFeaturesLoaded(true);
+        }
+      }
+
+      // Real-data fallback #2: latest historical row features.
+      // Real-data fallback #2: derive current prediction from latest prediction log.
+      if (!resolvedCurrentPrediction && effectiveLogs.length) {
+        const latestLog = effectiveLogs[effectiveLogs.length - 1];
+        const fallbackFeatures = Array.isArray(latestLog.features)
+          ? latestLog.features.slice(0, 7).map((v) => safeN(v))
+          : latestFeatures;
+        const fallbackPrediction = {
+          timestamp: latestLog.timestamp || new Date().toISOString(),
+          prediction: safeN(latestLog.prediction),
+          probability: safeN(latestLog.probability, 0.5),
+          model_version: latestLog.model_version || "unknown",
+          features: fallbackFeatures,
+          drift_score: latestLog.drift_score ?? undefined,
+        };
+        setCurrentPrediction(fallbackPrediction);
+        writeCurrentPredictionCache(fallbackPrediction);
+        resolvedCurrentPrediction = fallbackPrediction;
+      }
+
+      finishPrimaryLoad(requestId);
+
+      const [forecastResult, reactionsResult, eventsResult, governanceResult, mapResult, historyResult] = await Promise.allSettled([
+        forecastPromise,
+        reactionsPromise,
+        eventsPromise,
+        governancePromise,
+        mapPromise,
+        historyPromise,
       ]);
 
-      const { start, end } = computeRangeForTimeframe(selectedTimeframe);
-      const [mapResult, historyResult] = await Promise.allSettled([
-        getRiskMap(),
-        predictionService.getHistoricalData(start, end, selectedTimeframe === "7d" ? 1000 : 400),
-      ]);
+      if (requestId !== loadRequestIdRef.current) return;
 
-      const resolvedHistory = historyResult.status === "fulfilled"
+      resolvedHistory = historyResult.status === "fulfilled"
         ? normalizeHistoricalRows(historyResult.value as unknown[])
         : [];
-      if (requestId !== loadRequestIdRef.current) return;
       setHistoricalData(resolvedHistory);
 
       if (forecastResult.status === "fulfilled") {
@@ -485,31 +569,12 @@ export default function TrendPrediction() {
         setRiskMap([]);
         console.error("Risk map load failed:", mapResult.reason);
       }
+
       if (historyResult.status !== "fulfilled") {
         console.error("Historical deep-intel load failed:", historyResult.reason);
       }
 
-      // Real-data fallback #1: latest prediction-log features.
-      if (!features && Array.isArray(effectiveLogs) && effectiveLogs.length) {
-        const latestLogFeatures = Array.isArray(effectiveLogs[effectiveLogs.length - 1]?.features)
-          ? effectiveLogs[effectiveLogs.length - 1].features
-          : [];
-        if (latestLogFeatures.length >= 7) {
-          setLatestFeatures([
-            safeN(latestLogFeatures[0]),
-            safeN(latestLogFeatures[1]),
-            safeN(latestLogFeatures[2]),
-            safeN(latestLogFeatures[3]),
-            safeN(latestLogFeatures[4]),
-            safeN(latestLogFeatures[5]),
-            safeN(latestLogFeatures[6]),
-          ]);
-          setLatestFeaturesLoaded(true);
-        }
-      }
-
-      // Real-data fallback #2: latest historical row features.
-      if (!features && !latestFeaturesLoaded && resolvedHistory.length) {
+      if (!features && resolvedHistory.length) {
         const latestRow = resolvedHistory[resolvedHistory.length - 1];
         setLatestFeatures([
           safeN(latestRow.news_sentiment),
@@ -523,31 +588,11 @@ export default function TrendPrediction() {
         setLatestFeaturesLoaded(true);
       }
 
-      // Real-data fallback #3: derive current prediction from latest prediction log.
-      if (!currentPrediction && effectiveLogs.length) {
-        const latestLog = effectiveLogs[effectiveLogs.length - 1];
-        const fallbackFeatures = Array.isArray(latestLog.features)
-          ? latestLog.features.slice(0, 7).map((v) => safeN(v))
-          : latestFeatures;
-        const fallbackPrediction = {
-          timestamp: latestLog.timestamp || new Date().toISOString(),
-          prediction: safeN(latestLog.prediction),
-          probability: safeN(latestLog.probability, 0.5),
-          model_version: latestLog.model_version || "unknown",
-          features: fallbackFeatures,
-          drift_score: latestLog.drift_score ?? undefined,
-        };
-        setCurrentPrediction(fallbackPrediction);
-        writeCurrentPredictionCache(fallbackPrediction);
-      }
-
-      // If logs API cannot provide 7d-range data, use real historical risk as chart fallback.
       if (!effectiveLogs.length && resolvedHistory.length) {
-        if (requestId !== loadRequestIdRef.current) return;
         const historyLogs = buildLogsFromHistory(resolvedHistory);
         setPredictionLogs(historyLogs);
         writePredictionLogsCache(historyLogs);
-        if (!currentPrediction && historyLogs.length) {
+        if (!resolvedCurrentPrediction && historyLogs.length) {
           const latest = historyLogs[historyLogs.length - 1];
           const fromHistoryPrediction: PredictionData = {
             timestamp: latest.timestamp,
@@ -572,10 +617,7 @@ export default function TrendPrediction() {
         if (cachedPrediction) setCurrentPrediction(cachedPrediction);
       }
       setError(err?.message || "Failed to load prediction data");
-    } finally {
-      if (requestId !== loadRequestIdRef.current) return;
-      setLastUpdatedAt(new Date().toISOString());
-      setLoading(false);
+      finishPrimaryLoad(requestId);
     }
   }
 
@@ -1103,35 +1145,10 @@ export default function TrendPrediction() {
 
   return (
     <main className="wp-shell">
-      <header className="wp-top">
-        <div className="wp-burger" onClick={() => navigate("/dashboard")}>
-          <span />
-          <span />
-          <span />
-        </div>
-        <div>
-          <h1>
-            TREND <span>PREDICTION</span>
-          </h1>
-          <p>ML-Powered Risk Forecasting & Market Intelligence</p>
-        </div>
-        <div className="wp-actions-inline">
-          <button onClick={() => navigate("/dashboard")}>Dashboard</button>
-          <button onClick={() => navigate("/historical-trends")}>Historical</button>
-          <button onClick={() => navigate("/about")}>About</button>
-          <button onClick={() => navigate("/contact")}>Contact</button>
-          <button 
-            onClick={() => {
-              localStorage.removeItem("token");
-              navigate("/login");
-            }}
-            style={{ color: "#ff6b6b" }}
-          >
-            Logout
-          </button>
-        </div>
-
-      </header>
+      <ConsoleNavigation
+        title={<>TREND <span>PREDICTION</span></>}
+        subtitle="ML-Powered Risk Forecasting and market intelligence."
+      />
 
       <section className="prediction-summary-sticky">
         <article className="wp-card prediction-summary-card">
@@ -1202,7 +1219,13 @@ export default function TrendPrediction() {
               status={activeGlobeData.length ? "live" : advancedStatus}
             />
             {activeGlobeData.length ? (
-              <WorldGlobe3D data={activeGlobeData} autoRotate={true} height={460} />
+              showHeavyPanels ? (
+                <Suspense fallback={<DeferredPanelPlaceholder label="Loading 3D globe..." />}>
+                  <WorldGlobe3D data={activeGlobeData} autoRotate={true} height={460} />
+                </Suspense>
+              ) : (
+                <DeferredPanelPlaceholder label="Preparing 3D globe..." />
+              )
             ) : (
               <div className="prediction-empty">
                 <p>No risk-map data available for globe rendering.</p>
@@ -1217,22 +1240,28 @@ export default function TrendPrediction() {
               status={deepHistoryForPanels.length > 1 ? "live" : advancedStatus}
             />
             {deepHistoryForPanels.length > 1 ? (
-              <RiskCorrelationMatrix
-                data={deepHistoryForPanels.map((h) => ({
-                  features: {
-                    news_sentiment: h.features.news_sentiment,
-                    gdelt_sentiment: h.features.gdelt_sentiment,
-                    crypto_return: h.features.crypto_return,
-                    crypto_volatility: h.features.crypto_volatility,
-                    stock_return: h.features.stock_return,
-                    stock_volatility: h.features.stock_volatility,
-                    weather_anomaly: h.features.weather_anomaly,
-                    global_risk_score: h.score,
-                  },
-                  timestamp: h.timestamp,
-                }))}
-                height={460}
-              />
+              showHeavyPanels ? (
+                <Suspense fallback={<DeferredPanelPlaceholder label="Loading correlation matrix..." />}>
+                  <RiskCorrelationMatrix
+                    data={deepHistoryForPanels.map((h) => ({
+                      features: {
+                        news_sentiment: h.features.news_sentiment,
+                        gdelt_sentiment: h.features.gdelt_sentiment,
+                        crypto_return: h.features.crypto_return,
+                        crypto_volatility: h.features.crypto_volatility,
+                        stock_return: h.features.stock_return,
+                        stock_volatility: h.features.stock_volatility,
+                        weather_anomaly: h.features.weather_anomaly,
+                        global_risk_score: h.score,
+                      },
+                      timestamp: h.timestamp,
+                    }))}
+                    height={460}
+                  />
+                </Suspense>
+              ) : (
+                <DeferredPanelPlaceholder label="Preparing correlation matrix..." />
+              )
             ) : (
               <div className="prediction-empty">
                 <p>Need at least two historical snapshots for correlations.</p>
@@ -1247,12 +1276,18 @@ export default function TrendPrediction() {
               status={deepHistoryResolved.length > 1 ? "live" : advancedStatus}
             />
             {deepHistoryResolved.length > 1 ? (
-              <HistoricalPlayback
-                data={deepHistoryResolved}
-                height={500}
-                onFrameChange={handlePlaybackFrameChange}
-                onPlaybackStateChange={handlePlaybackStateChange}
-              />
+              showHeavyPanels ? (
+                <Suspense fallback={<DeferredPanelPlaceholder label="Loading playback timeline..." />}>
+                  <HistoricalPlayback
+                    data={deepHistoryResolved}
+                    height={500}
+                    onFrameChange={handlePlaybackFrameChange}
+                    onPlaybackStateChange={handlePlaybackStateChange}
+                  />
+                </Suspense>
+              ) : (
+                <DeferredPanelPlaceholder label="Preparing playback timeline..." />
+              )
             ) : (
               <div className="prediction-empty">
                 <p>Need more history to enable playback.</p>
@@ -1267,7 +1302,13 @@ export default function TrendPrediction() {
               status={comparisonCountries.length > 1 ? "live" : advancedStatus}
             />
             {comparisonCountries.length > 1 ? (
-              <CountryComparison countries={comparisonCountries} height={500} />
+              showHeavyPanels ? (
+                <Suspense fallback={<DeferredPanelPlaceholder label="Loading country comparison..." />}>
+                  <CountryComparison countries={comparisonCountries} height={500} />
+                </Suspense>
+              ) : (
+                <DeferredPanelPlaceholder label="Preparing country comparison..." />
+              )
             ) : (
               <div className="prediction-empty">
                 <p>Need more country points for meaningful comparison.</p>
@@ -1492,7 +1533,13 @@ export default function TrendPrediction() {
               subtitle="Anomalies, causality, and generated reports"
               status={advancedStatus}
             />
-            <AdvancedAnalyticsPanel />
+            {showHeavyPanels ? (
+              <Suspense fallback={<DeferredPanelPlaceholder label="Loading advanced analytics..." />}>
+                <AdvancedAnalyticsPanel />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder label="Preparing advanced analytics..." />
+            )}
           </article>
           <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide">
             <PanelHeader
@@ -1500,7 +1547,13 @@ export default function TrendPrediction() {
               subtitle="Ensemble behavior and calibration integrity"
               status={governanceData.models.length ? "live" : advancedStatus}
             />
-            <ModelGovernance data={governanceData} />
+            {showHeavyPanels ? (
+              <Suspense fallback={<DeferredPanelPlaceholder label="Loading model governance..." />}>
+                <ModelGovernance data={governanceData} />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder label="Preparing model governance..." />
+            )}
           </article>
         </div>
       </section>

@@ -118,79 +118,105 @@ export default function BrainModelViewer({
     const disposableGeometries: THREE.BufferGeometry[] = [baseRingGeometry, haloGeometry];
     const disposableMaterials: THREE.Material[] = [baseRingMaterial, haloMaterial];
     let loadedModel: THREE.Object3D | null = null;
+    let aborted = false;
 
     setLoadFailed(false);
 
-    loader.load(
-      resolvedModelUrl,
-      (gltf) => {
-        setLoadFailed(false);
-        const model = gltf.scene;
-        loadedModel = model;
+    const applyLoadedModel = (gltf: { scene: THREE.Object3D }) => {
+      if (aborted) return;
+      setLoadFailed(false);
+      const model = gltf.scene;
+      loadedModel = model;
 
-        const initialBox = new THREE.Box3().setFromObject(model);
-        const center = initialBox.getCenter(new THREE.Vector3());
-        model.position.sub(center);
+      const initialBox = new THREE.Box3().setFromObject(model);
+      const center = initialBox.getCenter(new THREE.Vector3());
+      model.position.sub(center);
 
-        const size = initialBox.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z, 0.001);
-        const scale = 1.92 / maxDim;
-        model.scale.setScalar(scale);
+      const size = initialBox.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z, 0.001);
+      const scale = 1.92 / maxDim;
+      model.scale.setScalar(scale);
 
-        const fittedBox = new THREE.Box3().setFromObject(model);
-        const fittedCenter = fittedBox.getCenter(new THREE.Vector3());
-        model.position.sub(fittedCenter);
-        model.position.y = -0.01;
+      const fittedBox = new THREE.Box3().setFromObject(model);
+      const fittedCenter = fittedBox.getCenter(new THREE.Vector3());
+      model.position.sub(fittedCenter);
+      model.position.y = -0.01;
 
-        model.traverse((child) => {
-          if (!(child instanceof THREE.Mesh)) return;
+      model.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
 
-          const mesh = child as THREE.Mesh;
-          mesh.geometry = mesh.geometry.clone();
-          disposableGeometries.push(mesh.geometry);
-          mesh.frustumCulled = false;
+        const mesh = child as THREE.Mesh;
+        mesh.geometry = mesh.geometry.clone();
+        disposableGeometries.push(mesh.geometry);
+        mesh.frustumCulled = false;
 
-          const sourceMaterials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-          const nextMaterials = sourceMaterials.map((material) => {
-            disposableMaterials.push(material);
+        const sourceMaterials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        const nextMaterials = sourceMaterials.map((material) => {
+          disposableMaterials.push(material);
 
-            const nextMaterial = new THREE.MeshBasicMaterial({
-              color: resolveParticleColor(mesh.name, material.name),
-              transparent: true,
-              opacity: 0.96,
-              blending: THREE.AdditiveBlending,
-              depthWrite: false,
-              toneMapped: false,
-            });
-            disposableMaterials.push(nextMaterial);
-            return nextMaterial;
+          const nextMaterial = new THREE.MeshBasicMaterial({
+            color: resolveParticleColor(mesh.name, material.name),
+            transparent: true,
+            opacity: 0.96,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            toneMapped: false,
           });
-
-          mesh.material = Array.isArray(mesh.material) ? nextMaterials : nextMaterials[0];
+          disposableMaterials.push(nextMaterial);
+          return nextMaterial;
         });
 
-        const sphere = new THREE.Box3().setFromObject(model).getBoundingSphere(new THREE.Sphere());
-        if (Number.isFinite(sphere.radius) && sphere.radius > 0) {
-          const fov = THREE.MathUtils.degToRad(camera.fov);
-          const fitDistance = sphere.radius / Math.sin(fov * 0.5);
-          camera.position.set(0, 0.08, THREE.MathUtils.clamp(fitDistance * 0.92, 1.28, 3.0));
-          camera.near = Math.max(0.05, fitDistance * 0.035);
-          camera.far = Math.max(20, fitDistance * 8);
-          controls.minDistance = Math.max(0.9, fitDistance * 0.62);
-          controls.maxDistance = Math.max(3.2, fitDistance * 2.15);
-          controls.target.set(0, 0.03, 0);
-          controls.update();
-          camera.updateProjectionMatrix();
-        }
+        mesh.material = Array.isArray(mesh.material) ? nextMaterials : nextMaterials[0];
+      });
 
-        modelRoot.add(model);
-      },
-      undefined,
-      (error) => {
-        console.error(`Failed to load brain model at "${resolvedModelUrl}"`, error);
-        setLoadFailed(true);
-      },
-    );
+      const sphere = new THREE.Box3().setFromObject(model).getBoundingSphere(new THREE.Sphere());
+      if (Number.isFinite(sphere.radius) && sphere.radius > 0) {
+        const fov = THREE.MathUtils.degToRad(camera.fov);
+        const fitDistance = sphere.radius / Math.sin(fov * 0.5);
+        camera.position.set(0, 0.08, THREE.MathUtils.clamp(fitDistance * 0.92, 1.28, 3.0));
+        camera.near = Math.max(0.05, fitDistance * 0.035);
+        camera.far = Math.max(20, fitDistance * 8);
+        controls.minDistance = Math.max(0.9, fitDistance * 0.62);
+        controls.maxDistance = Math.max(3.2, fitDistance * 2.15);
+        controls.target.set(0, 0.03, 0);
+        controls.update();
+        camera.updateProjectionMatrix();
+      }
+
+      modelRoot.add(model);
+    };
+
+    const verifyAndLoadModel = async () => {
+      try {
+        const response = await fetch(resolvedModelUrl, { method: "GET" });
+        const contentType = response.headers.get("content-type") || "";
+        if (!response.ok || contentType.includes("text/html")) {
+          if (!aborted) {
+            console.warn(`Brain model asset not found at "${resolvedModelUrl}".`);
+            setLoadFailed(true);
+          }
+          return;
+        }
+      } catch {
+        if (!aborted) {
+          setLoadFailed(true);
+        }
+        return;
+      }
+
+      loader.load(
+        resolvedModelUrl,
+        applyLoadedModel,
+        undefined,
+        () => {
+          if (!aborted) {
+            setLoadFailed(true);
+          }
+        },
+      );
+    };
+
+    void verifyAndLoadModel();
 
     const resize = () => {
       const rect = host.getBoundingClientRect();
@@ -224,6 +250,7 @@ export default function BrainModelViewer({
     animate();
 
     return () => {
+      aborted = true;
       cancelAnimationFrame(raf);
       resizeObserver.disconnect();
       controls.removeEventListener("start", handleStart);
