@@ -467,6 +467,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 16px;
   padding: 12px 20px 10px;
   background: linear-gradient(90deg, rgba(5, 12, 25, 0.99), rgba(8, 19, 36, 0.97) 58%, rgba(10, 24, 43, 0.95));
@@ -476,6 +477,8 @@
 .wp-brand-block {
   display: flex;
   align-items: center;
+  flex: 1 1 420px;
+  min-width: 0;
   gap: 14px;
 }
 
@@ -498,6 +501,8 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  flex: 1 1 280px;
+  min-width: 0;
   gap: 8px;
 }
 
@@ -553,8 +558,9 @@
   margin: 10px 16px 12px;
   padding: 10px 14px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   border-radius: 14px;
   background: linear-gradient(180deg, rgba(7, 15, 29, 0.96), rgba(5, 12, 23, 0.98));
@@ -565,10 +571,21 @@
 .wp-intelligence-secondary {
   display: flex;
   align-items: center;
+  flex: 1 1 320px;
+  min-width: 0;
   gap: 10px;
   flex-wrap: wrap;
   color: rgba(191, 219, 254, 0.78);
   font-size: 10px;
+}
+
+.wp-intelligence-secondary {
+  justify-content: flex-end;
+}
+
+.wp-intelligence-primary span,
+.wp-intelligence-secondary span {
+  white-space: nowrap;
 }
 
 .wp-intelligence-kicker {
@@ -597,6 +614,10 @@
 }
 
 .wp-exec-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
   min-height: 116px;
   padding: 14px 14px 12px;
   background: linear-gradient(180deg, rgba(7, 15, 29, 0.98), rgba(4, 10, 20, 0.98));
@@ -615,17 +636,25 @@
 }
 
 .wp-exec-card .wp-highlight {
-  margin-bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  margin-bottom: 2px;
+  line-height: 1.05;
   font-size: 34px;
 }
 
 .wp-exec-card .wp-mini-meta {
+  width: 100%;
+  align-items: flex-start;
+  line-height: 1.35;
   font-size: 11px;
   gap: 8px;
 }
 
 .wp-exec-card .wp-mini-meta strong {
   font-size: 10px;
+  line-height: 1.35;
 }
 
 .wp-exec-card .wp-mini-meta--detail {
@@ -653,7 +682,7 @@
 .wp-ops-strip {
   margin: 0 16px 22px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   flex-wrap: wrap;
   padding: 10px 12px;
@@ -665,12 +694,14 @@
 .wp-ops-inline-block {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 8px;
   flex-wrap: wrap;
 }
 
 .wp-ops-inline-status {
   margin-left: auto;
+  justify-content: flex-end;
 }
 
 .wp-ops-label {
@@ -710,9 +741,14 @@
 .wp-ops-status-line {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
   color: rgba(191, 219, 254, 0.72);
   font-size: 10px;
+}
+
+.wp-ops-status-line span {
+  white-space: nowrap;
 }
 
 .sentinel-toggle {
@@ -729,12 +765,17 @@
   }
 
   .wp-intelligence-bar {
-    flex-direction: column;
     align-items: flex-start;
   }
 
   .wp-ops-inline-status {
     margin-left: 0;
+  }
+
+  .wp-intelligence-secondary,
+  .wp-ops-inline-status,
+  .wp-ops-status-line {
+    justify-content: flex-start;
   }
 }
 
