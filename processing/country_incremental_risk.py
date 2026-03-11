@@ -8,6 +8,8 @@ from processing.country_daily_risk import (
     _apply_war_state_floor,
     _compute_conflict_indicators,
     _compute_regional_escalation,
+    _compute_source_profile,
+    _dedupe_country_docs,
     _detect_open_war_states,
     _extract_topics,
     _load_today_country_news,
@@ -15,6 +17,7 @@ from processing.country_daily_risk import (
     _score_country,
     _sentiment_values,
 )
+from processing.global_mood import augment_country_mood_fields
 from feature_store.load_models import load_all_models
 
 
@@ -44,7 +47,7 @@ def _load_daily_rollups(day: datetime | None = None):
 
 def recompute_country_risk(country_code: str, day: datetime | None = None, mode: str = 'online'):
     target_day = day or datetime.now(timezone.utc)
-    grouped_news = _load_today_country_news(target_day)
+    grouped_news = {country: _dedupe_country_docs(docs) for country, docs in _load_today_country_news(target_day).items()}
     catalog = get_country_catalog()
     if country_code not in catalog:
         raise ValueError(f'Unknown country code: {country_code}')
@@ -58,6 +61,7 @@ def recompute_country_risk(country_code: str, day: datetime | None = None, mode:
     external_signals = rollups.get(country_code, DEFAULT_EXTERNAL_SIGNALS)
 
     country_docs = grouped_news.get(country_code, [])
+    source_diversity_score, source_reliability_score = _compute_source_profile(country_docs)
     sentiments = _sentiment_values(country_docs)
     topics = _extract_topics(country_docs)
     news_mean = round(sum(sentiments) / len(sentiments), 5) if sentiments else 0.0
@@ -84,6 +88,8 @@ def recompute_country_risk(country_code: str, day: datetime | None = None, mode:
         'country_name': catalog[country_code],
         'source': 'country_risk_stream_incremental',
         'source_count': len(country_docs),
+        'source_diversity_score': source_diversity_score,
+        'source_reliability_score': source_reliability_score,
         'conflict_headline_count': conflict_indicators['conflict_headline_count'],
         'weighted_keyword_severity': conflict_indicators['weighted_keyword_severity'],
         'source_confidence': conflict_indicators['source_confidence'],
@@ -98,5 +104,6 @@ def recompute_country_risk(country_code: str, day: datetime | None = None, mode:
         'war_state_rules': war_state_rules,
         'risk_category': 'HIGH' if risk_score >= 70 else 'MEDIUM' if risk_score >= 40 else 'LOW',
     }
+    augment_country_mood_fields(country_code, feature_doc, mode=mode)
     write_country_features_v2(country_code, feature_doc, mode=mode)
     return feature_doc

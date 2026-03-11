@@ -131,6 +131,44 @@ export type RiskMapCoverage = {
   };
 };
 
+export type GlobalOperationalFeatures = {
+  timestamp: string;
+  news_sentiment: number;
+  gdelt_sentiment: number;
+  crypto_return: number;
+  crypto_volatility: number;
+  stock_return: number;
+  stock_volatility: number;
+  weather_anomaly: number;
+  global_risk_score: number;
+  global_mood_score?: number;
+  global_mood_confidence?: number;
+  global_mood_uncertainty?: number;
+  global_mood_verified_countries?: number;
+  global_mood_eligible_countries?: number;
+  global_mood_contributing_countries?: number;
+  global_mood_used_countries?: number;
+  global_mood_excluded_countries?: number;
+  global_mood_screened_out_countries?: number;
+  global_mood_total_countries?: number;
+  global_mood_coverage_ratio?: number;
+  global_mood_active_regions?: number;
+  global_mood_method?: string;
+  forecast_risk_score?: number;
+  forecast_risk_delta?: number;
+  forecast_confidence?: number;
+  forecast_horizon_hours?: number;
+  forecast_basis?: string;
+  top_topics: string[];
+};
+
+export type LatestGlobalResponse = {
+  timestamp?: string;
+  version?: number;
+  mode?: string;
+  features: GlobalOperationalFeatures;
+};
+
 export type CountryDrilldownData = {
   country: string;
   risk: number;
@@ -166,6 +204,11 @@ export async function getRiskMap(): Promise<RiskMapPoint[]> {
 export async function getRiskMapCoverage(): Promise<RiskMapCoverage> {
   const res = await API.get("/dashboard/risk-map/coverage", { headers: API_HEADERS, params: { mode: "online" } });
   return res.data as RiskMapCoverage;
+}
+
+export async function getLatestGlobalFeatures(): Promise<LatestGlobalResponse> {
+  const res = await API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } });
+  return res.data as LatestGlobalResponse;
 }
 
 export async function refreshRiskMapBatch(batchSize = 50): Promise<boolean> {

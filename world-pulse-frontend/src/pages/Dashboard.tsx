@@ -8,12 +8,11 @@ import { lazy, Suspense } from "react";
 import type { OperatorEvent } from "../components/EventLog";
 
 
-import API, {
-
-  API_HEADERS,
+import {
   COUNTRY_RISK_WS_URL,
   getCountryDrilldown,
   getLiveCommandFeed,
+  getLatestGlobalFeatures,
   getRiskMap,
   getRiskMapCoverage,
   postAlertAction,
@@ -44,6 +43,18 @@ type Features = {
   stock_volatility: number;
   weather_anomaly: number;
   global_risk_score: number;
+  global_mood_score?: number;
+  global_mood_confidence?: number;
+  global_mood_uncertainty?: number;
+  global_mood_verified_countries?: number;
+  global_mood_eligible_countries?: number;
+  global_mood_contributing_countries?: number;
+  global_mood_used_countries?: number;
+  global_mood_excluded_countries?: number;
+  forecast_risk_score?: number;
+  forecast_risk_delta?: number;
+  forecast_confidence?: number;
+  forecast_horizon_hours?: number;
   top_topics: string[];
   timestamp: string;
 };
@@ -54,7 +65,18 @@ type GlobalDoc = {
 
 type Snapshot = {
   timestamp: string;
-  score: number;
+  riskScore: number;
+  moodScore: number;
+  moodConfidence: number;
+  moodUncertainty: number;
+  moodVerifiedCountries: number;
+  moodEligibleCountries: number;
+  moodUsedCountries: number;
+  moodExcludedCountries: number;
+  forecastRiskScore: number;
+  forecastRiskDelta: number;
+  forecastConfidence: number;
+  forecastHorizonHours: number;
   features: Record<string, number>;
   topics: string[];
 };
@@ -125,9 +147,40 @@ function readJson<T>(key: string, fallback: T): T {
 }
 
 function buildSnapshot(doc: GlobalDoc): Snapshot {
+  const riskScore = normalizeRisk(doc.features.global_risk_score);
+  const moodVerifiedCountries = Math.max(0, Math.round(safeN(doc.features.global_mood_verified_countries, 0)));
+  const moodEligibleCountries = Math.max(
+    0,
+    Math.round(safeN(doc.features.global_mood_eligible_countries, moodVerifiedCountries))
+  );
+  const moodUsedCountries = Math.max(
+    0,
+    Math.round(
+      safeN(
+        doc.features.global_mood_used_countries,
+        safeN(doc.features.global_mood_contributing_countries, moodEligibleCountries)
+      )
+    )
+  );
+  const moodExcludedCountries = Math.max(
+    0,
+    Math.round(safeN(doc.features.global_mood_excluded_countries, Math.max(moodEligibleCountries - moodUsedCountries, 0)))
+  );
+
   return {
     timestamp: doc.features.timestamp ?? new Date().toISOString(),
-    score: normalizeRisk(doc.features.global_risk_score),
+    riskScore,
+    moodScore: normalizeRisk(safeN(doc.features.global_mood_score, riskScore)),
+    moodConfidence: Math.max(0, Math.min(1, safeN(doc.features.global_mood_confidence, 0))),
+    moodUncertainty: Math.max(0, safeN(doc.features.global_mood_uncertainty, 18)),
+    moodVerifiedCountries,
+    moodEligibleCountries,
+    moodUsedCountries,
+    moodExcludedCountries,
+    forecastRiskScore: normalizeRisk(safeN(doc.features.forecast_risk_score, riskScore)),
+    forecastRiskDelta: safeN(doc.features.forecast_risk_delta),
+    forecastConfidence: Math.max(0, Math.min(1, safeN(doc.features.forecast_confidence, 0.35))),
+    forecastHorizonHours: Math.max(1, Math.round(safeN(doc.features.forecast_horizon_hours, 24))),
     features: {
       news_sentiment: safeN(doc.features.news_sentiment),
       gdelt_sentiment: safeN(doc.features.gdelt_sentiment),
@@ -160,6 +213,29 @@ function coverageFromRows(rows: RiskMapPoint[]): RiskMapCoverage {
   };
 }
 
+function mergeRiskMapRows(rows: RiskMapPoint[], updates: Iterable<RiskMapPoint>): RiskMapPoint[] {
+  const next = Array.isArray(rows) ? [...rows] : [];
+  const indexByCountry = new Map<string, number>();
+
+  next.forEach((row, idx) => {
+    if (row?.country) indexByCountry.set(row.country, idx);
+  });
+
+  for (const update of updates) {
+    if (!update?.country) continue;
+    const idx = indexByCountry.get(update.country);
+    const merged = { ...(idx !== undefined ? next[idx] : {}), ...update } as RiskMapPoint;
+    if (idx !== undefined) {
+      next[idx] = merged;
+    } else {
+      indexByCountry.set(update.country, next.length);
+      next.push(merged);
+    }
+  }
+
+  return next;
+}
+
 function formatRelativeTime(value?: string | null): string {
   if (!value) return "No recent update";
   const stamp = new Date(value).getTime();
@@ -172,44 +248,6 @@ function formatRelativeTime(value?: string | null): string {
   const deltaHr = Math.floor(deltaMin / 60);
   if (deltaHr < 24) return `${deltaHr}h ago`;
   return `${Math.floor(deltaHr / 24)}d ago`;
-}
-
-function deriveGlobalMoodFromMap(rows: RiskMapPoint[], fallbackScore: number) {
-  const points = rows
-    .filter((row): row is RiskMapPoint & { risk: number } => typeof row.risk === "number")
-    .map((row) => {
-      const qualityWeight = row.validated_today
-        ? 1
-        : row.data_quality === "stale"
-        ? 0.45
-        : row.data_quality === "synthetic" || row.data_quality === "unknown"
-        ? 0.2
-        : 0.65;
-      const sourceWeight = Math.min(1, Math.max(0.35, (row.source_count ?? 1) / 4));
-      const stamp = new Date(row.feature_timestamp ?? row.timestamp ?? "").getTime();
-      const ageHours = Number.isFinite(stamp) ? Math.max(0, (Date.now() - stamp) / 3600000) : null;
-      const freshnessWeight = ageHours === null ? 0.75 : ageHours <= 6 ? 1 : ageHours <= 24 ? 0.8 : ageHours <= 48 ? 0.55 : 0.35;
-      const weight = qualityWeight * sourceWeight * freshnessWeight;
-      return { row, weight };
-    })
-    .filter((point) => point.weight > 0);
-
-  if (!points.length) {
-    return {
-      score: fallbackScore,
-      verifiedCount: 0,
-      contributingCount: 0,
-    };
-  }
-
-  const weightedTotal = points.reduce((sum, point) => sum + (point.row.risk * point.weight), 0);
-  const totalWeight = points.reduce((sum, point) => sum + point.weight, 0);
-
-  return {
-    score: totalWeight ? Number((weightedTotal / totalWeight).toFixed(2)) : fallbackScore,
-    verifiedCount: points.filter((point) => point.row.validated_today).length,
-    contributingCount: points.length,
-  };
 }
 
 function describeDashboardError(error: unknown): string {
@@ -276,7 +314,6 @@ export default function Dashboard() {
   const [errorText, setErrorText] = useState("");
   const [refreshingMap, setRefreshingMap] = useState(false);
 
-  const [lastKnownGood, setLastKnownGood] = useState<Snapshot | null>(null);
   const [retries, setRetries] = useState(0);
   const [activePreset, setActivePreset] = useState<"analyst" | "ops" | "executive">("analyst");
   const [sentinelEnabled, setSentinelEnabled] = useState(true);
@@ -312,6 +349,41 @@ export default function Dashboard() {
   const rotationRafRef = useRef<number | null>(null);
   const isRotatingRef = useRef<boolean>(false);
   const selectedCountryRef = useRef<string | null>(null);
+  const initialRiskMapLoadedRef = useRef(false);
+  const pendingRiskMapUpdatesRef = useRef<Map<string, RiskMapPoint>>(new Map());
+  const pendingRiskMapFlushTimerRef = useRef<number | null>(null);
+
+  const consumePendingRiskMapUpdates = (rows: RiskMapPoint[]) => {
+    if (!pendingRiskMapUpdatesRef.current.size) return rows;
+    const queuedUpdates = Array.from(pendingRiskMapUpdatesRef.current.values());
+    pendingRiskMapUpdatesRef.current.clear();
+    return mergeRiskMapRows(rows, queuedUpdates);
+  };
+
+  const flushQueuedRiskMapUpdates = () => {
+    if (pendingRiskMapFlushTimerRef.current) {
+      window.clearTimeout(pendingRiskMapFlushTimerRef.current);
+      pendingRiskMapFlushTimerRef.current = null;
+    }
+    if (!pendingRiskMapUpdatesRef.current.size) return;
+
+    setRiskMap((prev) => {
+      const currentRows = Array.isArray(prev) ? prev : [];
+      const mergedRows = consumePendingRiskMapUpdates(currentRows);
+      setRiskCoverage((current) => ({
+        ...coverageFromRows(mergedRows),
+        latest_validation: current?.latest_validation,
+      }));
+      panelUpdated.current.map = Date.now();
+      return mergedRows;
+    });
+  };
+
+  const queueRiskMapUpdate = (update: RiskMapPoint) => {
+    pendingRiskMapUpdatesRef.current.set(update.country, update);
+    if (!initialRiskMapLoadedRef.current || pendingRiskMapFlushTimerRef.current) return;
+    pendingRiskMapFlushTimerRef.current = window.setTimeout(flushQueuedRiskMapUpdates, 150);
+  };
 
   const riskMapRows = Array.isArray(riskMap) ? riskMap : [];
   const coverageState = riskCoverage ?? { total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 };
@@ -323,15 +395,26 @@ export default function Dashboard() {
   };
 
   const active = history[history.length - 1] ?? null;
-  const riskDelta = active && lastKnownGood ? active.score - lastKnownGood.score : 0;
+  const previous = history.length > 1 ? history[history.length - 2] : null;
+  const riskDelta = active && previous ? active.riskScore - previous.riskScore : 0;
   const verifiedRiskMap = useMemo(() => riskMapRows.filter((row): row is RiskMapPoint & { risk: number } => Boolean(row.validated_today) && typeof row.risk === "number"), [riskMapRows]);
   const unverifiedRiskMap = useMemo(() => riskMapRows.filter((row) => !row.validated_today), [riskMapRows]);
   const topTopic = active?.topics?.find((topic) => topic && topic !== "no data") ?? "No dominant topic";
   const validationSummary = coverageState.latest_validation;
   const liveFreshness = formatRelativeTime(liveFeedState.lastUpdated);
   const verifiedCoverageLabel = `${coverageState.verified} / ${coverageState.total || riskMapRows.length || 233}`;
-  const globalRiskScore = active?.score ?? 50;
-  const globalMood = useMemo(() => deriveGlobalMoodFromMap(riskMapRows, globalRiskScore), [riskMapRows, globalRiskScore]);
+  const globalRiskScore = active?.riskScore ?? 50;
+  const globalMoodScore = active?.moodScore ?? 50;
+  const globalMoodConfidence = active?.moodConfidence ?? Math.min(1, coverageState.coverage_pct / 100);
+  const globalMoodUncertainty = active?.moodUncertainty ?? 18;
+  const globalMoodEligibleCountries = active?.moodEligibleCountries ?? active?.moodVerifiedCountries ?? coverageState.verified;
+  const globalMoodUsedCountries = active?.moodUsedCountries ?? globalMoodEligibleCountries;
+  const globalMoodExcludedCountries = active?.moodExcludedCountries ?? Math.max(globalMoodEligibleCountries - globalMoodUsedCountries, 0);
+  const globalMoodCountrySummary = `${globalMoodEligibleCountries} eligible, ${globalMoodUsedCountries} used, ${globalMoodExcludedCountries} excluded`;
+  const forecastRiskScore = active?.forecastRiskScore ?? globalRiskScore;
+  const forecastRiskDelta = active?.forecastRiskDelta ?? 0;
+  const forecastConfidence = active?.forecastConfidence ?? 0.35;
+  const forecastHorizonHours = active?.forecastHorizonHours ?? 24;
   const telemetryThreat = deriveThreatMeta(globalRiskScore);
   const telemetryTrend = deriveTrendMeta(riskDelta);
   const telemetryDrivers = (() => {
@@ -365,8 +448,8 @@ export default function Dashboard() {
     },
     {
       title: "Predictive Outlook",
-      value: `${(active?.score ?? 50).toFixed(1)} / 100`,
-      detail: `Global risk forecast with ${riskDelta >= 0 ? "rising" : "cooling"} momentum ${riskDelta >= 0 ? "+" : ""}${riskDelta.toFixed(2)}`,
+      value: `${forecastRiskScore.toFixed(1)} / 100`,
+      detail: `${forecastHorizonHours}h risk forecast with ${forecastRiskDelta >= 0 ? "rising" : "cooling"} momentum ${forecastRiskDelta >= 0 ? "+" : ""}${forecastRiskDelta.toFixed(2)} | confidence ${(forecastConfidence * 100).toFixed(0)}%`,
     },
     {
       title: "Reliability + Validation",
@@ -463,9 +546,7 @@ export default function Dashboard() {
           getCachedOrFetch("liveFeed", getLiveCommandFeed),
           getCachedOrFetch("riskMap", getRiskMap),
           getCachedOrFetch("riskCoverage", getRiskMapCoverage),
-          getCachedOrFetch("global", () => 
-            API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } }).then(r => r.data)
-          ),
+          getCachedOrFetch("global", getLatestGlobalFeatures),
         ]);
 
         const live = liveResult.status === "fulfilled"
@@ -475,6 +556,10 @@ export default function Dashboard() {
         const coverage = coverageResult.status === "fulfilled"
           ? coverageResult.value
           : { total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 };
+        const nextMapRows = consumePendingRiskMapUpdates(Array.isArray(mapRows) ? mapRows : []);
+        if (mapRowsResult.status === "fulfilled" || nextMapRows.length) {
+          initialRiskMapLoadedRef.current = true;
+        }
         const global = globalResult.status === "fulfilled" ? globalResult.value : null;
         const features = global?.features;
 
@@ -482,16 +567,22 @@ export default function Dashboard() {
           const snap = buildSnapshot({ features } as GlobalDoc);
           setHistory((prev) => {
             const last = prev[prev.length - 1];
-            if (last?.timestamp === snap.timestamp) return prev;
+            if (last?.timestamp === snap.timestamp) {
+              const next = [...prev];
+              next[next.length - 1] = snap;
+              return next;
+            }
             return [...prev, snap].slice(-MAX_HISTORY);
           });
-          setLastKnownGood(snap);
           panelUpdated.current.risk = Date.now();
         }
 
         setLiveFeed(live);
-        setRiskMap(Array.isArray(mapRows) ? mapRows : []);
-        setRiskCoverage(coverage);
+        setRiskMap(nextMapRows);
+        setRiskCoverage({
+          ...coverageFromRows(nextMapRows),
+          latest_validation: coverage.latest_validation,
+        });
         panelUpdated.current.map = Date.now();
         panelUpdated.current.stream = Date.now();
         setErrorText("");
@@ -526,6 +617,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     let socket: WebSocket | null = null;
+    let connectTimer = 0;
     let retryTimer = 0;
     let closed = false;
 
@@ -542,16 +634,7 @@ export default function Dashboard() {
         try {
           const update = JSON.parse(event.data) as RiskMapPoint;
           if (!update?.country) return;
-          setRiskMap((prev) => {
-            const next = Array.isArray(prev) ? [...prev] : [];
-            const idx = next.findIndex((row) => row.country === update.country);
-            const merged = { ...(idx >= 0 ? next[idx] : {}), ...update } as RiskMapPoint;
-            if (idx >= 0) next[idx] = merged;
-            else next.push(merged);
-            setRiskCoverage((current) => ({ ...coverageFromRows(next), latest_validation: current?.latest_validation }));
-            panelUpdated.current.map = Date.now();
-            return next;
-          });
+          queueRiskMapUpdate(update);
         } catch {
           // ignore malformed websocket payloads
         }
@@ -567,10 +650,18 @@ export default function Dashboard() {
       };
     };
 
-    connect();
+    // Delay the first connect so React StrictMode's dev-only mount/unmount cycle
+    // can cancel it before a socket is opened and immediately closed.
+    connectTimer = window.setTimeout(connect, 0);
     return () => {
       closed = true;
+      window.clearTimeout(connectTimer);
       window.clearTimeout(retryTimer);
+      if (pendingRiskMapFlushTimerRef.current) {
+        window.clearTimeout(pendingRiskMapFlushTimerRef.current);
+        pendingRiskMapFlushTimerRef.current = null;
+      }
+      pendingRiskMapUpdatesRef.current.clear();
       try { socket?.close(); } catch {}
     };
   }, []);
@@ -833,9 +924,9 @@ export default function Dashboard() {
       <section className="wp-exec-grid">
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Global Mood</div>
-          <strong className="wp-highlight">{globalMood.score.toFixed(2)} / 100</strong>
-          <div className="wp-mini-meta"><span>Live map inputs</span><strong>{globalMood.contributingCount}</strong></div>
-          <div className="wp-mini-meta"><span>Verified today</span><strong>{globalMood.verifiedCount}</strong></div>
+          <strong className="wp-highlight">{globalMoodScore.toFixed(1)} +/- {globalMoodUncertainty.toFixed(1)}</strong>
+          <div className="wp-mini-meta"><span>Confidence</span><strong>{(globalMoodConfidence * 100).toFixed(0)}%</strong></div>
+          <div className="wp-mini-meta wp-mini-meta--detail"><span>Countries</span><strong className="wp-mini-meta-detail">{globalMoodCountrySummary}</strong></div>
         </article>
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Verified Countries</div>
@@ -844,16 +935,16 @@ export default function Dashboard() {
           <div className="wp-mini-meta"><span>No-data / stale</span><strong>{coverageState.no_data + coverageState.stale}</strong></div>
         </article>
         <article className="wp-card wp-exec-card">
-          <div className="wp-exec-label">Live Feed</div>
-          <strong className="wp-highlight wp-highlight-compact">{connectionState}</strong>
-          <div className="wp-mini-meta"><span>Last live pulse</span><strong>{liveFreshness}</strong></div>
-          <div className="wp-mini-meta"><span>Retries</span><strong>{retries}</strong></div>
+          <div className="wp-exec-label">Global Risk</div>
+          <strong className="wp-highlight">{globalRiskScore.toFixed(1)} / 100</strong>
+          <div className="wp-mini-meta"><span>Threat</span><strong>{telemetryThreat.label}</strong></div>
+          <div className="wp-mini-meta"><span>Trend</span><strong>{telemetryTrend.label}</strong></div>
         </article>
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Forecast</div>
-          <strong className="wp-highlight">{(active?.score ?? 50).toFixed(1)} / 100</strong>
-          <div className="wp-mini-meta"><span>Momentum</span><strong>{riskDelta >= 0 ? "+" : ""}{riskDelta.toFixed(2)}</strong></div>
-          <div className="wp-mini-meta"><span>Validation</span><strong>{validationSummary?.status ?? "pending"}</strong></div>
+          <strong className="wp-highlight">{forecastRiskScore.toFixed(1)} / 100</strong>
+          <div className="wp-mini-meta"><span>{forecastHorizonHours}h delta</span><strong>{forecastRiskDelta >= 0 ? "+" : ""}{forecastRiskDelta.toFixed(2)}</strong></div>
+          <div className="wp-mini-meta"><span>Confidence</span><strong>{(forecastConfidence * 100).toFixed(0)}%</strong></div>
         </article>
       </section>
 

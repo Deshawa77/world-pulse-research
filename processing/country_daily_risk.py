@@ -13,6 +13,7 @@ from config import FEATURE_COLUMNS
 from database.mongo import db, get_latest_global_features, write_country_features_v2
 from processing.country_risk_validation import latest_country_risk_validation
 from processing.country_signal_fusion import build_country_external_signal_snapshot
+from processing.global_mood import augment_country_mood_fields
 from feature_store.feature_store import FeatureStore
 from feature_store.load_models import load_all_models
 
@@ -316,6 +317,75 @@ def _sentiment_values(country_docs):
     return values
 
 
+def _article_dedupe_key(doc):
+    data = doc.get("data") or {}
+    url = str(data.get("url") or "").strip().lower()
+    if url:
+        return f"url:{url}"
+    title = _strip_accents(str(data.get("title") or "").lower())
+    title = re.sub(r"[^a-z0-9\s]", " ", title)
+    title = re.sub(r"\s+", " ", title).strip()
+    if not title:
+        return None
+    published = str(data.get("published_at") or doc.get("timestamp") or "")[:10]
+    return f"title:{title}|{published}"
+
+
+def _dedupe_country_docs(country_docs):
+    deduped = []
+    seen = set()
+    for doc in country_docs:
+        dedupe_key = _article_dedupe_key(doc)
+        if dedupe_key and dedupe_key in seen:
+            continue
+        if dedupe_key:
+            seen.add(dedupe_key)
+        deduped.append(doc)
+    return deduped
+
+
+def _source_reliability_score(source_label):
+    label = f" {str(source_label or '').strip().lower()} "
+    hints = {
+        "reuters": 0.98,
+        "associated press": 0.97,
+        " ap ": 0.95,
+        "bbc": 0.93,
+        "financial times": 0.92,
+        "bloomberg": 0.94,
+        "washington post": 0.9,
+        "new york times": 0.92,
+        "the guardian": 0.88,
+        "al jazeera": 0.88,
+        "france 24": 0.87,
+        "dw": 0.86,
+        "euronews": 0.85,
+        "cnn": 0.82,
+        "newsapi": 0.74,
+        "gdelt": 0.78,
+        "globenewswire": 0.55,
+        "pr newswire": 0.55,
+    }
+    for token, score in hints.items():
+        if token in label:
+            return score
+    return 0.72
+
+
+def _compute_source_profile(country_docs):
+    source_ids = []
+    reliability_scores = []
+    for doc in country_docs:
+        data = doc.get("data") or {}
+        source_label = str(data.get("source_name") or doc.get("source") or "unknown").strip().lower()
+        source_ids.append(source_label)
+        reliability_scores.append(_source_reliability_score(source_label))
+    distinct_sources = len({source_id for source_id in source_ids if source_id})
+    source_diversity_score = min(distinct_sources / 4.0, 1.0)
+    source_reliability_score = float(np.mean(reliability_scores)) if reliability_scores else 0.72
+    return round(source_diversity_score, 4), round(source_reliability_score, 4)
+
+
 def _extract_topics(country_docs, top_n=5):
     counter = Counter()
     for doc in country_docs:
@@ -532,7 +602,7 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
     if ensure_fresh_news:
         refresh_summary = refresh_country_news(day=target_day, max_records=max_records, batch_size=batch_size)
 
-    grouped_news = _load_today_country_news(target_day)
+    grouped_news = {country: _dedupe_country_docs(docs) for country, docs in _load_today_country_news(target_day).items()}
     neutral_defaults = _neutral_feature_defaults()
     models = load_all_models()
     catalog = get_country_catalog()
@@ -559,6 +629,7 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
     }
     for country_code, country_name in catalog.items():
         country_docs = grouped_news.get(country_code, [])
+        source_diversity_score, source_reliability_score = _compute_source_profile(country_docs)
         sentiments = _sentiment_values(country_docs)
         topics = _extract_topics(country_docs)
         news_mean = round(float(np.mean(sentiments)), 5) if sentiments else 0.0
@@ -585,6 +656,12 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             "country_name": country_name,
             "source": "country_news_multi_source_daily",
             "source_count": len(country_docs),
+            "source_diversity_score": source_diversity_score,
+            "source_reliability_score": source_reliability_score,
+            "country_mood_score": feature_doc["country_mood_score"],
+            "country_mood_baseline": feature_doc["country_mood_baseline"],
+            "country_mood_sentiment_delta": feature_doc["country_mood_sentiment_delta"],
+            "country_mood_sentiment_zscore": feature_doc["country_mood_sentiment_zscore"],
             "conflict_headline_count": conflict_indicators["conflict_headline_count"],
             "weighted_keyword_severity": conflict_indicators["weighted_keyword_severity"],
             "source_confidence": conflict_indicators["source_confidence"],
@@ -599,6 +676,7 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             "war_state_rules": war_state_rules,
             "risk_category": "HIGH" if risk_score >= 70 else "MEDIUM" if risk_score >= 40 else "LOW",
         }
+        augment_country_mood_fields(country_code, feature_doc, mode="online")
         write_country_features_v2(country_code, feature_doc, mode="online")
         rows.append({
             "country": country_code,
@@ -609,6 +687,12 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             "top_topics": topics,
             "country_name": country_name,
             "source_count": len(country_docs),
+            "source_diversity_score": source_diversity_score,
+            "source_reliability_score": source_reliability_score,
+            "country_mood_score": feature_doc["country_mood_score"],
+            "country_mood_baseline": feature_doc["country_mood_baseline"],
+            "country_mood_sentiment_delta": feature_doc["country_mood_sentiment_delta"],
+            "country_mood_sentiment_zscore": feature_doc["country_mood_sentiment_zscore"],
             "conflict_headline_count": conflict_indicators["conflict_headline_count"],
             "weighted_keyword_severity": conflict_indicators["weighted_keyword_severity"],
             "source_confidence": conflict_indicators["source_confidence"],
@@ -631,7 +715,7 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
     if not df.empty:
         write_cols = [
             "country", "timestamp", *FEATURE_COLUMNS, "global_risk_score", "base_model_risk_score", "top_topics",
-            "country_name", "source_count", "conflict_headline_count", "weighted_keyword_severity",
+            "country_name", "source_count", "source_diversity_score", "source_reliability_score", "country_mood_score", "country_mood_baseline", "country_mood_sentiment_delta", "country_mood_sentiment_zscore", "conflict_headline_count", "weighted_keyword_severity",
             "source_confidence", "recency_weight", "regional_escalation", "social_unrest_score",
             "google_trends_pressure", "weather_stress", "external_signal_freshness", "war_state_rules", "source"
         ]

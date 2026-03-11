@@ -16,6 +16,7 @@ import joblib
 from email.mime.text import MIMEText
 import smtplib
 from utils import log_event
+from processing.global_mood import compute_global_operational_features
 from pymongo import MongoClient
 from datetime import datetime, timezone
 import uuid
@@ -29,40 +30,30 @@ def update_dashboard(latest_features_doc):
         print("No orchestrator features found! Dashboard not updated.")
         return
 
-    # Handle nested structure
-    features = latest_features_doc.get("features", latest_features_doc)
+    # Handle nested structure and preserve all computed operational metrics.
+    features = dict(latest_features_doc.get("features", latest_features_doc) or {})
+    features.pop("_id", None)
 
     dashboard_doc = {
         "timestamp": datetime.now(timezone.utc),
         "version": latest_features_doc.get("version", 1) + 1,
         "mode": "online",
         "features": {
-            "timestamp": features.get("timestamp", datetime.now(timezone.utc)),
-            "news_sentiment": features.get("news_sentiment", 0),
-            "news_sentiment_std": features.get("news_sentiment_std", 0),
-            "gdelt_sentiment": features.get("gdelt_sentiment", 0),
-            "gdelt_sentiment_std": features.get("gdelt_sentiment_std", 0),
-            "crypto_return": features.get("crypto_return", 0),
-            "crypto_volatility": features.get("crypto_volatility", 0),
-            "stock_return": features.get("stock_return", 0),
-            "stock_volatility": features.get("stock_volatility", 0),
-            "weather_anomaly": features.get("weather_anomaly", 0),
-            "global_risk_score": features.get("global_risk_score", 50),
-            "top_topics": features.get("top_topics", ["no data"]),
+            **features,
+            "timestamp": features.get("timestamp", datetime.now(timezone.utc).isoformat()),
             "_id": str(uuid.uuid4())
         }
     }
 
-
     db.get_collection("dashboard_features").insert_one(dashboard_doc)
-    print(f"Dashboard updated ✅ ID: {dashboard_doc['_id']}")
+    print(f"Dashboard updated with latest global_features at {dashboard_doc['timestamp']}")
 
     db.get_collection("service_status").update_one(
         {"service": "model"},
         {"$set": {"model_loaded": True}},
         upsert=True
     )
-    print("Model loaded flag set to True ✅")
+    print("Model loaded flag set to True")
 
 
 
@@ -467,6 +458,12 @@ def run_ml_engine():
         # -------------------------
         now_iso = datetime.utcnow().isoformat()
         now_dt = datetime.utcnow()
+        operational_features = compute_global_operational_features(
+            current_risk_score=round(prob * 100, 2),
+            mode="online",
+            current_timestamp=now_iso,
+            use_cache=False,
+        )
         global_doc = {
             "timestamp": now_dt,
             "version": int(time.time()),
@@ -475,7 +472,8 @@ def run_ml_engine():
                 **{k: float(v) for k, v in latest[FEATURE_COLUMNS].to_dict().items()},
                 "timestamp": now_iso,
                 "global_risk_score": round(prob * 100, 2),
-                "top_topics": top_topics
+                "top_topics": top_topics,
+                **operational_features,
             }
         }
         global_doc.pop("_id", None)
@@ -709,6 +707,12 @@ if __name__=="__main__":
                 top_topics = extract_recent_topics(db, top_n=5)
 
                 # 5️⃣ Build global_features document
+                operational_features = compute_global_operational_features(
+                    current_risk_score=risk_score,
+                    mode="online",
+                    current_timestamp=now_iso,
+                    use_cache=False,
+                )
                 global_doc = {
                     "timestamp": now_dt,
                     "version": int(time.time()),
@@ -721,6 +725,7 @@ if __name__=="__main__":
                         "timestamp": now_iso,
                         "global_risk_score": risk_score,
                         "top_topics": top_topics,
+                        **operational_features,
                     }
                 }
 

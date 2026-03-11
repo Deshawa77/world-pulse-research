@@ -51,10 +51,12 @@ def hash_password(password: str):
 
 
 from processing.global_risk import compute_global_risk
+from processing.global_mood import compute_global_operational_features
 from processing.country_daily_risk import country_daily_refresh_if_due
 from collectors.country_news import get_country_catalog
 from processing.sentinel_analysis import compute_sentinel_analysis, get_sentinel_history
 from processing.country_risk_validation import latest_country_risk_validation, run_country_risk_validation
+from processing.global_mood_validation import latest_global_mood_validation, run_global_mood_validation
 from feature_store.model_registry import get_production_model, list_models
 
 from backend.country_risk_stream import country_risk_stream_health
@@ -417,33 +419,46 @@ def compute_feature_drift(payload_features: list[float]) -> float | None:
 def get_latest_global_doc(mode: str = "online") -> dict:
     # Primary source: feature store collection.
     doc = db.global_features.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
-    if doc:
-        return serialize_doc(doc)
 
     # Fallback source used by orchestrator dashboard sync.
-    doc = db.dashboard_features.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
-    if doc:
-        return serialize_doc(doc)
+    if not doc:
+        doc = db.dashboard_features.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
 
     # Final safety fallback keeps frontend booting even before data arrives.
-    now = datetime.utcnow().isoformat()
-    return {
-        "mode": mode,
-        "version": 0,
-        "timestamp": now,
-        "features": {
+    if not doc:
+        now = datetime.utcnow().isoformat()
+        doc = {
+            "mode": mode,
+            "version": 0,
             "timestamp": now,
-            "news_sentiment": 0.0,
-            "gdelt_sentiment": 0.0,
-            "crypto_return": 0.0,
-            "crypto_volatility": 0.0,
-            "stock_return": 0.0,
-            "stock_volatility": 0.0,
-            "weather_anomaly": 0.0,
-            "global_risk_score": 50.0,
-            "top_topics": ["no data"],
-        },
-    }
+            "features": {
+                "timestamp": now,
+                "news_sentiment": 0.0,
+                "gdelt_sentiment": 0.0,
+                "crypto_return": 0.0,
+                "crypto_volatility": 0.0,
+                "stock_return": 0.0,
+                "stock_volatility": 0.0,
+                "weather_anomaly": 0.0,
+                "global_risk_score": 50.0,
+                "top_topics": ["no data"],
+            },
+        }
+
+    doc = serialize_doc(doc)
+    features = dict(doc.get("features") or {})
+    current_timestamp = features.get("timestamp") or doc.get("timestamp")
+    current_risk = float(features.get("global_risk_score", 50.0) or 50.0)
+    features.update(
+        compute_global_operational_features(
+            current_risk_score=current_risk,
+            mode=mode,
+            current_timestamp=current_timestamp,
+            use_cache=True,
+        )
+    )
+    doc["features"] = features
+    return doc
 
 
 def parse_iso_dt(value: str | None) -> datetime | None:
@@ -665,6 +680,16 @@ def get_global_history_api(
             "stock_return": float(f.get("stock_return", 0.0)) * 100,
             "stock_volatility": float(f.get("stock_volatility", 0.0)) * 100,
             "weather_anomaly": float(f.get("weather_anomaly", 0.0)) * 100,
+            "global_mood_score": float(f.get("global_mood_score", 50.0)),
+            "global_mood_confidence": float(f.get("global_mood_confidence", 0.0)),
+            "global_mood_uncertainty": float(f.get("global_mood_uncertainty", 18.0)),
+            "global_mood_verified_countries": int(f.get("global_mood_verified_countries", 0) or 0),
+            "global_mood_eligible_countries": int(f.get("global_mood_eligible_countries", f.get("global_mood_verified_countries", 0)) or 0),
+            "global_mood_used_countries": int(f.get("global_mood_used_countries", f.get("global_mood_contributing_countries", 0)) or 0),
+            "global_mood_excluded_countries": int(f.get("global_mood_excluded_countries", 0) or 0),
+            "forecast_risk_score": float(f.get("forecast_risk_score", f.get("global_risk_score", 50.0))),
+            "forecast_risk_delta": float(f.get("forecast_risk_delta", 0.0)),
+            "forecast_confidence": float(f.get("forecast_confidence", 0.0)),
             "top_topics": f.get("top_topics", ["no data"]),
         })
     return data
@@ -2305,6 +2330,18 @@ def observability_country_risk_validation(request: Request, role: str = Depends(
 @limiter.limit("5/minute")
 def observability_country_risk_validation_run(request: Request, role: str = Depends(require_admin)):
     return run_country_risk_validation()
+
+
+@app.get("/observability/global-mood-validation")
+@limiter.limit("10/minute")
+def observability_global_mood_validation(request: Request, role: str = Depends(require_admin)):
+    return latest_global_mood_validation()
+
+
+@app.post("/observability/global-mood-validation/run")
+@limiter.limit("5/minute")
+def observability_global_mood_validation_run(request: Request, role: str = Depends(require_admin)):
+    return run_global_mood_validation()
 
 
 # =====================================================
