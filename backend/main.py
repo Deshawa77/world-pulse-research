@@ -1394,53 +1394,94 @@ def _safe_int(value, default: int = 0) -> int:
 def _safe_timestamp(doc: dict, *paths: str) -> str:
     return str(_pick_nested(doc, *paths, default=datetime.utcnow().isoformat()))
 
+
+def _parse_timestamp(value) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        normalized = value.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _latest_timestamp(*docs: dict) -> str:
+    stamps = [
+        _parse_timestamp(
+            _pick_nested(doc, "data_timestamp", "data.time", "timestamp", "collected_at", default=None)
+        )
+        for doc in docs
+        if doc
+    ]
+    valid = [stamp for stamp in stamps if stamp != datetime.min.replace(tzinfo=timezone.utc)]
+    latest = max(valid) if valid else datetime.utcnow().replace(tzinfo=timezone.utc)
+    return latest.isoformat()
+
+
+def _series_change(values: list[float]) -> tuple[float, float]:
+    if not values:
+        return 0.0, 0.0
+    current = values[0]
+    previous = values[1] if len(values) > 1 else current
+    change = round(current - previous, 4)
+    change_percent = round((change / previous) * 100, 2) if previous else 0.0
+    return change, change_percent
+
 @app.get("/dashboard/crypto-pulse")
 @limiter.limit("60/minute")
 def dashboard_crypto_pulse(request: Request, role: str = Depends(check_role), limit: int = Query(10, ge=1, le=50)):
     """
     Returns real-time cryptocurrency market data including prices, changes, and volume.
     """
-    # Get latest crypto data from MongoDB
-    crypto_docs = list(db.crypto.find().sort("data_timestamp", -1).limit(limit * 3))  # Get more to deduplicate by coin
-    
-    # Process and deduplicate by coin_id, keeping only the latest for each
-    seen_coins = set()
-    crypto_items = []
-    
+    crypto_docs = list(db.crypto.find().sort("data_timestamp", -1).limit(limit * 48))
+    price_history_by_coin: dict[str, list[dict]] = defaultdict(list)
     for doc in crypto_docs:
         coin_id = str(_pick_nested(doc, "data_coin_id", "data.coin_id", "data.coin", "coin_id", default="unknown"))
-        if coin_id in seen_coins:
+        price_history_by_coin[coin_id].append(doc)
+
+    crypto_items = []
+
+    for coin_id, docs in price_history_by_coin.items():
+        latest_doc = docs[0]
+        price_points = [
+            _safe_float(_pick_nested(doc, "data_price", "data.price", "price", default=0.0))
+            for doc in docs
+        ]
+        price_points = [point for point in price_points if point > 0]
+        if not price_points:
             continue
-        seen_coins.add(coin_id)
-        
-        price = _safe_float(_pick_nested(doc, "data_price", "data.price", "price", default=0.0))
-        # Calculate 24h change (mock for now, would need historical data)
-        change_24h = round((price * 0.02) * (1 if hash(coin_id) % 2 == 0 else -1), 2)
-        change_percent = round((change_24h / price) * 100, 2) if price > 0 else 0
-        
+
+        price = round(price_points[0], 2)
+        previous_price = price_points[min(len(price_points) - 1, 23)] if len(price_points) > 1 else price_points[0]
+        change_24h = round(price_points[0] - previous_price, 2)
+        change_percent = round((change_24h / previous_price) * 100, 2) if previous_price else 0.0
+        sparkline_points = list(reversed(price_points[:11]))
+        observed_volume = _safe_float(_pick_nested(latest_doc, "data_volume", "data.volume", "volume_24h", default=0.0))
+        observed_market_cap = _safe_float(_pick_nested(latest_doc, "data_market_cap", "data.market_cap", "market_cap", default=0.0))
+
         crypto_items.append({
-            "id": str(doc.get("_id", "")),
+            "id": str(latest_doc.get("_id", "")),
             "coin_id": coin_id,
             "name": coin_id.replace("-", " ").title(),
             "symbol": coin_id[:3].upper(),
-            "price_usd": round(price, 2),
+            "price_usd": price,
             "change_24h": change_24h,
             "change_percent": change_percent,
-            "volume_24h": round(price * 1000000 * (0.5 + (hash(coin_id) % 100) / 100), 0),
-            "market_cap": round(price * 10000000 * (1 + (hash(coin_id) % 50) / 100), 0),
-            "timestamp": _safe_timestamp(doc, "data_timestamp", "data.timestamp", "timestamp", "collected_at"),
-            "sparkline": [round(price * (1 + (i - 5) * 0.01), 2) for i in range(11)]  # Mock sparkline
+            "volume_24h": round(observed_volume, 0),
+            "market_cap": round(observed_market_cap, 0),
+            "timestamp": _safe_timestamp(latest_doc, "data_timestamp", "data.timestamp", "timestamp", "collected_at"),
+            "sparkline": [round(point, 2) for point in sparkline_points],
         })
-        
-        if len(crypto_items) >= limit:
-            break
-    
-    # Sort by market cap
-    crypto_items.sort(key=lambda x: x["market_cap"], reverse=True)
-    
+
+    crypto_items.sort(key=lambda item: (_parse_timestamp(item["timestamp"]), item["price_usd"]), reverse=True)
+    crypto_items = crypto_items[:limit]
+
     return {
         "items": crypto_items,
-        "last_updated": datetime.utcnow().isoformat(),
+        "last_updated": _latest_timestamp(*crypto_docs),
         "total_count": len(crypto_items)
     }
 
@@ -1452,10 +1493,8 @@ def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role)
     Returns real-time disaster alerts including earthquakes and severe weather.
     """
     # Get latest earthquake data
-    earthquake_docs = list(db.earthquakes.find().sort("timestamp", -1).limit(limit // 2))
-    
-    # Get latest weather alerts
-    weather_docs = list(db.weather.find().sort("timestamp", -1).limit(limit // 2))
+    earthquake_docs = list(db.earthquakes.find().sort("collected_at", -1).limit(max(1, limit // 2)))
+    weather_docs = list(db.weather.find().sort("data_timestamp", -1).limit(max(1, limit // 2)))
     
     disaster_items = []
     
@@ -1501,7 +1540,7 @@ def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role)
     
     return {
         "items": disaster_items[:limit],
-        "last_updated": datetime.utcnow().isoformat(),
+        "last_updated": _latest_timestamp(*earthquake_docs, *weather_docs),
         "total_count": len(disaster_items)
     }
 
@@ -1512,29 +1551,31 @@ def dashboard_economic_indicators(request: Request, role: str = Depends(check_ro
     """
     Returns real-time economic indicators including currency rates and key metrics.
     """
-    # Get latest currency data from frankfurter (Euro reference rates)
-    currency_pairs = [
-        {"from": "EUR", "to": "USD", "name": "EUR/USD"},
-        {"from": "GBP", "to": "USD", "name": "GBP/USD"},
-        {"from": "USD", "to": "JPY", "name": "USD/JPY"},
-        {"from": "USD", "to": "CHF", "name": "USD/CHF"},
-    ]
-    
-    # Mock currency rates (would come from frankfurter data)
+    economic_docs = list(db.economics.find().sort("collected_at", -1).limit(300))
+
     currency_rates = []
-    for pair in currency_pairs:
-        base_rate = 1.0 if pair["from"] == "EUR" else 0.85 if pair["from"] == "GBP" else 110.0 if pair["to"] == "JPY" else 0.92
-        change = round((hash(pair["name"]) % 100 - 50) / 1000, 4)
+    currency_history: dict[str, list[float]] = defaultdict(list)
+    for doc in economic_docs:
+        if str(doc.get("source", "")).lower() != "frankfurter":
+            continue
+        base_currency = str(_pick_nested(doc, "data.base_currency", "data_base_currency", default="USD"))
+        currency = str(_pick_nested(doc, "data.currency", "data_currency", default=""))
+        if not currency:
+            continue
+        pair_name = f"{base_currency}/{currency}"
+        currency_history[pair_name].append(_safe_float(_pick_nested(doc, "data.rate", "data_rate", "rate", default=0.0)))
+
+    for pair_name, values in list(currency_history.items())[:8]:
+        current_rate = round(values[0], 4) if values else 0.0
+        change, change_percent = _series_change(values[:2])
         currency_rates.append({
-            "pair": pair["name"],
-            "rate": round(base_rate + change, 4),
+            "pair": pair_name,
+            "rate": current_rate,
             "change_24h": change,
-            "change_percent": round((change / base_rate) * 100, 2)
+            "change_percent": change_percent
         })
-    
-    # Get FRED economic data
-    fred_docs = list(db.economics.find().sort("timestamp", -1).limit(5))
-    
+
+    fred_docs = [doc for doc in economic_docs if str(doc.get("source", "")).lower() == "fred"]
     economic_releases = []
     for doc in fred_docs:
         economic_releases.append({
@@ -1544,31 +1585,32 @@ def dashboard_economic_indicators(request: Request, role: str = Depends(check_ro
             "date": str(_pick_nested(doc, "date", "data.date", default=datetime.utcnow().isoformat())),
             "timestamp": _safe_timestamp(doc, "timestamp", "data.timestamp", "collected_at")
         })
-    
-    # Key indicators summary
-    indicators = {
-        "interest_rate": {
-            "value": 5.25,
-            "change": 0.25,
-            "source": "Federal Reserve"
-        },
-        "inflation_rate": {
-            "value": 3.2,
-            "change": -0.1,
-            "source": "CPI Data"
-        },
-        "unemployment": {
-            "value": 3.7,
-            "change": -0.2,
-            "source": "BLS"
+
+    latest_by_series: dict[str, list[float]] = defaultdict(list)
+    for doc in fred_docs:
+        series_id = str(_pick_nested(doc, "series_id", "data.series_id", "data.indicator", default="UNKNOWN"))
+        latest_by_series[series_id].append(_safe_float(_pick_nested(doc, "value", "data.value", default=0.0)))
+
+    def build_indicator(series_key: str, fallback_source: str):
+        values = latest_by_series.get(series_key, [])
+        change, _ = _series_change(values[:2])
+        return {
+            "value": round(values[0], 2) if values else 0.0,
+            "change": round(change, 2),
+            "source": fallback_source if values else "Unavailable"
         }
+
+    indicators = {
+        "interest_rate": build_indicator("FEDFUNDS", "Federal Reserve"),
+        "inflation_rate": build_indicator("CPIAUCSL", "CPI Data"),
+        "unemployment": build_indicator("UNRATE", "BLS"),
     }
-    
+
     return {
         "currency_rates": currency_rates,
-        "economic_releases": economic_releases,
+        "economic_releases": economic_releases[:5],
         "key_indicators": indicators,
-        "last_updated": datetime.utcnow().isoformat()
+        "last_updated": _latest_timestamp(*economic_docs)
     }
 
 
@@ -1578,49 +1620,43 @@ def dashboard_health_alerts(request: Request, role: str = Depends(check_role), l
     """
     Returns WHO health alerts and disease outbreak information.
     """
-    # Get WHO data from MongoDB
-    who_docs = list(db.health.find().sort("timestamp", -1).limit(limit))
-    
+    who_docs = list(db.health.find().sort("collected_at", -1).limit(limit))
     health_items = []
-    
-    # Disease outbreak templates for realistic data
-    outbreak_templates = [
-        {"disease": "Influenza A", "type": "seasonal", "severity": "guarded"},
-        {"disease": "COVID-19", "type": "pandemic", "severity": "elevated"},
-        {"disease": "Ebola", "type": "outbreak", "severity": "critical"},
-        {"disease": "Malaria", "type": "endemic", "severity": "guarded"},
-        {"disease": "Dengue Fever", "type": "outbreak", "severity": "elevated"},
-    ]
-    
     for idx, doc in enumerate(who_docs):
-        template = outbreak_templates[idx % len(outbreak_templates)]
-        
+        indicator = str(_pick_nested(doc, "data.indicator", "indicator", default="WHO Indicator"))
+        cases = _safe_int(_pick_nested(doc, "cases", "data.cases", "data.value", "value", default=0), default=0)
+        deaths = _safe_int(_pick_nested(doc, "deaths", "data.deaths", default=max(0, int(cases * 0.02))), default=max(0, int(cases * 0.02)))
+        severity = "critical" if cases >= 100000 else "elevated" if cases >= 10000 else "guarded"
         health_items.append({
             "id": str(doc.get("_id", f"health-{idx}")),
-            "disease": template["disease"],
-            "type": template["type"],
-            "severity": template["severity"],
+            "disease": indicator.replace("_", " "),
+            "type": "indicator",
+            "severity": severity,
             "location": str(_pick_nested(doc, "country", "data.country", "data.SpatialDim", default="Global")),
-            "cases": _safe_int(_pick_nested(doc, "cases", "data.cases", "data.value", default=1000 + (idx * 500)), default=1000 + (idx * 500)),
-            "deaths": _safe_int(_pick_nested(doc, "deaths", "data.deaths", default=50 + (idx * 10)), default=50 + (idx * 10)),
-            "status": "active" if idx < 3 else "monitoring",
+            "cases": cases,
+            "deaths": deaths,
+            "status": "active" if severity in {"critical", "elevated"} else "monitoring",
             "timestamp": _safe_timestamp(doc, "timestamp", "data.timestamp", "collected_at"),
             "source": "WHO",
-            "description": f"Ongoing {template['disease']} situation requires continued monitoring and response."
+            "description": f"Latest WHO indicator update for {indicator.replace('_', ' ')} in {str(_pick_nested(doc, 'country', 'data.country', 'data.SpatialDim', default='Global'))}."
         })
-    
-    # Add vaccination campaign data
+
+    vaccination_docs = [
+        doc for doc in who_docs
+        if "vacc" in str(_pick_nested(doc, "data.indicator", "indicator", default="")).lower()
+    ]
+    vaccination_values = [_safe_float(_pick_nested(doc, "data.value", "value", default=0.0)) for doc in vaccination_docs]
     vaccination_data = {
-        "global_coverage": 68.5,
+        "global_coverage": round(max(vaccination_values), 1) if vaccination_values else 0.0,
         "target_coverage": 70.0,
-        "doses_administered": 12500000000,
-        "campaigns_active": 45
+        "doses_administered": int(sum(max(value, 0.0) for value in vaccination_values)),
+        "campaigns_active": len(vaccination_docs)
     }
-    
+
     return {
         "outbreaks": health_items,
         "vaccination": vaccination_data,
-        "last_updated": datetime.utcnow().isoformat(),
+        "last_updated": _latest_timestamp(*who_docs),
         "total_active": len([h for h in health_items if h["status"] == "active"])
     }
 
@@ -1631,49 +1667,49 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
     """
     Returns Google Trends data showing trending search terms and topics.
     """
-    # Get trends data from MongoDB
-    trends_docs = list(db.trends.find().sort("timestamp", -1).limit(limit))
-    
+    trends_docs = list(db.trends.find().sort("collected_at", -1).limit(limit * 8))
     trend_items = []
-    
-    # Trending topics templates
-    topic_categories = [
-        "Technology", "Politics", "Entertainment", "Sports", 
-        "Business", "Science", "Health", "Environment"
-    ]
-    
-    for idx, doc in enumerate(trends_docs):
-        topic = str(_pick_nested(doc, "topic", "data.topic", "data.query", default=f"Trending Topic {idx + 1}"))
-        category = topic_categories[idx % len(topic_categories)]
-        
-        # Calculate trend velocity (mock)
-        base_interest = 50 + (idx * 5)
-        velocity = round((hash(topic) % 100) / 10, 1)
-        
+    grouped_topics: dict[str, list[dict]] = defaultdict(list)
+    for doc in trends_docs:
+        topic = str(_pick_nested(doc, "topic", "data.topic", "data.query", "data.keyword", default=""))
+        if topic:
+            grouped_topics[topic].append(doc)
+
+    for idx, (topic, docs) in enumerate(grouped_topics.items()):
+        values = [
+            _safe_int(_pick_nested(doc, "value", "data.value", "search_volume", "data.interest", "data.interest_score", default=0), default=0)
+            for doc in docs
+        ]
+        values = [value for value in values if value >= 0]
+        if not values:
+            continue
+        current_interest = values[0]
+        previous_interest = values[1] if len(values) > 1 else current_interest
+        velocity = round(current_interest - previous_interest, 1)
+        trend_direction = "rising" if velocity > 0 else "falling" if velocity < 0 else "stable"
+        breakout = current_interest >= 80 or velocity >= 20
         trend_items.append({
-            "id": str(doc.get("_id", f"trend-{idx}")),
+            "id": str(docs[0].get("_id", f"trend-{idx}")),
             "topic": topic,
-            "category": category,
-            "search_volume": _safe_int(_pick_nested(doc, "value", "data.value", "search_volume", default=base_interest * 1000), default=base_interest * 1000),
-            "interest_score": min(100, base_interest + int(velocity * 5)),
+            "category": "Public Interest",
+            "search_volume": current_interest,
+            "interest_score": min(100, current_interest),
             "velocity": velocity,
-            "trend_direction": "rising" if velocity > 5 else "stable" if velocity > 2 else "falling",
-            "breakout": velocity > 8,
-            "timestamp": _safe_timestamp(doc, "timestamp", "data_timestamp", "collected_at"),
+            "trend_direction": trend_direction,
+            "breakout": breakout,
+            "timestamp": _safe_timestamp(docs[0], "timestamp", "data_timestamp", "collected_at"),
             "related_queries": [
                 f"{topic} news",
                 f"{topic} latest",
                 f"{topic} update"
             ]
         })
-    
-    # Sort by interest score (highest first)
-    trend_items.sort(key=lambda x: x["interest_score"], reverse=True)
-    
-    # Calculate summary stats
+    trend_items.sort(key=lambda x: (x["interest_score"], _parse_timestamp(x["timestamp"])), reverse=True)
+    trend_items = trend_items[:limit]
+
     rising_count = len([t for t in trend_items if t["trend_direction"] == "rising"])
     breakout_count = len([t for t in trend_items if t["breakout"]])
-    
+
     return {
         "trends": trend_items,
         "summary": {
@@ -1688,7 +1724,7 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
                 if trend_items else "None"
             )
         },
-        "last_updated": datetime.utcnow().isoformat()
+        "last_updated": _latest_timestamp(*trends_docs)
     }
 
 

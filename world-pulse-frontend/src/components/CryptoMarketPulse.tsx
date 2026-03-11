@@ -66,6 +66,16 @@ export default function CryptoMarketPulse({
     return `${vol.toFixed(0)}`;
   };
 
+  const getSparklinePoints = (sparkline: number[]) => {
+    if (sparkline.length <= 1) return "0,10 60,10";
+    const min = Math.min(...sparkline);
+    const max = Math.max(...sparkline);
+    const spread = max - min || 1;
+    return sparkline
+      .map((price, i) => `${(i / (sparkline.length - 1)) * 60},${20 - ((price - min) / spread) * 20}`)
+      .join(" ");
+  };
+
   if (loading) {
     return (
       <div className={`crypto-market-pulse ${className}`} style={containerStyle}>
@@ -107,6 +117,9 @@ export default function CryptoMarketPulse({
 
       {/* Crypto Items */}
       <div style={itemsContainerStyle}>
+        {cryptoItems.length === 0 ? (
+          <div style={emptyStyle}>Awaiting live crypto records from MongoDB</div>
+        ) : null}
         {cryptoItems.map((item, index) => (
           <div 
             key={item.id} 
@@ -159,9 +172,7 @@ export default function CryptoMarketPulse({
                   fill="none"
                   stroke={item.change_percent >= 0 ? "#22c55e" : "#ef4444"}
                   strokeWidth="2"
-                  points={item.sparkline.map((price, i) => 
-                    `${(i / (item.sparkline.length - 1)) * 60},${20 - ((price - Math.min(...item.sparkline)) / (Math.max(...item.sparkline) - Math.min(...item.sparkline))) * 20}`
-                  ).join(' ')}
+                  points={getSparklinePoints(item.sparkline)}
                 />
               </svg>
             </div>
@@ -269,6 +280,17 @@ const itemsContainerStyle: React.CSSProperties = {
   gap: "8px",
   flex: 1,
   overflow: "auto",
+};
+
+const emptyStyle: React.CSSProperties = {
+  flex: 1,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  color: "#94a3b8",
+  fontSize: "13px",
+  textAlign: "center",
+  padding: "12px",
 };
 
 const itemStyle: React.CSSProperties = {
