@@ -247,7 +247,7 @@ COLLECTOR_TASKS = {
     "trends": (lambda: trends.fetch_trends("earthquake"), "trends_topic"),
     "earthquakes": (lambda: usgs.fetch_earthquakes(), "earthquakes_topic"),
     "weather": (lambda: weather.collect_weather_for_orchestrator(), "weather_topic"),
-    "crypto": (lambda: coingecko.fetch_crypto("bitcoin","usd",5), "crypto_topic"),
+    "crypto": (lambda: coingecko.fetch_crypto(coingecko.get_configured_coin_ids(), "usd", 5), "crypto_topic"),
     "fred": (lambda: fred.fetch_indicator("GDP","2025-01-01","2026-01-01"), "fred_topic"),
     "exchange_rates": (lambda: frankfurter.fetch_exchange_rates("USD"), "exchange_rates_topic"),
     "who": (lambda: who.fetch_who_indicator("WHOSIS_000001", max_results=5), "who_topic"),

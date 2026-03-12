@@ -17,6 +17,7 @@ export default function CryptoMarketPulse({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("");
+  const [totalCount, setTotalCount] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchCryptoData = useCallback(async () => {
@@ -24,6 +25,7 @@ export default function CryptoMarketPulse({
       const data = await getCryptoPulse(maxItems);
       setCryptoItems(data.items);
       setLastUpdated(data.last_updated);
+      setTotalCount(data.total_count);
       setError(null);
     } catch (err) {
       setError("Failed to load crypto data");
@@ -183,7 +185,7 @@ export default function CryptoMarketPulse({
       {/* Footer */}
       <div style={footerStyle}>
         <span style={footerTextStyle}>
-          {cryptoItems.length} assets • Updated {new Date(lastUpdated).toLocaleTimeString()}
+          {totalCount > cryptoItems.length ? `Showing ${cryptoItems.length} of ${totalCount} assets` : `${cryptoItems.length} assets`} | Updated {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : "n/a"}
         </span>
       </div>
 

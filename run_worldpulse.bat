@@ -1,13 +1,13 @@
 @echo off
-REM ===============================
-REM Run World Pulse Orchestrator
-REM ===============================
+setlocal
 
-REM Set the working directory
-cd /d C:\Projects\world_pulse
+set "ROOT=%~dp0"
+cd /d "%ROOT%"
 
-REM Optional: log output to a file
-set LOGFILE=C:\Projects\world_pulse\orchestrator.log
+if not exist "%ROOT%logs" mkdir "%ROOT%logs"
+set "LOGFILE=%ROOT%logs\orchestrator.log"
 
-REM Run Python script
-"C:\Users\ROG\AppData\Local\Programs\Python\Python310\python.exe" orchestrator.py >> "%LOGFILE%" 2>&1
+set "PYTHON_EXE=%ROOT%venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
+
+"%PYTHON_EXE%" orchestrator.py >> "%LOGFILE%" 2>&1

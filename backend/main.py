@@ -238,6 +238,14 @@ model_monitoring_collection = db["model_monitoring"]
 users_collection = db["users"]
 operator_events_collection = db["operator_events"]
 sentinel_feedback_collection = db["sentinel_feedback"]
+country_features_collection = db["country_features"]
+global_features_collection = db["global_features"]
+dashboard_features_collection = db["dashboard_features"]
+earthquakes_collection = db["earthquakes"]
+weather_collection = db["weather"]
+economics_collection = db["economics"]
+health_collection = db["health"]
+trends_collection = db["trends"]
 # Create indexes for scalable queries (run once)
 prediction_collection.create_index([("timestamp", DESCENDING)])
 prediction_collection.create_index([("model_version", ASCENDING)])
@@ -246,6 +254,16 @@ model_monitoring_collection.create_index([("model_version", ASCENDING)])
 users_collection.create_index([("email", ASCENDING)], unique=True)
 operator_events_collection.create_index([("timestamp", DESCENDING)])
 sentinel_feedback_collection.create_index([("timestamp", DESCENDING)])
+operator_events_collection.create_index([("country", ASCENDING), ("timestamp", DESCENDING)])
+country_features_collection.create_index([("mode", ASCENDING), ("timestamp", DESCENDING)])
+country_features_collection.create_index([("country", ASCENDING), ("mode", ASCENDING), ("timestamp", DESCENDING)])
+global_features_collection.create_index([("mode", ASCENDING), ("timestamp", DESCENDING)])
+dashboard_features_collection.create_index([("mode", ASCENDING), ("timestamp", DESCENDING)])
+earthquakes_collection.create_index([("collected_at", DESCENDING)])
+weather_collection.create_index([("data_timestamp", DESCENDING)])
+economics_collection.create_index([("collected_at", DESCENDING)])
+health_collection.create_index([("collected_at", DESCENDING)])
+trends_collection.create_index([("collected_at", DESCENDING)])
 # =====================================================
 # Model Cache
 # =====================================================
@@ -1461,19 +1479,33 @@ def dashboard_crypto_pulse(request: Request, role: str = Depends(check_role), li
     """
     Returns real-time cryptocurrency market data including prices, changes, and volume.
     """
-    crypto_docs = list(db.crypto.find().sort("data_timestamp", -1).limit(limit * 48))
+    query_limit = max(limit * 96, 240)
+    crypto_docs = list(db.crypto.find().sort("data_timestamp", -1).limit(query_limit))
     price_history_by_coin: dict[str, list[dict]] = defaultdict(list)
     for doc in crypto_docs:
         coin_id = str(_pick_nested(doc, "data_coin_id", "data.coin_id", "data.coin", "coin_id", default="unknown"))
-        price_history_by_coin[coin_id].append(doc)
+        if coin_id:
+            price_history_by_coin[coin_id].append(doc)
 
     crypto_items = []
 
     for coin_id, docs in price_history_by_coin.items():
-        latest_doc = docs[0]
+        unique_docs = []
+        seen_timestamps = set()
+        for doc in docs:
+            timestamp_key = _safe_timestamp(doc, "data_timestamp", "data.timestamp", "timestamp", "collected_at")
+            if timestamp_key in seen_timestamps:
+                continue
+            seen_timestamps.add(timestamp_key)
+            unique_docs.append(doc)
+
+        if not unique_docs:
+            continue
+
+        latest_doc = unique_docs[0]
         price_points = [
             _safe_float(_pick_nested(doc, "data_price", "data.price", "price", default=0.0))
-            for doc in docs
+            for doc in unique_docs
         ]
         price_points = [point for point in price_points if point > 0]
         if not price_points:
@@ -1486,12 +1518,14 @@ def dashboard_crypto_pulse(request: Request, role: str = Depends(check_role), li
         sparkline_points = list(reversed(price_points[:11]))
         observed_volume = _safe_float(_pick_nested(latest_doc, "data_volume", "data.volume", "volume_24h", default=0.0))
         observed_market_cap = _safe_float(_pick_nested(latest_doc, "data_market_cap", "data.market_cap", "market_cap", default=0.0))
+        coin_name = str(_pick_nested(latest_doc, "data_name", "data.name", "name", default=coin_id.replace("-", " ").title()))
+        coin_symbol = str(_pick_nested(latest_doc, "data_symbol", "data.symbol", "symbol", default=coin_id[:4].upper())).upper()
 
         crypto_items.append({
             "id": str(latest_doc.get("_id", "")),
             "coin_id": coin_id,
-            "name": coin_id.replace("-", " ").title(),
-            "symbol": coin_id[:3].upper(),
+            "name": coin_name,
+            "symbol": coin_symbol,
             "price_usd": price,
             "change_24h": change_24h,
             "change_percent": change_percent,
@@ -1501,13 +1535,17 @@ def dashboard_crypto_pulse(request: Request, role: str = Depends(check_role), li
             "sparkline": [round(point, 2) for point in sparkline_points],
         })
 
-    crypto_items.sort(key=lambda item: (_parse_timestamp(item["timestamp"]), item["price_usd"]), reverse=True)
+    total_available = len(crypto_items)
+    crypto_items.sort(
+        key=lambda item: (_parse_timestamp(item["timestamp"]), item["market_cap"], item["price_usd"]),
+        reverse=True,
+    )
     crypto_items = crypto_items[:limit]
 
     return {
         "items": crypto_items,
         "last_updated": _latest_timestamp(*crypto_docs),
-        "total_count": len(crypto_items)
+        "total_count": total_available,
     }
 
 
@@ -2395,29 +2433,70 @@ async def websocket_country_risk_map(websocket: WebSocket, x_api_key: str = Head
         return
 
     await websocket.accept()
-    consumer = get_consumer(
-        topics=["country_risk_updates"],
-        group_id=f"dashboard-country-risk-{uuid.uuid4()}",
-        auto_offset_reset="latest",
-        enable_auto_commit=True,
-        consumer_timeout_ms=1000,
-    )
+    consumer_config = {
+        "topics": ["country_risk_updates"],
+        "group_id": f"dashboard-country-risk-{uuid.uuid4()}",
+        "auto_offset_reset": "latest",
+        "enable_auto_commit": True,
+        "consumer_timeout_ms": 250,
+    }
+
+    def drain_consumer(active_consumer):
+        records = active_consumer.poll(timeout_ms=250, max_records=64)
+        messages = []
+        for batch in records.values():
+            for message in batch:
+                messages.append(message.value)
+        return messages
+
+    consumer = None
     try:
+        try:
+            consumer = await asyncio.to_thread(get_consumer, **consumer_config)
+        except Exception as exc:
+            logger.warning(
+                "country_risk_ws_consumer_unavailable",
+                extra={"event": {"error": str(exc)}},
+            )
+
         while True:
-            sent_any = False
-            for message in consumer:
-                await websocket.send_json(message.value)
-                sent_any = True
-            if not sent_any:
+            if consumer is None:
+                await asyncio.sleep(3)
+                try:
+                    consumer = await asyncio.to_thread(get_consumer, **consumer_config)
+                except Exception:
+                    continue
+                continue
+
+            try:
+                messages = await asyncio.to_thread(drain_consumer, consumer)
+            except Exception as exc:
+                logger.warning(
+                    "country_risk_ws_consumer_failed",
+                    extra={"event": {"error": str(exc)}},
+                )
+                try:
+                    await asyncio.to_thread(consumer.close)
+                except Exception:
+                    pass
+                consumer = None
                 await asyncio.sleep(1)
+                continue
+
+            if not messages:
+                await asyncio.sleep(0.1)
+                continue
+
+            for payload in messages:
+                await websocket.send_json(payload)
     except WebSocketDisconnect:
         return
     finally:
-        try:
-            consumer.close()
-        except Exception:
-            pass
-
+        if consumer is not None:
+            try:
+                await asyncio.to_thread(consumer.close)
+            except Exception:
+                pass
 
 @app.websocket("/ws/sentinel")
 async def websocket_sentinel(websocket: WebSocket, x_api_key: str = Header(None), api_key: str = Query(None)):

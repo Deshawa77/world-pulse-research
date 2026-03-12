@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
@@ -1111,7 +1111,7 @@ export default function Dashboard() {
           <div className="panel-content panel-content-scrollless">
             {showDeferredPanels ? (
               <Suspense fallback={<DeferredPanelPlaceholder label="Loading crypto market pulse..." />}>
-                <CryptoMarketPulse maxItems={5} refreshInterval={15000} />
+                <CryptoMarketPulse maxItems={8} refreshInterval={15000} />
               </Suspense>
             ) : (
               <DeferredPanelPlaceholder label="Preparing crypto market pulse..." />
@@ -1289,13 +1289,3 @@ export default function Dashboard() {
     </main>
   );
 }
-
-
-
-
-
-
-
-
-
-
