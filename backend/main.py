@@ -2004,14 +2004,21 @@ def analytics_market_reactions(request: Request, role: str = Depends(check_role)
     return list(reversed(rows))
 
 
+@app.get("/analytics/incidents-outlook")
 @app.get("/analytics/event-predictions")
-@limiter.limit("15/minute")
+@limiter.limit("60/minute")
 def analytics_event_predictions(request: Request, role: str = Depends(check_role), limit: int = Query(10, ge=1, le=100)):
     country_docs = list(db.country_features.find({"mode": "online"}).sort("timestamp", -1).limit(limit))
     events = []
-    for idx, d in enumerate(country_docs):
-        f = d.get("features", {})
-        risk = float(f.get("global_risk_score", 50.0))
+    for d in country_docs:
+        features = d.get("features")
+        f = features if isinstance(features, dict) else {}
+
+        raw_risk = f.get("global_risk_score", 50.0)
+        try:
+            risk = float(raw_risk)
+        except (TypeError, ValueError):
+            risk = 50.0
         sev = max(1, min(10, int(risk / 10)))
         events.append({
             "event_id": str(d.get("_id")),
@@ -2828,3 +2835,4 @@ def load_test_users():
             "name": user["name"],
             "created_at": datetime.utcnow().isoformat(),
         })
+

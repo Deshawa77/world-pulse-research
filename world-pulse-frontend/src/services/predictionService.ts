@@ -63,6 +63,24 @@ export interface EventPrediction {
   timestamp: string;
 }
 
+type ApiErrorLike = {
+  code?: string;
+  message?: string;
+  response?: { status?: number };
+};
+
+function isBlockedByClientError(error: unknown): boolean {
+  const e = (error ?? {}) as ApiErrorLike;
+  const code = String(e.code ?? "").toLowerCase();
+  const message = String(e.message ?? "").toLowerCase();
+  return code.includes("blocked_by_client") || message.includes("blocked_by_client");
+}
+
+function isNotFoundError(error: unknown): boolean {
+  const e = (error ?? {}) as ApiErrorLike;
+  return e.response?.status === 404;
+}
+
 class PredictionService {
   async getPrediction(features: number[]): Promise<PredictionResponse> {
     const response = await API.post("/predict", { features }, { headers: API_HEADERS });
@@ -124,10 +142,17 @@ class PredictionService {
   }
 
   async getEventPredictions(): Promise<EventPrediction[]> {
-    const response = await API.get("/analytics/event-predictions", {
-      headers: API_HEADERS,
-    });
-    return response.data;
+    try {
+      const response = await API.get("/analytics/incidents-outlook", {
+        headers: API_HEADERS,
+      });
+      return Array.isArray(response.data) ? response.data : [];
+    } catch (error) {
+      if (isBlockedByClientError(error) || isNotFoundError(error)) {
+        return [];
+      }
+      throw error;
+    }
   }
 
   async exportData(
@@ -173,4 +198,5 @@ class PredictionService {
 
 export const predictionService = new PredictionService();
 export default predictionService;
+
 

@@ -27,11 +27,22 @@ export default function CountryDrilldown({
 }: Props) {
   if (!open) return null;
 
-  const trend = data?.trend ?? [];
-  const anomalies = data?.events.slice(0, 3).map((e, i) => ({
-    timestamp: e.timestamp,
-    value: trend[Math.min(i, Math.max(0, trend.length - 1))]?.value ?? 50,
-  })) ?? [];
+  const trend = Array.isArray(data?.trend) ? data.trend : [];
+  const countryEvents = Array.isArray(data?.events) ? data.events : [];
+  const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
+
+  const anomalies = countryEvents.slice(0, 3).map((event, index) => ({
+    timestamp: event.timestamp,
+    value: trend[Math.min(index, Math.max(0, trend.length - 1))]?.value ?? 50,
+  }));
+
+  const riskValue = Number(data?.risk);
+  const risk = Number.isFinite(riskValue) ? riskValue : 0;
+
+  const confidenceLowerValue = Number(data?.confidenceInterval?.lower);
+  const confidenceUpperValue = Number(data?.confidenceInterval?.upper);
+  const confidenceLower = Number.isFinite(confidenceLowerValue) ? confidenceLowerValue : 0;
+  const confidenceUpper = Number.isFinite(confidenceUpperValue) ? confidenceUpperValue : 0;
 
   return (
     <aside className="country-drilldown">
@@ -43,9 +54,9 @@ export default function CountryDrilldown({
       {data ? (
         <>
           <div className="country-kpis">
-            <span>Risk {data.risk.toFixed(2)}</span>
+            <span>Risk {risk.toFixed(2)}</span>
             <span>
-              CI {data.confidenceInterval.lower.toFixed(1)} - {data.confidenceInterval.upper.toFixed(1)}
+              CI {confidenceLower.toFixed(1)} - {confidenceUpper.toFixed(1)}
             </span>
           </div>
 
@@ -57,19 +68,19 @@ export default function CountryDrilldown({
           />
 
           <RiskWaterfallChart
-            prevRisk={Math.max(0, data.risk - 1.8)}
-            currentRisk={data.risk}
-            items={data.drivers.map((d) => ({ feature: d.feature, delta: d.contribution }))}
-            confidence={data.confidenceInterval}
+            prevRisk={Math.max(0, risk - 1.8)}
+            currentRisk={risk}
+            items={drivers.map((driver) => ({ feature: driver.feature, delta: driver.contribution }))}
+            confidence={{ lower: confidenceLower, upper: confidenceUpper }}
           />
 
           <h4>Recent events</h4>
           <div className="event-log">
-            {data.events.map((evt) => (
-              <div key={evt.id} className="event-log-row">
-                <span>{new Date(evt.timestamp).toLocaleTimeString()}</span>
-                <strong>{evt.title}</strong>
-                <span>{evt.severity}</span>
+            {countryEvents.map((event) => (
+              <div key={event.id} className="event-log-row">
+                <span>{new Date(event.timestamp).toLocaleTimeString()}</span>
+                <strong>{event.title}</strong>
+                <span>{event.severity}</span>
               </div>
             ))}
           </div>

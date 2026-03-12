@@ -6,7 +6,7 @@ export const COUNTRY_RISK_WS_URL = `${API_URL.replace(/^http/, "ws")}/ws/country
 
 // Simple response cache to reduce 429 errors
 interface CacheEntry {
-  data: any;
+  data: unknown;
   timestamp: number;
   ttl: number;
 }
@@ -191,19 +191,239 @@ export type AlertActionPayload = {
   comment?: string;
 };
 
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const toFiniteNumber = (value: unknown, fallback = 0): number => {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : fallback;
+};
+
+const toOptionalFiniteNumber = (value: unknown): number | undefined => {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : undefined;
+};
+
+const toNullableFiniteNumber = (value: unknown): number | null => {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
+};
+
+const toValidTimestamp = (value: unknown, fallback: string): string => {
+  if (typeof value !== "string") return fallback;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? value : fallback;
+};
+
+const toStringArray = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+
+const RISK_DATA_QUALITIES = new Set<RiskMapPoint["data_quality"]>([
+  "verified",
+  "synthetic",
+  "stale",
+  "unknown",
+]);
+
+const normalizeLiveCommandFeed = (value: unknown): LiveCommandFeed => {
+  const nowIso = new Date().toISOString();
+  if (!isRecord(value)) {
+    return {
+      incidents: [],
+      ingestionHeartbeatSec: 0,
+      modelDrift: 0,
+      lastUpdated: nowIso,
+    };
+  }
+
+  return {
+    incidents: toStringArray(value.incidents),
+    ingestionHeartbeatSec: toFiniteNumber(value.ingestionHeartbeatSec),
+    modelDrift: toFiniteNumber(value.modelDrift),
+    lastUpdated: toValidTimestamp(value.lastUpdated, nowIso),
+  };
+};
+
+const normalizeRiskMapPoint = (value: unknown): RiskMapPoint | null => {
+  if (!isRecord(value)) return null;
+
+  const country = typeof value.country === "string" ? value.country.trim().toUpperCase() : "";
+  if (!country) return null;
+
+  const dataQualityCandidate =
+    typeof value.data_quality === "string" ? (value.data_quality as RiskMapPoint["data_quality"]) : undefined;
+  const dataQuality = dataQualityCandidate && RISK_DATA_QUALITIES.has(dataQualityCandidate) ? dataQualityCandidate : "unknown";
+
+  const timestamp = typeof value.timestamp === "string" ? value.timestamp : undefined;
+  const featureTimestamp = typeof value.feature_timestamp === "string" ? value.feature_timestamp : undefined;
+
+  return {
+    country,
+    risk: toNullableFiniteNumber(value.risk),
+    timestamp,
+    feature_timestamp: featureTimestamp,
+    validated_today: Boolean(value.validated_today),
+    data_quality: dataQuality,
+    source_count: toOptionalFiniteNumber(value.source_count),
+    social_unrest_score: toOptionalFiniteNumber(value.social_unrest_score),
+    google_trends_pressure: toOptionalFiniteNumber(value.google_trends_pressure),
+    weather_stress: toOptionalFiniteNumber(value.weather_stress),
+    external_signal_freshness: toOptionalFiniteNumber(value.external_signal_freshness),
+    war_state_rules: toStringArray(value.war_state_rules),
+  };
+};
+
+const normalizeRiskMapCoverage = (value: unknown): RiskMapCoverage => {
+  if (!isRecord(value)) {
+    return { total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 };
+  }
+
+  const latestValidation = isRecord(value.latest_validation)
+    ? {
+        status: typeof value.latest_validation.status === "string" ? value.latest_validation.status : undefined,
+        sample_count: toOptionalFiniteNumber(value.latest_validation.sample_count),
+        brier_score: toOptionalFiniteNumber(value.latest_validation.brier_score),
+      }
+    : undefined;
+
+  return {
+    total: Math.max(0, Math.round(toFiniteNumber(value.total))),
+    verified: Math.max(0, Math.round(toFiniteNumber(value.verified))),
+    no_data: Math.max(0, Math.round(toFiniteNumber(value.no_data))),
+    stale: Math.max(0, Math.round(toFiniteNumber(value.stale))),
+    remaining: Math.max(0, Math.round(toFiniteNumber(value.remaining))),
+    coverage_pct: Math.max(0, toFiniteNumber(value.coverage_pct)),
+    latest_validation: latestValidation,
+  };
+};
+
+const normalizeCountryDrilldown = (value: unknown, fallbackCountry: string): CountryDrilldownData => {
+  const nowIso = new Date().toISOString();
+
+  if (!isRecord(value)) {
+    return {
+      country: fallbackCountry,
+      risk: 0,
+      trend: [],
+      drivers: [],
+      events: [],
+      confidenceInterval: { lower: 0, upper: 0 },
+    };
+  }
+
+  const trend = Array.isArray(value.trend)
+    ? value.trend
+        .filter(isRecord)
+        .map((entry) => ({
+          timestamp: toValidTimestamp(entry.timestamp, nowIso),
+          value: toFiniteNumber(entry.value),
+        }))
+    : [];
+
+  const drivers = Array.isArray(value.drivers)
+    ? value.drivers
+        .filter(isRecord)
+        .map((entry) => ({
+          feature: typeof entry.feature === "string" ? entry.feature : "unknown",
+          value: toFiniteNumber(entry.value),
+          contribution: toFiniteNumber(entry.contribution),
+        }))
+    : [];
+
+  const events = Array.isArray(value.events)
+    ? value.events
+        .filter(isRecord)
+        .map((entry, index) => ({
+          id: typeof entry.id === "string" ? entry.id : `${fallbackCountry}-${index}`,
+          title: typeof entry.title === "string" ? entry.title : "Untitled event",
+          timestamp: toValidTimestamp(entry.timestamp, nowIso),
+          severity: (
+            entry.severity === "low" || entry.severity === "medium" || entry.severity === "high"
+              ? entry.severity
+              : "low"
+          ) as "low" | "medium" | "high",
+        }))
+    : [];
+
+  const confidenceInterval = isRecord(value.confidenceInterval)
+    ? {
+        lower: toFiniteNumber(value.confidenceInterval.lower),
+        upper: toFiniteNumber(value.confidenceInterval.upper),
+      }
+    : { lower: 0, upper: 0 };
+
+  return {
+    country: typeof value.country === "string" ? value.country : fallbackCountry,
+    risk: toFiniteNumber(value.risk),
+    trend,
+    drivers,
+    events,
+    confidenceInterval,
+  };
+};
+
+const normalizeGovernanceData = (value: unknown): GovernanceData => {
+  if (!isRecord(value)) {
+    return { models: [], disagreement: [], calibrationTrend: [] };
+  }
+
+  const models = Array.isArray(value.models)
+    ? value.models
+        .filter(isRecord)
+        .map((entry) => ({
+          name: typeof entry.name === "string" ? entry.name : "unknown",
+          latencyMs: toFiniteNumber(entry.latencyMs),
+          calibration: toFiniteNumber(entry.calibration),
+          driftHint: typeof entry.driftHint === "string" ? entry.driftHint : "n/a",
+          vote: toOptionalFiniteNumber(entry.vote),
+          confidence: toOptionalFiniteNumber(entry.confidence),
+        }))
+    : [];
+
+  const disagreement = Array.isArray(value.disagreement)
+    ? value.disagreement
+        .filter(isRecord)
+        .map((entry) => ({
+          left: typeof entry.left === "string" ? entry.left : "unknown",
+          right: typeof entry.right === "string" ? entry.right : "unknown",
+          value: toFiniteNumber(entry.value),
+        }))
+    : [];
+
+  const calibrationTrend = Array.isArray(value.calibrationTrend)
+    ? value.calibrationTrend
+        .filter(isRecord)
+        .map((entry) => ({
+          timestamp: toValidTimestamp(entry.timestamp, new Date().toISOString()),
+          value: toFiniteNumber(entry.value),
+        }))
+    : [];
+
+  return {
+    models,
+    disagreement,
+    calibrationTrend,
+  };
+};
+
 export async function getLiveCommandFeed(): Promise<LiveCommandFeed> {
   const res = await API.get("/dashboard/live-feed", { headers: API_HEADERS, params: { mode: "online" } });
-  return res.data as LiveCommandFeed;
+  return normalizeLiveCommandFeed(res.data);
 }
 
 export async function getRiskMap(): Promise<RiskMapPoint[]> {
   const res = await API.get("/dashboard/risk-map", { headers: API_HEADERS, params: { mode: "online", verified_only: false } });
-  return Array.isArray(res.data) ? (res.data as RiskMapPoint[]) : [];
+  return Array.isArray(res.data)
+    ? res.data
+        .map(normalizeRiskMapPoint)
+        .filter((entry): entry is RiskMapPoint => Boolean(entry))
+    : [];
 }
 
 export async function getRiskMapCoverage(): Promise<RiskMapCoverage> {
   const res = await API.get("/dashboard/risk-map/coverage", { headers: API_HEADERS, params: { mode: "online" } });
-  return res.data as RiskMapCoverage;
+  return normalizeRiskMapCoverage(res.data);
 }
 
 export async function getLatestGlobalFeatures(): Promise<LatestGlobalResponse> {
@@ -222,12 +442,12 @@ export async function refreshRiskMapBatch(batchSize = 50): Promise<boolean> {
 
 export async function getCountryDrilldown(country: string): Promise<CountryDrilldownData> {
   const res = await API.get(`/dashboard/country/${country}`, { headers: API_HEADERS, params: { mode: "online" } });
-  return res.data as CountryDrilldownData;
+  return normalizeCountryDrilldown(res.data, country);
 }
 
 export async function getGovernanceData(): Promise<GovernanceData> {
   const res = await API.get("/dashboard/governance", { headers: API_HEADERS, params: { mode: "online" } });
-  return res.data as GovernanceData;
+  return normalizeGovernanceData(res.data);
 }
 
 export async function postAlertAction(payload: AlertActionPayload): Promise<boolean> {

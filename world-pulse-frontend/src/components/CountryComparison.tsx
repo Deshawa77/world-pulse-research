@@ -23,15 +23,57 @@ const toNumberOr = (value: unknown, fallback = 0): number => {
   return fallback;
 };
 
-const METRICS = [
-  { key: "news_sentiment", label: "News Sentiment", format: (v: number) => v.toFixed(2) },
-  { key: "gdelt_sentiment", label: "GDELT Sentiment", format: (v: number) => v.toFixed(2) },
-  { key: "crypto_return", label: "Crypto Return", format: (v: number) => `${(v * 100).toFixed(1)}%` },
-  { key: "crypto_volatility", label: "Crypto Volatility", format: (v: number) => v.toFixed(2) },
-  { key: "stock_return", label: "Stock Return", format: (v: number) => `${(v * 100).toFixed(1)}%` },
-  { key: "stock_volatility", label: "Stock Volatility", format: (v: number) => v.toFixed(2) },
-  { key: "weather_anomaly", label: "Weather Anomaly", format: (v: number) => v.toFixed(2) },
+type MetricDefinition = {
+  key: string;
+  label: string;
+  format: (value: number) => string;
+  signed: boolean;
+};
+
+const METRICS: MetricDefinition[] = [
+  { key: "news_sentiment", label: "News Sentiment", format: (v: number) => v.toFixed(2), signed: true },
+  { key: "gdelt_sentiment", label: "GDELT Sentiment", format: (v: number) => v.toFixed(2), signed: true },
+  { key: "crypto_return", label: "Crypto Return", format: (v: number) => `${(v * 100).toFixed(1)}%`, signed: true },
+  { key: "crypto_volatility", label: "Crypto Volatility", format: (v: number) => v.toFixed(2), signed: false },
+  { key: "stock_return", label: "Stock Return", format: (v: number) => `${(v * 100).toFixed(1)}%`, signed: true },
+  { key: "stock_volatility", label: "Stock Volatility", format: (v: number) => v.toFixed(2), signed: false },
+  { key: "weather_anomaly", label: "Weather Anomaly", format: (v: number) => v.toFixed(2), signed: false },
 ];
+
+function toNiceUpperBound(value: number, floor: number = 0.1): number {
+  const safe = Math.max(Math.abs(value), floor);
+  const exponent = Math.floor(Math.log10(safe));
+  const magnitude = 10 ** exponent;
+  const normalized = safe / magnitude;
+
+  if (normalized <= 1) return magnitude;
+  if (normalized <= 2) return 2 * magnitude;
+  if (normalized <= 5) return 5 * magnitude;
+  return 10 * magnitude;
+}
+
+function getMetricValue(country: CountryData | undefined, metricKey: string): number {
+  return toNumberOr(country?.features?.[metricKey], 0);
+}
+
+function buildRadarIndicator(
+  metric: MetricDefinition,
+  country1Data?: CountryData,
+  country2Data?: CountryData,
+): { name: string; min: number; max: number } {
+  const valueA = getMetricValue(country1Data, metric.key);
+  const valueB = getMetricValue(country2Data, metric.key);
+
+  if (metric.signed) {
+    const maxAbs = Math.max(Math.abs(valueA), Math.abs(valueB));
+    const bound = toNiceUpperBound(maxAbs * 1.25, 0.1);
+    return { name: metric.label, min: -bound, max: bound };
+  }
+
+  const maxValue = Math.max(valueA, valueB);
+  const upper = toNiceUpperBound(maxValue * 1.25, 0.1);
+  return { name: metric.label, min: 0, max: upper };
+}
 
 export default function CountryComparison({ countries, height = 500 }: CountryComparisonProps) {
   const [selectedCountries, setSelectedCountries] = useState<string[]>([]);
@@ -83,14 +125,7 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
           bottom: 0,
         },
         radar: {
-          indicator: METRICS.map((m) => ({
-            name: m.label,
-            max: Math.max(
-              Math.abs(country1Data?.features?.[m.key] ?? 0),
-              Math.abs(country2Data?.features?.[m.key] ?? 0),
-              1
-            ) * 1.2,
-          })),
+          indicator: METRICS.map((m) => buildRadarIndicator(m, country1Data, country2Data)),
           shape: "polygon",
           splitNumber: 4,
           axisName: {
@@ -113,14 +148,14 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
             type: "radar",
             data: [
               {
-                value: METRICS.map((m) => country1Data?.features?.[m.key] ?? 0),
+                value: METRICS.map((m) => getMetricValue(country1Data, m.key)),
                 name: country1Data?.country || "Country 1",
                 lineStyle: { color: "#00d4ff" },
                 areaStyle: { color: "rgba(0,212,255,0.3)" },
                 itemStyle: { color: "#00d4ff" },
               },
               {
-                value: METRICS.map((m) => country2Data?.features?.[m.key] ?? 0),
+                value: METRICS.map((m) => getMetricValue(country2Data, m.key)),
                 name: country2Data?.country || "Country 2",
                 lineStyle: { color: "#ff69b4" },
                 areaStyle: { color: "rgba(255,105,180,0.3)" },
@@ -161,13 +196,13 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
           {
             name: country1Data?.country || "Country 1",
             type: "bar",
-            data: METRICS.map((m) => country1Data?.features?.[m.key] ?? 0),
+            data: METRICS.map((m) => getMetricValue(country1Data, m.key)),
             itemStyle: { color: "#00d4ff" },
           },
           {
             name: country2Data?.country || "Country 2",
             type: "bar",
-            data: METRICS.map((m) => country2Data?.features?.[m.key] ?? 0),
+            data: METRICS.map((m) => getMetricValue(country2Data, m.key)),
             itemStyle: { color: "#ff69b4" },
           },
         ],
@@ -387,3 +422,4 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
     </div>
   );
 }
+
