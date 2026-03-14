@@ -1,33 +1,79 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { register } from "../services/authService";
+import type { UserRole, UserType } from "../services/api";
 import { ProposalAuthLayout } from "../components/ProposalShell";
 
-const roles = [
-  { value: "researcher", label: "Researcher" },
-  { value: "policy", label: "Policy maker" },
-  { value: "student", label: "Student" },
-  { value: "admin", label: "Admin" },
+const userTypes: Array<{ value: UserType; label: string }> = [
+  { value: "researcher", label: "Researcher / Analyst" },
+  { value: "policy", label: "Policy / NGO" },
+  { value: "student", label: "Student / Educator" },
+  { value: "developer", label: "Developer" },
+];
+
+const accessLevels: Array<{ value: UserRole; label: string }> = [
+  { value: "user", label: "Standard User" },
+  { value: "admin", label: "Admin (Invite Code)" },
 ];
 
 export default function Register() {
   const navigate = useNavigate();
-  const [formData, setFormData] = useState({ name: "", email: "", password: "", role: "researcher", organization: "" });
+  const [formData, setFormData] = useState({
+    name: "",
+    email: "",
+    password: "",
+    role: "user" as UserRole,
+    user_type: "researcher" as UserType,
+    admin_invite_code: "",
+    organization: "",
+  });
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setFormData((current) => ({ ...current, [e.target.name]: e.target.value }));
+    const { name, value } = e.target;
+
+    if (name === "user_type") {
+      setFormData((current) => ({ ...current, user_type: value as UserType }));
+      return;
+    }
+
+    if (name === "role") {
+      const nextRole = value as UserRole;
+      setFormData((current) => ({
+        ...current,
+        role: nextRole,
+        user_type: nextRole === "admin" ? "developer" : current.user_type,
+        admin_invite_code: nextRole === "admin" ? current.admin_invite_code : "",
+      }));
+      return;
+    }
+
+    setFormData((current) => ({ ...current, [name]: value }));
   };
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     setSuccess("");
+
+    if (formData.role === "admin" && !formData.admin_invite_code.trim()) {
+      setError("Admin invite code is required when registering as admin.");
+      return;
+    }
+
     setLoading(true);
     try {
-      await register(formData.name, formData.email, formData.password, formData.role, formData.organization);
+      await register(
+        formData.name,
+        formData.email,
+        formData.password,
+        formData.user_type,
+        formData.organization,
+        formData.role,
+        formData.admin_invite_code.trim() || undefined
+      );
       setSuccess("Account created successfully. Redirecting to login...");
       setTimeout(() => navigate("/login"), 1500);
     } catch (err: any) {
@@ -41,13 +87,17 @@ export default function Register() {
     <ProposalAuthLayout
       eyebrow="Onboarding"
       title="Register for the intelligence workspace."
-      subtitle="Choose the role that best matches how you will use the system: research, policy, education, or administration."
+      subtitle="Sign up as a user by default, or register as admin using a valid invite code configured by the team."
       bullets={[
         "Researchers and analysts need filtering, evidence, and historical visibility.",
         "Policy and NGO users need rapid clarity after major events and crises.",
         "Students and educators need a simplified but credible global behavior view.",
       ]}
-      metrics={[{ label: "User roles", value: "4" }, { label: "Scope", value: "Public data" }, { label: "Architecture", value: "Secure + scalable" }]}
+      metrics={[
+        { label: "Access tiers", value: "Admin + User" },
+        { label: "User profiles", value: "4" },
+        { label: "Architecture", value: "Secure + scalable" },
+      ]}
     >
       <h2>Create account</h2>
       <p>Provision access for the live dashboard, prediction workspace, historical analysis, and scenario simulation.</p>
@@ -61,7 +111,13 @@ export default function Register() {
         </div>
         <div className="proposal-field-grid">
           <label>Password<input name="password" type="password" value={formData.password} onChange={handleChange} placeholder="Create a password" required /></label>
-          <label>Role<select name="role" value={formData.role} onChange={handleChange} required>{roles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
+          <label>User profile<select name="user_type" value={formData.user_type} onChange={handleChange} required disabled={formData.role === "admin"}>{userTypes.map((profile) => <option key={profile.value} value={profile.value}>{profile.label}</option>)}</select></label>
+        </div>
+        <div className="proposal-field-grid">
+          <label>Access tier<select name="role" value={formData.role} onChange={handleChange} required>{accessLevels.map((level) => <option key={level.value} value={level.value}>{level.label}</option>)}</select></label>
+          {formData.role === "admin" ? (
+            <label>Admin invite code<input name="admin_invite_code" type="password" value={formData.admin_invite_code} onChange={handleChange} placeholder="Enter admin invite code" required /></label>
+          ) : <div />}
         </div>
         <div className="proposal-form-actions"><button type="submit" className="proposal-button proposal-button-primary" disabled={loading}>{loading ? "Creating account" : "Create account"}</button></div>
       </form>

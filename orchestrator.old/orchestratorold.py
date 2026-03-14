@@ -88,18 +88,29 @@ def _safe_fetch_and_store(label, fetch_fn, collection_name, unique_keys=None):
         return [], 0, str(e)
 
 def orchestrate_parallel(selected_collectors=None):
+    trend_keywords = [
+        "earthquake",
+        "flood",
+        "wildfire",
+        "hurricane",
+        "outbreak",
+        "inflation",
+        "recession",
+        "cyberattack",
+    ]
+
     tasks = {
         "news": (lambda: news.fetch_news("earthquake", page_size=5), "news", ["data.title", "data.query"]),
         # "reddit": (lambda: reddit.fetch_reddit_posts("earthquake", limit=5), "reddit", ["data.title", "data.query"]),
         "gdelt": (lambda: gdelt.fetch_gdelt_articles("(earthquake OR flood)", max_records=5), "gdelt", ["data.title", "data.url"]),
         "wiki": (lambda: wiki.fetch_pageviews("Earthquake", days=5), "wiki", ["data.date"]),
-        "trends": (lambda: trends.fetch_trends("earthquake"), "trends", ["data.date"]),
+        "trends": (lambda: trends.fetch_trends_multi(trend_keywords, max_retries=2), "trends", ["data.date", "data.keyword"]),
         "earthquakes": (lambda: usgs.fetch_earthquakes(), "earthquakes", ["data.id"]),
-        "weather": (lambda: weather.fetch_weather("Tokyo"), "weather", ["data.timestamp"]),
+        "weather": (lambda: weather.collect_weather_for_orchestrator(), "weather", ["data_city", "data_timestamp", "data.city", "data.timestamp"]),
         "crypto": (lambda: coingecko.fetch_crypto("bitcoin", "usd", 5), "crypto", ["data.timestamp"]),
         "fred": (lambda: fred.fetch_indicator("GDP", "2025-01-01", "2026-01-01"), "fred", ["data.date"]),
         "exchange_rates": (lambda: frankfurter.fetch_exchange_rates("USD"), "economics", ["data.currency"]),
-        "who": (lambda: who.fetch_who_indicator("WHOSIS_000001", max_results=5), "who", ["data.date"]),
+        "who": (lambda: who.fetch_who_indicator("WHOSIS_000001", max_results=50), "health", ["data.year", "data.country", "data.indicator"]),
         "stocks": (lambda: twelvedata.fetch_stock("AAPL", "1day", 5), "stocks", ["data.timestamp"]),
         "worldbank": (lambda: worldbank.fetch_worldbank_data(date="2020:2025", per_page=5), "worldbank", ["data.date"])
     }

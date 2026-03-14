@@ -4,11 +4,14 @@ import logging
 from datetime import datetime, timezone
 import asyncio
 import time
+import threading
+import platform
 import uuid
 import hmac
 import csv
 import io
 from dotenv import load_dotenv
+from typing import Literal
 
 # ----------------------------
 # Ensure project root is importable
@@ -24,7 +27,6 @@ from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel
 from pymongo import MongoClient, ASCENDING, DESCENDING
 import joblib
-from fastapi.security import OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 import jwt
 from datetime import timedelta
@@ -55,8 +57,22 @@ from processing.global_mood import compute_global_operational_features
 from processing.country_daily_risk import country_daily_refresh_if_due
 from collectors.country_news import get_country_catalog
 from processing.sentinel_analysis import compute_sentinel_analysis, get_sentinel_history
-from processing.country_risk_validation import latest_country_risk_validation, run_country_risk_validation
-from processing.global_mood_validation import latest_global_mood_validation, run_global_mood_validation
+from processing.country_risk_validation import (
+    latest_country_risk_validation,
+    run_country_risk_validation,
+    list_country_risk_validation_history,
+    run_country_risk_backtest,
+    latest_country_risk_backtest,
+    list_country_risk_backtests,
+)
+from processing.global_mood_validation import (
+    latest_global_mood_validation,
+    run_global_mood_validation,
+    list_global_mood_validation_history,
+    run_global_mood_backtest,
+    latest_global_mood_backtest,
+    list_global_mood_backtests,
+)
 from feature_store.model_registry import get_production_model, list_models
 
 from backend.country_risk_stream import country_risk_stream_health
@@ -105,6 +121,23 @@ MONGO_URI = (os.environ.get("MONGO_URI") or "mongodb://localhost:27017/").strip(
 DEFAULT_LOCAL_MONGO_URI = "mongodb://localhost:27017/"
 REQUIRE_HTTPS = (os.environ.get("REQUIRE_HTTPS") or "false").strip().lower() == "true"
 ALLOW_INSECURE_LOCALHOST = (os.environ.get("ALLOW_INSECURE_LOCALHOST") or "true").strip().lower() == "true"
+ADMIN_INVITE_CODE = (os.environ.get("ADMIN_INVITE_CODE") or "").strip().strip('\"').strip("'")
+
+ROLE_ADMIN = "admin"
+ROLE_USER = "user"
+DEFAULT_USER_TYPE = "researcher"
+VALID_ROLES = {ROLE_ADMIN, ROLE_USER}
+VALID_USER_TYPES = {"researcher", "policy", "student", "developer"}
+LEGACY_USER_TYPE_MAP = {
+    "researcher": "researcher",
+    "analyst": "researcher",
+    "policy": "policy",
+    "ngo": "policy",
+    "student": "student",
+    "educator": "student",
+    "developer": "developer",
+    "admin": "developer",
+}
 
 # =====================================================
 # FastAPI app and rate limiter
@@ -112,6 +145,13 @@ ALLOW_INSECURE_LOCALHOST = (os.environ.get("ALLOW_INSECURE_LOCALHOST") or "true"
 app = FastAPI(title="World Pulse Secure API")
 logger = build_logger("world_pulse.api")
 runtime_metrics = RuntimeMetrics()
+security_metrics_lock = threading.Lock()
+security_metrics_started_at = datetime.now(timezone.utc)
+security_metrics_counters = defaultdict(int)
+
+SECURITY_WINDOW_MINUTES = 15
+FAILED_LOGIN_SUSPICIOUS_THRESHOLD = 5
+JWT_FAILURE_SUSPICIOUS_THRESHOLD = 8
 
 if not USER_API_KEYS and not ADMIN_API_KEYS:
     raise RuntimeError("Missing API keys. Set API_KEY/ADMIN_KEY (or USER_API_KEYS/ADMIN_API_KEYS) in .env.")
@@ -246,12 +286,16 @@ weather_collection = db["weather"]
 economics_collection = db["economics"]
 health_collection = db["health"]
 trends_collection = db["trends"]
+security_events_collection = db["security_events"]
 # Create indexes for scalable queries (run once)
 prediction_collection.create_index([("timestamp", DESCENDING)])
 prediction_collection.create_index([("model_version", ASCENDING)])
 model_monitoring_collection.create_index([("timestamp", DESCENDING)])
 model_monitoring_collection.create_index([("model_version", ASCENDING)])
 users_collection.create_index([("email", ASCENDING)], unique=True)
+users_collection.create_index([("role", ASCENDING)])
+users_collection.create_index([("user_type", ASCENDING)])
+users_collection.create_index([("active", ASCENDING)])
 operator_events_collection.create_index([("timestamp", DESCENDING)])
 sentinel_feedback_collection.create_index([("timestamp", DESCENDING)])
 operator_events_collection.create_index([("country", ASCENDING), ("timestamp", DESCENDING)])
@@ -264,6 +308,10 @@ weather_collection.create_index([("data_timestamp", DESCENDING)])
 economics_collection.create_index([("collected_at", DESCENDING)])
 health_collection.create_index([("collected_at", DESCENDING)])
 trends_collection.create_index([("collected_at", DESCENDING)])
+security_events_collection.create_index([("timestamp", DESCENDING)])
+security_events_collection.create_index([("event_type", ASCENDING), ("status", ASCENDING), ("timestamp", DESCENDING)])
+security_events_collection.create_index([("email", ASCENDING), ("timestamp", DESCENDING)])
+security_events_collection.create_index([("client_ip", ASCENDING), ("timestamp", DESCENDING)])
 # =====================================================
 # Model Cache
 # =====================================================
@@ -275,8 +323,259 @@ model_cache = {"model": None, "version": None}
 
 fake_users_db = {}  # legacy fallback; auth now uses Mongo users collection
 
+
+def normalize_role(raw_role: str | None) -> str:
+    candidate = str(raw_role or "").strip().lower()
+    return ROLE_ADMIN if candidate == ROLE_ADMIN else ROLE_USER
+
+
+def normalize_user_type(raw_user_type: str | None, fallback_role: str | None = None) -> str:
+    candidate = str(raw_user_type or "").strip().lower()
+    if candidate in VALID_USER_TYPES:
+        return candidate
+    if candidate in LEGACY_USER_TYPE_MAP:
+        return LEGACY_USER_TYPE_MAP[candidate]
+
+    fallback = str(fallback_role or "").strip().lower()
+    if fallback in VALID_USER_TYPES:
+        return fallback
+    if fallback in LEGACY_USER_TYPE_MAP:
+        return LEGACY_USER_TYPE_MAP[fallback]
+
+    return DEFAULT_USER_TYPE
+
+
+def _sanitize_email(email: str | None) -> str:
+    return str(email or "").strip().lower()
+
+
+def _default_user_type_for_role(role: str) -> str:
+    return "developer" if role == ROLE_ADMIN else DEFAULT_USER_TYPE
+
+
+def ensure_user_role_shape(user_doc: dict) -> tuple[str, str, bool]:
+    if not user_doc:
+        return ROLE_USER, DEFAULT_USER_TYPE, False
+
+    source_role = str(user_doc.get("role") or "").strip().lower()
+    normalized_role = normalize_role(source_role)
+    normalized_user_type = normalize_user_type(user_doc.get("user_type"), source_role)
+
+    updates = {}
+    if str(user_doc.get("role") or "").strip().lower() != normalized_role:
+        updates["role"] = normalized_role
+    if str(user_doc.get("user_type") or "").strip().lower() != normalized_user_type:
+        updates["user_type"] = normalized_user_type
+
+    if updates and user_doc.get("_id") is not None:
+        updates["updated_at"] = datetime.utcnow().isoformat()
+        users_collection.update_one({"_id": user_doc["_id"]}, {"$set": updates})
+
+    return normalized_role, normalized_user_type, bool(updates)
+
+
+def ensure_user_active_shape(user_doc: dict) -> tuple[bool, bool]:
+    if not user_doc:
+        return True, False
+
+    has_active = "active" in user_doc
+    active = bool(user_doc.get("active", True))
+
+    if not has_active and user_doc.get("_id") is not None:
+        users_collection.update_one(
+            {"_id": user_doc["_id"]},
+            {"$set": {"active": True, "updated_at": datetime.utcnow().isoformat()}},
+        )
+        return True, True
+
+    return active, False
+
+
+def sanitize_user_document(user_doc: dict) -> dict:
+    role, user_type, _ = ensure_user_role_shape(user_doc)
+    active, _ = ensure_user_active_shape(user_doc)
+    return {
+        "id": str(user_doc.get("_id", "")),
+        "email": str(user_doc.get("email") or ""),
+        "name": str(user_doc.get("name") or ""),
+        "organization": user_doc.get("organization"),
+        "role": role,
+        "user_type": user_type,
+        "active": active,
+        "deactivated_at": user_doc.get("deactivated_at"),
+        "deactivated_by": user_doc.get("deactivated_by"),
+        "created_at": user_doc.get("created_at"),
+        "updated_at": user_doc.get("updated_at"),
+    }
+
+
+def _increment_security_metric(metric_name: str, amount: int = 1) -> None:
+    with security_metrics_lock:
+        security_metrics_counters[metric_name] += amount
+
+
+def _security_metrics_snapshot() -> dict:
+    with security_metrics_lock:
+        return {
+            "started_at": security_metrics_started_at.isoformat(),
+            "login_success": int(security_metrics_counters.get("login_success", 0)),
+            "login_failed": int(security_metrics_counters.get("login_failed", 0)),
+            "login_blocked": int(security_metrics_counters.get("login_blocked", 0)),
+            "suspicious_activity_events": int(security_metrics_counters.get("suspicious_activity_events", 0)),
+            "jwt_issued": int(security_metrics_counters.get("jwt_issued", 0)),
+            "jwt_validated_success": int(security_metrics_counters.get("jwt_validated_success", 0)),
+            "jwt_validated_failed": int(security_metrics_counters.get("jwt_validated_failed", 0)),
+        }
+
+
+def _client_ip_from_request(request: Request | None) -> str | None:
+    if request is None:
+        return None
+
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip() or None
+
+    return request.client.host if request.client else None
+
+
+def _record_security_event(
+    event_type: str,
+    status: str,
+    detail: str,
+    email: str | None = None,
+    client_ip: str | None = None,
+    meta: dict | None = None,
+) -> None:
+    event_doc = {
+        "timestamp": datetime.utcnow(),
+        "event_type": event_type,
+        "status": status,
+        "detail": detail,
+        "email": email or None,
+        "client_ip": client_ip or None,
+        "meta": meta or {},
+    }
+    try:
+        security_events_collection.insert_one(event_doc)
+    except Exception as exc:
+        logger.warning(
+            "security_event_record_failed",
+            extra={"event": {"event_type": event_type, "status": status, "error": str(exc)}},
+        )
+
+    if event_type == "suspicious_activity":
+        _increment_security_metric("suspicious_activity_events")
+
+
+def _has_recent_suspicious_event(detail: str, email: str | None, client_ip: str | None, minutes: int = 5) -> bool:
+    cutoff = datetime.utcnow() - timedelta(minutes=minutes)
+    query = {
+        "event_type": "suspicious_activity",
+        "detail": detail,
+        "timestamp": {"$gte": cutoff},
+    }
+    if email:
+        query["email"] = email
+    if client_ip:
+        query["client_ip"] = client_ip
+    return security_events_collection.count_documents(query) > 0
+
+
+def _maybe_record_suspicious_failed_logins(email: str, client_ip: str | None) -> None:
+    cutoff = datetime.utcnow() - timedelta(minutes=SECURITY_WINDOW_MINUTES)
+    base_query = {
+        "event_type": "login_attempt",
+        "status": "failed",
+        "timestamp": {"$gte": cutoff},
+    }
+
+    email_failed_count = 0
+    if email:
+        email_failed_count = security_events_collection.count_documents({**base_query, "email": email})
+
+    ip_failed_count = 0
+    if client_ip:
+        ip_failed_count = security_events_collection.count_documents({**base_query, "client_ip": client_ip})
+
+    if email and email_failed_count >= FAILED_LOGIN_SUSPICIOUS_THRESHOLD:
+        detail = "Repeated failed login attempts for email"
+        if not _has_recent_suspicious_event(detail, email=email, client_ip=client_ip):
+            _record_security_event(
+                "suspicious_activity",
+                "warning",
+                detail,
+                email=email,
+                client_ip=client_ip,
+                meta={
+                    "window_minutes": SECURITY_WINDOW_MINUTES,
+                    "failed_attempts_for_email": email_failed_count,
+                },
+            )
+
+    if client_ip and ip_failed_count >= FAILED_LOGIN_SUSPICIOUS_THRESHOLD:
+        detail = "Repeated failed login attempts from IP"
+        if not _has_recent_suspicious_event(detail, email=email, client_ip=client_ip):
+            _record_security_event(
+                "suspicious_activity",
+                "warning",
+                detail,
+                email=email,
+                client_ip=client_ip,
+                meta={
+                    "window_minutes": SECURITY_WINDOW_MINUTES,
+                    "failed_attempts_for_ip": ip_failed_count,
+                },
+            )
+
+
+def _maybe_record_suspicious_jwt_failures(client_ip: str | None) -> None:
+    if not client_ip:
+        return
+
+    cutoff = datetime.utcnow() - timedelta(minutes=SECURITY_WINDOW_MINUTES)
+    failed_count = security_events_collection.count_documents(
+        {
+            "event_type": "jwt_validation",
+            "status": "failed",
+            "client_ip": client_ip,
+            "timestamp": {"$gte": cutoff},
+        }
+    )
+
+    if failed_count >= JWT_FAILURE_SUSPICIOUS_THRESHOLD:
+        detail = "Repeated JWT validation failures from IP"
+        if not _has_recent_suspicious_event(detail, email=None, client_ip=client_ip):
+            _record_security_event(
+                "suspicious_activity",
+                "warning",
+                detail,
+                client_ip=client_ip,
+                meta={
+                    "window_minutes": SECURITY_WINDOW_MINUTES,
+                    "jwt_failed_attempts_for_ip": failed_count,
+                },
+            )
+
+
+def _format_uptime(total_seconds: float) -> str:
+    seconds = max(0, int(total_seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours or days:
+        parts.append(f"{hours}h")
+    if minutes or hours or days:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
+
 # =====================================================
-# Security: API Key Verification
+# Security: API Key / Bearer Verification
 # =====================================================
 def _identity_from_api_key(key: str | None):
     candidate = (key or "").strip()
@@ -284,36 +583,100 @@ def _identity_from_api_key(key: str | None):
         return None
     for admin_key in ADMIN_API_KEYS:
         if hmac.compare_digest(candidate, admin_key):
-            return {"auth_type": "api_key", "api_key": candidate, "role": "admin"}
+            return {
+                "auth_type": "api_key",
+                "api_key": candidate,
+                "sub": "api-key-admin",
+                "role": ROLE_ADMIN,
+                "user_type": _default_user_type_for_role(ROLE_ADMIN),
+            }
     for user_key in USER_API_KEYS:
         if hmac.compare_digest(candidate, user_key):
-            return {"auth_type": "api_key", "api_key": candidate, "role": "user"}
+            return {
+                "auth_type": "api_key",
+                "api_key": candidate,
+                "sub": "api-key-user",
+                "role": ROLE_USER,
+                "user_type": _default_user_type_for_role(ROLE_USER),
+            }
     return None
 
 
-def decode_access_token(token: str):
+def decode_access_token(token: str, request: Request | None = None, source: str = "bearer"):
+    client_ip = _client_ip_from_request(request)
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        role = str(payload.get("role") or "user")
-        subject = str(payload.get("sub") or "")
+        subject = _sanitize_email(payload.get("sub"))
         if not subject:
             raise HTTPException(status_code=401, detail="Invalid token subject")
-        return {"auth_type": "jwt", "sub": subject, "role": role}
-    except HTTPException:
+
+        user_doc = users_collection.find_one(
+            {"email": subject},
+            {"role": 1, "user_type": 1, "name": 1, "active": 1},
+        )
+        if not user_doc:
+            raise HTTPException(status_code=401, detail="User not found")
+
+        role, user_type, _ = ensure_user_role_shape(user_doc)
+        active, _ = ensure_user_active_shape(user_doc)
+        if not active:
+            raise HTTPException(status_code=403, detail="User account is deactivated")
+
+        name = str(user_doc.get("name") or payload.get("name") or "")
+        _increment_security_metric("jwt_validated_success")
+
+        return {
+            "auth_type": "jwt",
+            "sub": subject,
+            "role": role,
+            "user_type": user_type,
+            "name": name,
+        }
+    except HTTPException as exc:
+        _increment_security_metric("jwt_validated_failed")
+        _record_security_event(
+            "jwt_validation",
+            "failed",
+            str(exc.detail),
+            client_ip=client_ip,
+            meta={"source": source},
+        )
+        _maybe_record_suspicious_jwt_failures(client_ip)
         raise
     except Exception as exc:
+        _increment_security_metric("jwt_validated_failed")
+        _record_security_event(
+            "jwt_validation",
+            "failed",
+            f"Invalid token: {exc}",
+            client_ip=client_ip,
+            meta={"source": source},
+        )
+        _maybe_record_suspicious_jwt_failures(client_ip)
         raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
 
+def verify_api_key(request: Request, x_api_key: str | None = Header(None), authorization: str | None = Header(None)):
+    bearer = (authorization or "").strip()
+    if bearer.lower().startswith("bearer "):
+        return decode_access_token(
+            bearer.split(" ", 1)[1].strip(),
+            request=request,
+            source="authorization_header",
+        )
 
-def verify_api_key(x_api_key: str | None = Header(None), authorization: str | None = Header(None)):
     identity = _identity_from_api_key(x_api_key)
     if identity:
         return identity
-    bearer = (authorization or "").strip()
-    if bearer.lower().startswith("bearer "):
-        return decode_access_token(bearer.split(" ", 1)[1].strip())
-    raise HTTPException(status_code=401, detail="Missing or invalid API key / bearer token")
 
+    if x_api_key:
+        _record_security_event(
+            "api_key_auth",
+            "failed",
+            "Invalid API key",
+            client_ip=_client_ip_from_request(request),
+        )
+
+    raise HTTPException(status_code=401, detail="Missing or invalid API key / bearer token")
 
 # Role-Based Access Control
 def check_role(identity: dict = Depends(verify_api_key)):
@@ -321,9 +684,15 @@ def check_role(identity: dict = Depends(verify_api_key)):
 
 
 def require_admin(role: str = Depends(check_role)):
-    if role != "admin":
+    if role != ROLE_ADMIN:
         raise HTTPException(status_code=403, detail="Admin access only")
     return role
+
+
+def require_admin_identity(identity: dict = Depends(verify_api_key)):
+    if normalize_role(identity.get("role")) != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="Admin access only")
+    return identity
 
 # =====================================================
 # Helpers
@@ -342,11 +711,13 @@ def create_access_token(data: dict):
 
     to_encode.update({"exp": expire})
 
-    return jwt.encode(
+    token = jwt.encode(
         to_encode,
         JWT_SECRET,
         algorithm=JWT_ALGORITHM
     )
+    _increment_security_metric("jwt_issued")
+    return token
 
 
 def get_country_risk_dependency_health(mode: str = "online"):
@@ -1555,17 +1926,30 @@ def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role)
     """
     Returns real-time disaster alerts including earthquakes and severe weather.
     """
-    # Get latest earthquake data
-    earthquake_docs = list(db.earthquakes.find().sort("collected_at", -1).limit(max(1, limit // 2)))
-    weather_docs = list(db.weather.find().sort("data_timestamp", -1).limit(max(1, limit // 2)))
-    
+    half_limit = max(1, limit // 2)
+    weather_quota = max(1, limit - half_limit)
+
+    # Read enough rows from both collections, then backfill from the side that has data.
+    earthquake_pool = list(db.earthquakes.find().sort("collected_at", -1).limit(limit * 3))
+    weather_pool = list(db.weather.find().sort("collected_at", -1).limit(limit * 3))
+
+    selected_earthquakes = earthquake_pool[:half_limit]
+    selected_weather = weather_pool[:weather_quota]
+
+    remaining = limit - (len(selected_earthquakes) + len(selected_weather))
+    if remaining > 0:
+        selected_earthquakes.extend(earthquake_pool[len(selected_earthquakes): len(selected_earthquakes) + remaining])
+        remaining = limit - (len(selected_earthquakes) + len(selected_weather))
+    if remaining > 0:
+        selected_weather.extend(weather_pool[len(selected_weather): len(selected_weather) + remaining])
+
     disaster_items = []
-    
+
     # Process earthquakes
-    for doc in earthquake_docs:
+    for doc in selected_earthquakes:
         magnitude = _safe_float(_pick_nested(doc, "magnitude", "data.magnitude", "data.mag", default=0.0))
         severity = "critical" if magnitude >= 7.0 else "elevated" if magnitude >= 5.0 else "guarded"
-        
+
         disaster_items.append({
             "id": str(doc.get("_id", "")),
             "type": "earthquake",
@@ -1582,32 +1966,47 @@ def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role)
             "timestamp": _safe_timestamp(doc, "timestamp", "data.time", "collected_at"),
             "source": "USGS"
         })
-    
+
     # Process weather alerts
-    for doc in weather_docs:
+    for doc in selected_weather:
+        weather_text = str(_pick_nested(doc, "event", "data_weather", "data.weather", "data.description", default=""))
+        temperature = _safe_float(_pick_nested(doc, "temperature", "data_temperature", "data.temperature", "data.temp", default=0.0))
+        wind_speed = _safe_float(_pick_nested(doc, "wind_speed", "data_wind_speed", "data.wind_speed", default=0.0))
+        city = str(_pick_nested(doc, "location", "data_city", "data.city", default="Unknown Location"))
+        country = str(_pick_nested(doc, "country", "data_country", "data.country", default="")).strip()
+        location = f"{city}, {country}" if country and country.lower() not in city.lower() else city
+
+        severity = str(_pick_nested(doc, "severity", "data_severity", default="")).strip().lower()
+        if severity not in {"critical", "elevated", "guarded"}:
+            weather_lower = weather_text.lower()
+            if wind_speed >= 100 or "hurricane" in weather_lower or "tornado" in weather_lower:
+                severity = "critical"
+            elif wind_speed >= 60 or any(token in weather_lower for token in ["storm", "flood", "blizzard"]):
+                severity = "elevated"
+            else:
+                severity = "guarded"
+
         disaster_items.append({
             "id": str(doc.get("_id", "")),
             "type": "weather",
-            "title": str(_pick_nested(doc, "event", "data_weather", "data.weather", default="Weather Alert")),
-            "location": str(_pick_nested(doc, "location", "data_city", "data.city", default="Unknown Location")),
-            "severity": str(_pick_nested(doc, "severity", "data_severity", default="guarded")).lower(),
-            "description": str(_pick_nested(doc, "description", "data_weather", default="")),
-            "temperature": _safe_float(_pick_nested(doc, "temperature", "data_temperature", default=0.0)),
-            "wind_speed": _safe_float(_pick_nested(doc, "wind_speed", "data_wind_speed", default=0.0)),
-            "timestamp": _safe_timestamp(doc, "timestamp", "data_timestamp", "collected_at"),
-            "source": "Weather API"
+            "title": weather_text.title() if weather_text else "Weather Alert",
+            "location": location,
+            "severity": severity,
+            "description": str(_pick_nested(doc, "description", "data_weather", "data.description", default=weather_text)),
+            "temperature": temperature,
+            "wind_speed": wind_speed,
+            "timestamp": _safe_timestamp(doc, "timestamp", "data_timestamp", "data.date", "collected_at"),
+            "source": str(doc.get("source", "Weather API"))
         })
-    
+
     # Sort by timestamp (most recent first)
-    disaster_items.sort(key=lambda x: x["timestamp"], reverse=True)
-    
+    disaster_items.sort(key=lambda x: _parse_timestamp(x["timestamp"]), reverse=True)
+
     return {
         "items": disaster_items[:limit],
-        "last_updated": _latest_timestamp(*earthquake_docs, *weather_docs),
+        "last_updated": _latest_timestamp(*earthquake_pool, *weather_pool),
         "total_count": len(disaster_items)
     }
-
-
 @app.get("/dashboard/economic-indicators")
 @limiter.limit("30/minute")
 def dashboard_economic_indicators(request: Request, role: str = Depends(check_role)):
@@ -1683,29 +2082,58 @@ def dashboard_health_alerts(request: Request, role: str = Depends(check_role), l
     """
     Returns WHO health alerts and disease outbreak information.
     """
-    who_docs = list(db.health.find().sort("collected_at", -1).limit(limit))
+    health_docs = list(db.health.find().sort("collected_at", -1).limit(limit))
+    legacy_docs = list(db.who.find().sort("collected_at", -1).limit(limit * 3))
+
+    primary_latest = (
+        _parse_timestamp(_safe_timestamp(health_docs[0], "timestamp", "data.timestamp", "collected_at"))
+        if health_docs
+        else datetime.min.replace(tzinfo=timezone.utc)
+    )
+    legacy_latest = (
+        _parse_timestamp(_safe_timestamp(legacy_docs[0], "timestamp", "data.timestamp", "collected_at"))
+        if legacy_docs
+        else datetime.min.replace(tzinfo=timezone.utc)
+    )
+
+    # Prefer fresher WHO stream data if it is newer than the health collection.
+    if legacy_latest > primary_latest:
+        health_docs = legacy_docs[:limit]
+    elif len(health_docs) < limit and legacy_docs:
+        seen_ids = {str(doc.get("_id", "")) for doc in health_docs}
+        for doc in legacy_docs:
+            doc_id = str(doc.get("_id", ""))
+            if doc_id in seen_ids:
+                continue
+            health_docs.append(doc)
+            seen_ids.add(doc_id)
+            if len(health_docs) >= limit:
+                break
+
     health_items = []
-    for idx, doc in enumerate(who_docs):
+    for idx, doc in enumerate(health_docs):
         indicator = str(_pick_nested(doc, "data.indicator", "indicator", default="WHO Indicator"))
         cases = _safe_int(_pick_nested(doc, "cases", "data.cases", "data.value", "value", default=0), default=0)
         deaths = _safe_int(_pick_nested(doc, "deaths", "data.deaths", default=max(0, int(cases * 0.02))), default=max(0, int(cases * 0.02)))
         severity = "critical" if cases >= 100000 else "elevated" if cases >= 10000 else "guarded"
+        location = str(_pick_nested(doc, "country", "data.country", "data.SpatialDim", default="Global"))
+
         health_items.append({
             "id": str(doc.get("_id", f"health-{idx}")),
             "disease": indicator.replace("_", " "),
             "type": "indicator",
             "severity": severity,
-            "location": str(_pick_nested(doc, "country", "data.country", "data.SpatialDim", default="Global")),
+            "location": location,
             "cases": cases,
             "deaths": deaths,
             "status": "active" if severity in {"critical", "elevated"} else "monitoring",
             "timestamp": _safe_timestamp(doc, "timestamp", "data.timestamp", "collected_at"),
-            "source": "WHO",
-            "description": f"Latest WHO indicator update for {indicator.replace('_', ' ')} in {str(_pick_nested(doc, 'country', 'data.country', 'data.SpatialDim', default='Global'))}."
+            "source": str(doc.get("source", "WHO")).upper(),
+            "description": f"Latest WHO indicator update for {indicator.replace('_', ' ')} in {location}."
         })
 
     vaccination_docs = [
-        doc for doc in who_docs
+        doc for doc in health_docs
         if "vacc" in str(_pick_nested(doc, "data.indicator", "indicator", default="")).lower()
     ]
     vaccination_values = [_safe_float(_pick_nested(doc, "data.value", "value", default=0.0)) for doc in vaccination_docs]
@@ -1719,11 +2147,9 @@ def dashboard_health_alerts(request: Request, role: str = Depends(check_role), l
     return {
         "outbreaks": health_items,
         "vaccination": vaccination_data,
-        "last_updated": _latest_timestamp(*who_docs),
+        "last_updated": _latest_timestamp(*health_docs),
         "total_active": len([h for h in health_items if h["status"] == "active"])
     }
-
-
 @app.get("/dashboard/trends-radar")
 @limiter.limit("30/minute")
 def dashboard_trends_radar(request: Request, role: str = Depends(check_role), limit: int = Query(20, ge=1, le=100)):
@@ -1754,7 +2180,7 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
         trend_items.append({
             "id": str(docs[0].get("_id", f"trend-{idx}")),
             "topic": topic,
-            "category": "Public Interest",
+            "category": str(_pick_nested(docs[0], "trend_category", "data.category", "category", default="Public Interest")) or "Public Interest",
             "search_volume": current_interest,
             "interest_score": min(100, current_interest),
             "velocity": velocity,
@@ -1767,6 +2193,40 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
                 f"{topic} update"
             ]
         })
+    if len(trend_items) < limit:
+        seen_ids = {str(item.get("id", "")) for item in trend_items}
+        for idx, doc in enumerate(trends_docs):
+            if len(trend_items) >= limit:
+                break
+            fallback_id = str(doc.get("_id", f"trend-fallback-{idx}"))
+            if fallback_id in seen_ids:
+                continue
+
+            topic = str(_pick_nested(doc, "topic", "data.topic", "data.query", "data.keyword", default=""))
+            if not topic:
+                continue
+
+            interest_score = _safe_int(
+                _pick_nested(doc, "value", "data.value", "search_volume", "data.interest", "data.interest_score", default=0),
+                default=0,
+            )
+            trend_items.append({
+                "id": fallback_id,
+                "topic": topic,
+                "category": str(_pick_nested(doc, "trend_category", "data.category", "category", default="Public Interest")) or "Public Interest",
+                "search_volume": interest_score,
+                "interest_score": min(100, interest_score),
+                "velocity": 0.0,
+                "trend_direction": "stable",
+                "breakout": interest_score >= 80,
+                "timestamp": _safe_timestamp(doc, "timestamp", "data_timestamp", "collected_at"),
+                "related_queries": [
+                    f"{topic} news",
+                    f"{topic} latest",
+                    f"{topic} update"
+                ]
+            })
+            seen_ids.add(fallback_id)
     trend_items.sort(key=lambda x: (x["interest_score"], _parse_timestamp(x["timestamp"])), reverse=True)
     trend_items = trend_items[:limit]
 
@@ -2176,7 +2636,9 @@ class RegisterRequest(BaseModel):
     name: str
     email: str
     password: str
-    role: str
+    user_type: str | None = None
+    role: str | None = None  # Optional legacy input; normalized to admin|user
+    admin_invite_code: str | None = None
     organization: str | None = None
 
 
@@ -2189,46 +2651,121 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 
+class UpdateProfileRequest(BaseModel):
+    name: str | None = None
+    organization: str | None = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class UpdateUserStatusRequest(BaseModel):
+    active: bool
+
+class UpdateUserAccessRequest(BaseModel):
+    role: str | None = None
+    user_type: str | None = None
+
+
 # Temporary storage for password reset tokens
 password_reset_tokens = {}
 
 
+def _build_auth_response(email: str, role: str, user_type: str, name: str = "", message: str | None = None):
+    access_token = create_access_token({
+        "sub": email,
+        "role": role,
+        "user_type": user_type,
+        "name": name,
+    })
+    response = {
+        "access_token": access_token,
+        "email": email,
+        "name": name,
+        "role": role,
+        "user_type": user_type,
+    }
+    if message:
+        response["message"] = message
+    return response
+
+
+def _get_jwt_user_or_401(identity: dict) -> tuple[str, dict]:
+    if identity.get("auth_type") != "jwt":
+        raise HTTPException(status_code=401, detail="JWT authentication is required")
+
+    email = _sanitize_email(identity.get("sub"))
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid token subject")
+
+    user = users_collection.find_one({"email": email})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    _, _, _ = ensure_user_role_shape(user)
+    active, _ = ensure_user_active_shape(user)
+    if not active:
+        raise HTTPException(status_code=403, detail="User account is deactivated")
+
+    return email, user
+
+
 @app.post("/auth/register")
 def register(data: RegisterRequest):
-    existing = users_collection.find_one({"email": data.email})
+    email = _sanitize_email(data.email)
+    if not email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    existing = users_collection.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="User already exists")
 
-    # Validate role
-    valid_roles = ["admin", "researcher", "policy", "student"]
-    if data.role not in valid_roles:
-        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}")
+    requested_role = normalize_role(data.role)
+    assigned_role = ROLE_USER
+
+    if requested_role == ROLE_ADMIN:
+        supplied_code = str(data.admin_invite_code or "").strip()
+        if not ADMIN_INVITE_CODE:
+            raise HTTPException(status_code=403, detail="Admin self-registration is disabled")
+        if not supplied_code or not hmac.compare_digest(supplied_code, ADMIN_INVITE_CODE):
+            raise HTTPException(status_code=403, detail="Invalid admin invite code")
+        assigned_role = ROLE_ADMIN
+
+    normalized_user_type = (
+        "developer"
+        if assigned_role == ROLE_ADMIN
+        else normalize_user_type(data.user_type, data.role)
+    )
+    normalized_name = str(data.name or "").strip()
 
     users_collection.insert_one({
-        "email": data.email,
-        "password": pwd_context.hash(data.password),
-        "role": data.role,
-        "name": data.name,
+        "email": email,
+        "password": hash_password(data.password),
+        "role": assigned_role,
+        "user_type": normalized_user_type,
+        "name": normalized_name,
         "organization": data.organization,
+        "active": True,
+        "deactivated_at": None,
+        "deactivated_by": None,
         "created_at": datetime.utcnow().isoformat(),
     })
 
-    # Create access token
-    access_token = create_access_token({
-        "sub": data.email,
-        "role": data.role
-    })
-
-    return {
-        "access_token": access_token,
-        "role": data.role,
-        "message": "Registration successful"
-    }
+    return _build_auth_response(
+        email=email,
+        role=assigned_role,
+        user_type=normalized_user_type,
+        name=normalized_name,
+        message="Registration successful",
+    )
 
 
 @app.post("/auth/forgot-password")
 def forgot_password(data: ForgotPasswordRequest):
-    user = users_collection.find_one({"email": data.email})
+    email = _sanitize_email(data.email)
+    user = users_collection.find_one({"email": email})
     if not user:
         # Return success even if user doesn't exist (security best practice)
         return {"message": "If the email exists, a reset link has been sent"}
@@ -2236,7 +2773,7 @@ def forgot_password(data: ForgotPasswordRequest):
     # Generate reset token
     reset_token = str(uuid.uuid4())
     password_reset_tokens[reset_token] = {
-        "email": data.email,
+        "email": email,
         "expires": datetime.utcnow() + timedelta(hours=1)
     }
 
@@ -2261,14 +2798,14 @@ def reset_password(data: ResetPasswordRequest):
         raise HTTPException(status_code=400, detail="Token has expired")
 
     # Get user email from token
-    email = token_data["email"]
+    email = _sanitize_email(token_data["email"])
     user = users_collection.find_one({"email": email})
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
 
     users_collection.update_one(
         {"email": email},
-        {"$set": {"password": pwd_context.hash(data.new_password), "updated_at": datetime.utcnow().isoformat()}},
+        {"$set": {"password": hash_password(data.new_password), "updated_at": datetime.utcnow().isoformat()}},
     )
 
     # Remove used token
@@ -2278,24 +2815,235 @@ def reset_password(data: ResetPasswordRequest):
 
 
 @app.post("/auth/login")
-def login(data: LoginRequest):
-    user = users_collection.find_one({"email": data.email})
+def login(data: LoginRequest, request: Request):
+    email = _sanitize_email(data.email)
+    client_ip = _client_ip_from_request(request)
+    user = users_collection.find_one({"email": email})
 
     if not user:
+        _increment_security_metric("login_failed")
+        _record_security_event(
+            "login_attempt",
+            "failed",
+            "Invalid credentials",
+            email=email,
+            client_ip=client_ip,
+            meta={"reason": "user_not_found"},
+        )
+        _maybe_record_suspicious_failed_logins(email, client_ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if not pwd_context.verify(data.password, str(user.get("password", ""))):
+    if not verify_password(data.password, str(user.get("password", ""))):
+        _increment_security_metric("login_failed")
+        _record_security_event(
+            "login_attempt",
+            "failed",
+            "Invalid credentials",
+            email=email,
+            client_ip=client_ip,
+            meta={"reason": "invalid_password"},
+        )
+        _maybe_record_suspicious_failed_logins(email, client_ip)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    access_token = create_access_token({
-        "sub": data.email,
-        "role": str(user.get("role", "user"))
-    })
+    role, user_type, _ = ensure_user_role_shape(user)
+    active, _ = ensure_user_active_shape(user)
+    if not active:
+        _increment_security_metric("login_blocked")
+        _record_security_event(
+            "login_attempt",
+            "blocked",
+            "User account is deactivated",
+            email=email,
+            client_ip=client_ip,
+            meta={"reason": "deactivated_account"},
+        )
+        _record_security_event(
+            "suspicious_activity",
+            "warning",
+            "Login attempt on deactivated account",
+            email=email,
+            client_ip=client_ip,
+        )
+        raise HTTPException(status_code=403, detail="User account is deactivated")
 
-    return {
-        "access_token": access_token,
-        "role": str(user.get("role", "user"))
+    name = str(user.get("name") or "")
+    _increment_security_metric("login_success")
+    _record_security_event(
+        "login_attempt",
+        "success",
+        "Authenticated",
+        email=email,
+        client_ip=client_ip,
+        meta={"role": role, "user_type": user_type},
+    )
+
+    return _build_auth_response(
+        email=email,
+        role=role,
+        user_type=user_type,
+        name=name,
+    )
+
+@app.get("/auth/me")
+def auth_me(identity: dict = Depends(verify_api_key)):
+    if identity.get("auth_type") != "jwt":
+        role = normalize_role(identity.get("role"))
+        user_type = normalize_user_type(identity.get("user_type"), role)
+        return {
+            "email": str(identity.get("sub") or "api-key-client"),
+            "name": "API Key Client",
+            "organization": None,
+            "role": role,
+            "user_type": user_type,
+            "active": True,
+            "deactivated_at": None,
+            "deactivated_by": None,
+            "auth_type": "api_key",
+        }
+
+    _, user = _get_jwt_user_or_401(identity)
+    sanitized = sanitize_user_document(user)
+    sanitized["auth_type"] = "jwt"
+    return sanitized
+
+
+@app.patch("/auth/me")
+def auth_update_me(payload: UpdateProfileRequest, identity: dict = Depends(verify_api_key)):
+    email, user = _get_jwt_user_or_401(identity)
+
+    updates = {}
+    if payload.name is not None:
+        updates["name"] = str(payload.name).strip()
+    if payload.organization is not None:
+        updates["organization"] = str(payload.organization).strip() or None
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates were provided")
+
+    updates["updated_at"] = datetime.utcnow().isoformat()
+    users_collection.update_one({"email": email}, {"$set": updates})
+
+    refreshed = users_collection.find_one({"email": email})
+    if not refreshed:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    sanitized = sanitize_user_document(refreshed)
+    sanitized["auth_type"] = "jwt"
+    return sanitized
+
+
+@app.post("/auth/change-password")
+def auth_change_password(payload: ChangePasswordRequest, identity: dict = Depends(verify_api_key)):
+    email, user = _get_jwt_user_or_401(identity)
+
+    if not verify_password(payload.current_password, str(user.get("password", ""))):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=400, detail="New password must be different from current password")
+
+    users_collection.update_one(
+        {"email": email},
+        {
+            "$set": {
+                "password": hash_password(payload.new_password),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+        },
+    )
+
+    return {"message": "Password updated successfully"}
+
+
+@app.get("/admin/users")
+def admin_list_users(role: str = Depends(require_admin)):
+    docs = list(users_collection.find({}, {"password": 0}).sort("created_at", DESCENDING).limit(1000))
+    users = [sanitize_user_document(doc) for doc in docs]
+    return {"count": len(users), "users": users}
+
+
+@app.patch("/admin/users/{email}/access")
+def admin_update_user_access(email: str, payload: UpdateUserAccessRequest, role: str = Depends(require_admin)):
+    target_email = _sanitize_email(email)
+    if not target_email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    user = users_collection.find_one({"email": target_email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    current_role, _, _ = ensure_user_role_shape(user)
+    current_active, _ = ensure_user_active_shape(user)
+
+    updates = {}
+    if payload.role is not None:
+        updates["role"] = normalize_role(payload.role)
+    if payload.user_type is not None:
+        updates["user_type"] = normalize_user_type(payload.user_type)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates were provided")
+
+    if updates.get("role") == ROLE_ADMIN and payload.user_type is None:
+        updates["user_type"] = "developer"
+
+    if current_role == ROLE_ADMIN and updates.get("role") == ROLE_USER and current_active:
+        active_admin_count = users_collection.count_documents({"role": ROLE_ADMIN, "active": True})
+        if active_admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot demote the last active admin account")
+
+    updates["updated_at"] = datetime.utcnow().isoformat()
+    users_collection.update_one({"email": target_email}, {"$set": updates})
+
+    updated_doc = users_collection.find_one({"email": target_email}, {"password": 0})
+    if not updated_doc:
+        raise HTTPException(status_code=404, detail="Updated user not found")
+
+    return sanitize_user_document(updated_doc)
+
+
+@app.patch("/admin/users/{email}/status")
+def admin_update_user_status(
+    email: str,
+    payload: UpdateUserStatusRequest,
+    identity: dict = Depends(require_admin_identity),
+):
+    target_email = _sanitize_email(email)
+    if not target_email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    actor_email = _sanitize_email(identity.get("sub"))
+    if actor_email and actor_email == target_email and not payload.active:
+        raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+
+    user = users_collection.find_one({"email": target_email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    role, _, _ = ensure_user_role_shape(user)
+    current_active, _ = ensure_user_active_shape(user)
+
+    next_active = bool(payload.active)
+    if role == ROLE_ADMIN and current_active and not next_active:
+        active_admin_count = users_collection.count_documents({"role": ROLE_ADMIN, "active": True})
+        if active_admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot deactivate the last active admin account")
+
+    updates = {
+        "active": next_active,
+        "updated_at": datetime.utcnow().isoformat(),
+        "deactivated_at": None if next_active else datetime.utcnow().isoformat(),
+        "deactivated_by": None if next_active else (actor_email or "admin"),
     }
+
+    users_collection.update_one({"email": target_email}, {"$set": updates})
+
+    updated_doc = users_collection.find_one({"email": target_email}, {"password": 0})
+    if not updated_doc:
+        raise HTTPException(status_code=404, detail="Updated user not found")
+
+    return sanitize_user_document(updated_doc)
 
 # =====================================================
 # SYSTEM HEALTH
@@ -2356,7 +3104,26 @@ def observability_metrics(request: Request, role: str = Depends(require_admin)):
 @app.get("/observability/model")
 @limiter.limit("10/minute")
 def observability_model(request: Request, window: int = Query(200, ge=10, le=5000), role: str = Depends(require_admin)):
-    return build_monitoring_summary(model_monitoring_collection, window=window)
+    base = build_monitoring_summary(model_monitoring_collection, window=window)
+    advanced_ml = {}
+
+    try:
+        from machine_learning.advanced_analytics import get_advanced_analytics_kpis
+        advanced_ml = get_advanced_analytics_kpis() or {}
+    except Exception:
+        advanced_ml = {}
+
+    try:
+        from machine_learning.lstm_predictor import load_model_metadata
+        model_meta = load_model_metadata() or {}
+    except Exception:
+        model_meta = {}
+
+    return {
+        **base,
+        "advanced_ml": advanced_ml,
+        "model_metadata": model_meta,
+    }
 
 
 @app.get("/observability/streaming")
@@ -2389,6 +3156,453 @@ def observability_global_mood_validation_run(request: Request, role: str = Depen
     return run_global_mood_validation()
 
 
+@app.get("/observability/country-risk-validation/history")
+@limiter.limit("10/minute")
+def observability_country_risk_validation_history(
+    request: Request,
+    role: str = Depends(require_admin),
+    limit: int = Query(30, ge=1, le=365),
+):
+    return {"rows": list_country_risk_validation_history(limit=limit), "limit": limit}
+
+
+@app.get("/observability/global-mood-validation/history")
+@limiter.limit("10/minute")
+def observability_global_mood_validation_history(
+    request: Request,
+    role: str = Depends(require_admin),
+    limit: int = Query(30, ge=1, le=365),
+):
+    return {"rows": list_global_mood_validation_history(limit=limit), "limit": limit}
+
+
+@app.get("/observability/country-risk-backtest")
+@limiter.limit("10/minute")
+def observability_country_risk_backtest(request: Request, role: str = Depends(require_admin)):
+    return latest_country_risk_backtest()
+
+
+@app.get("/observability/global-mood-backtest")
+@limiter.limit("10/minute")
+def observability_global_mood_backtest(request: Request, role: str = Depends(require_admin)):
+    return latest_global_mood_backtest()
+
+
+@app.post("/observability/backtests/run")
+@limiter.limit("5/minute")
+def observability_backtests_run(
+    request: Request,
+    role: str = Depends(require_admin),
+    days: int = Query(60, ge=1, le=365),
+):
+    return {
+        "country": run_country_risk_backtest(days=days),
+        "global_mood": run_global_mood_backtest(days=days),
+    }
+
+
+def _coerce_utc_datetime(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(raw)
+        except Exception:
+            return None
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _hours_since(value) -> float | None:
+    dt = _coerce_utc_datetime(value)
+    if not dt:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0)
+
+
+INGESTION_SLA_HOURS = {
+    "country_features": 6.0,
+    "global_features": 6.0,
+    "dashboard_features": 6.0,
+    "earthquakes": 6.0,
+    "weather": 12.0,
+    "economics": 24.0,
+    "health": 24.0,
+    "trends": 24.0,
+}
+
+
+def _build_latest_ingestion() -> dict:
+    return {
+        "country_features": _latest_collection_stamp(country_features_collection, ["timestamp", "collected_at", "created_at"]),
+        "global_features": _latest_collection_stamp(global_features_collection, ["timestamp", "collected_at", "created_at"]),
+        "dashboard_features": _latest_collection_stamp(dashboard_features_collection, ["timestamp", "collected_at", "created_at"]),
+        "earthquakes": _latest_collection_stamp(earthquakes_collection, ["collected_at", "timestamp", "created_at"]),
+        "weather": _latest_collection_stamp(weather_collection, ["data_timestamp", "collected_at", "timestamp", "created_at"]),
+        "economics": _latest_collection_stamp(economics_collection, ["collected_at", "timestamp", "created_at"]),
+        "health": _latest_collection_stamp(health_collection, ["collected_at", "timestamp", "created_at"]),
+        "trends": _latest_collection_stamp(trends_collection, ["collected_at", "timestamp", "created_at"]),
+    }
+
+
+def _build_freshness_snapshot(latest_ingestion: dict) -> dict:
+    rows = []
+    for source, stamp in latest_ingestion.items():
+        age_hours = _hours_since(stamp)
+        sla_hours = float(INGESTION_SLA_HOURS.get(source, 24.0))
+        status = "unknown"
+        if age_hours is not None:
+            status = "fresh" if age_hours <= sla_hours else "stale"
+        rows.append({
+            "source": source,
+            "last_updated": stamp,
+            "age_hours": round(age_hours, 3) if age_hours is not None else None,
+            "sla_hours": sla_hours,
+            "status": status,
+        })
+
+    known_ages = [float(r["age_hours"]) for r in rows if isinstance(r.get("age_hours"), (int, float))]
+    stale_count = len([r for r in rows if r.get("status") == "stale"])
+    return {
+        "sources": rows,
+        "fresh_count": len([r for r in rows if r.get("status") == "fresh"]),
+        "stale_count": stale_count,
+        "unknown_count": len([r for r in rows if r.get("status") == "unknown"]),
+        "oldest_age_hours": round(max(known_ages), 3) if known_ages else None,
+        "newest_age_hours": round(min(known_ages), 3) if known_ages else None,
+        "overall_status": "stale" if stale_count > 0 else "healthy",
+    }
+
+
+def _latest_global_features_doc(mode: str = "online") -> dict | None:
+    doc = global_features_collection.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
+    if doc:
+        return doc
+    return dashboard_features_collection.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
+
+
+def _build_confidence_snapshot(mode: str = "online") -> dict:
+    doc = _latest_global_features_doc(mode=mode) or {}
+    features = doc.get("features") or {}
+    mood_conf = features.get("global_mood_confidence")
+    mood_unc = features.get("global_mood_uncertainty")
+    forecast_conf = features.get("forecast_confidence")
+    forecast_delta = features.get("forecast_risk_delta")
+    forecast_risk = features.get("forecast_risk_score")
+    risk_now = features.get("global_risk_score")
+    return {
+        "global_risk_score": float(risk_now) if risk_now is not None else None,
+        "global_mood_confidence": float(mood_conf) if mood_conf is not None else None,
+        "global_mood_uncertainty": float(mood_unc) if mood_unc is not None else None,
+        "forecast_confidence": float(forecast_conf) if forecast_conf is not None else None,
+        "forecast_risk_delta": float(forecast_delta) if forecast_delta is not None else None,
+        "forecast_risk_score": float(forecast_risk) if forecast_risk is not None else None,
+        "timestamp": str(features.get("timestamp") or doc.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+    }
+
+
+@app.get("/trust/reliability")
+@limiter.limit("20/minute")
+def trust_reliability(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+    runtime_snapshot = runtime_metrics.snapshot()
+    started_at = _coerce_utc_datetime(runtime_snapshot.get("started_at")) or datetime.now(timezone.utc)
+    uptime_seconds = max(0.0, (datetime.now(timezone.utc) - started_at).total_seconds())
+    total_requests = int(runtime_snapshot.get("total_requests", 0) or 0)
+    total_errors = int(runtime_snapshot.get("total_errors", 0) or 0)
+
+    db_ok = True
+    model_loaded = False
+    model_version = None
+    ready_error = None
+    try:
+        db.command("ping")
+        model, model_version = load_production_model()
+        model_loaded = model is not None
+    except Exception as exc:
+        db_ok = False
+        ready_error = str(exc)
+
+    latest_ingestion = _build_latest_ingestion()
+    freshness = _build_freshness_snapshot(latest_ingestion)
+    country_validation = latest_country_risk_validation()
+    global_validation = latest_global_mood_validation()
+    country_backtest = latest_country_risk_backtest()
+    global_backtest = latest_global_mood_backtest()
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "api_health": {
+            "status": "healthy" if db_ok and model_loaded else "degraded",
+            "database": "connected" if db_ok else "disconnected",
+            "model_loaded": bool(model_loaded),
+            "model_version": model_version,
+        },
+        "uptime": {
+            "uptime_seconds": round(uptime_seconds, 3),
+            "uptime_human": _format_uptime(uptime_seconds),
+            "total_requests": total_requests,
+            "total_errors": total_errors,
+            "error_rate": round((float(total_errors) / float(total_requests)), 6) if total_requests else 0.0,
+            "requests_per_minute": round((float(total_requests) / (uptime_seconds / 60.0)), 3) if uptime_seconds > 0 else 0.0,
+            "total_predictions": int(runtime_snapshot.get("total_predictions", 0) or 0),
+            "last_prediction_at": runtime_snapshot.get("last_prediction_at"),
+        },
+        "data_freshness": freshness,
+        "latest_ingestion": latest_ingestion,
+        "confidence": _build_confidence_snapshot(mode=mode),
+        "validation": {
+            "country_latest": {
+                "status": country_validation.get("status"),
+                "timestamp": country_validation.get("timestamp"),
+                "sample_count": int(country_validation.get("sample_count", 0) or 0),
+                "brier_score": float((((country_validation.get("metrics") or {}).get("brier_score", 0.0)) or 0.0)),
+            },
+            "global_latest": {
+                "status": global_validation.get("status"),
+                "timestamp": global_validation.get("timestamp"),
+                "sample_count": int(global_validation.get("sample_count", 0) or 0),
+                "confidence_avg": float((((global_validation.get("metrics") or {}).get("confidence_avg", 0.0)) or 0.0)),
+                "uncertainty_avg": float((((global_validation.get("metrics") or {}).get("uncertainty_avg", 0.0)) or 0.0)),
+            },
+            "country_backtest": {
+                "status": country_backtest.get("status"),
+                "timestamp": country_backtest.get("timestamp"),
+                "window_days": int(country_backtest.get("window_days", 0) or 0),
+                "matched_days": int(country_backtest.get("matched_days", 0) or 0),
+                "weighted_brier_score": float((((country_backtest.get("metrics") or {}).get("weighted_brier_score", 0.0)) or 0.0)),
+            },
+            "global_backtest": {
+                "status": global_backtest.get("status"),
+                "timestamp": global_backtest.get("timestamp"),
+                "window_days": int(global_backtest.get("window_days", 0) or 0),
+                "matched_days": int(global_backtest.get("matched_days", 0) or 0),
+                "weighted_brier_score": float((((global_backtest.get("metrics") or {}).get("weighted_brier_score", 0.0)) or 0.0)),
+                "weighted_mae": float((((global_backtest.get("metrics") or {}).get("weighted_mae", 0.0)) or 0.0)),
+            },
+        },
+    }
+
+    if ready_error:
+        payload["api_health"]["error"] = ready_error
+
+    return payload
+
+
+@app.get("/trust/backtests/country")
+@limiter.limit("20/minute")
+def trust_country_backtests(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(30, ge=1, le=365),
+):
+    return {"rows": list_country_risk_backtests(limit=limit), "limit": limit}
+
+
+@app.get("/trust/backtests/global-mood")
+@limiter.limit("20/minute")
+def trust_global_mood_backtests(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(30, ge=1, le=365),
+):
+    return {"rows": list_global_mood_backtests(limit=limit), "limit": limit}
+
+
+def _latest_collection_stamp(collection, keys: list[str]) -> str | None:
+    doc = collection.find_one(sort=[("_id", DESCENDING)])
+    if not doc:
+        return None
+
+    for key in keys:
+        value = doc.get(key)
+        if value is None:
+            continue
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
+
+    return None
+
+
+@app.get("/admin/system-monitoring")
+@limiter.limit("10/minute")
+def admin_system_monitoring(request: Request, role: str = Depends(require_admin), mode: str = Query("online")):
+    runtime_snapshot = runtime_metrics.snapshot()
+
+    started_at_raw = runtime_snapshot.get("started_at")
+    try:
+        started_at = datetime.fromisoformat(str(started_at_raw)) if started_at_raw else datetime.now(timezone.utc)
+    except Exception:
+        started_at = datetime.now(timezone.utc)
+
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+
+    uptime_seconds = max(0.0, (datetime.now(timezone.utc) - started_at.astimezone(timezone.utc)).total_seconds())
+    total_requests = int(runtime_snapshot.get("total_requests", 0) or 0)
+    total_errors = int(runtime_snapshot.get("total_errors", 0) or 0)
+
+    error_rate = (float(total_errors) / float(total_requests)) if total_requests else 0.0
+    requests_per_minute = (float(total_requests) / (uptime_seconds / 60.0)) if uptime_seconds > 0 else 0.0
+
+    try:
+        db.command("ping")
+        database_status = "connected"
+        model, model_version = load_production_model()
+        model_loaded = model is not None
+        ready_status = "ready" if model_loaded else "degraded"
+        ready_error = None
+    except Exception as exc:
+        database_status = "disconnected"
+        model_loaded = False
+        model_version = None
+        ready_status = "degraded"
+        ready_error = str(exc)
+
+    try:
+        dependencies = get_country_risk_dependency_health(mode=mode)
+        dependencies["country_risk_stream"] = country_risk_stream_health()
+        pipeline_status = "ok"
+        pipeline_error = None
+    except Exception as exc:
+        dependencies = {"error": str(exc)}
+        pipeline_status = "degraded"
+        pipeline_error = str(exc)
+
+    latest_ingestion = {
+        "country_features": _latest_collection_stamp(country_features_collection, ["timestamp", "collected_at", "created_at"]),
+        "global_features": _latest_collection_stamp(global_features_collection, ["timestamp", "collected_at", "created_at"]),
+        "dashboard_features": _latest_collection_stamp(dashboard_features_collection, ["timestamp", "collected_at", "created_at"]),
+        "earthquakes": _latest_collection_stamp(earthquakes_collection, ["collected_at", "timestamp", "created_at"]),
+        "weather": _latest_collection_stamp(weather_collection, ["data_timestamp", "collected_at", "timestamp", "created_at"]),
+        "economics": _latest_collection_stamp(economics_collection, ["collected_at", "timestamp", "created_at"]),
+        "health": _latest_collection_stamp(health_collection, ["collected_at", "timestamp", "created_at"]),
+        "trends": _latest_collection_stamp(trends_collection, ["collected_at", "timestamp", "created_at"]),
+    }
+
+    response = {
+        "server_status": {
+            "status": "running",
+            "app": "World Pulse Secure API",
+            "process_id": os.getpid(),
+            "hostname": platform.node(),
+            "python_version": platform.python_version(),
+            "started_at": started_at.isoformat(),
+        },
+        "api_health": {
+            "live": {"status": "alive"},
+            "ready": {
+                "status": ready_status,
+                "database": database_status,
+                "model_loaded": model_loaded,
+                "model_version": model_version,
+            },
+        },
+        "data_pipeline_status": {
+            "status": pipeline_status,
+            "dependencies": dependencies,
+            "latest_ingestion": latest_ingestion,
+        },
+        "uptime_statistics": {
+            "uptime_seconds": round(uptime_seconds, 3),
+            "uptime_human": _format_uptime(uptime_seconds),
+            "total_requests": total_requests,
+            "total_errors": total_errors,
+            "error_rate": round(error_rate, 6),
+            "requests_per_minute": round(requests_per_minute, 3),
+            "total_predictions": int(runtime_snapshot.get("total_predictions", 0) or 0),
+            "last_prediction_at": runtime_snapshot.get("last_prediction_at"),
+        },
+    }
+
+    if ready_error:
+        response["api_health"]["ready"]["error"] = ready_error
+    if pipeline_error:
+        response["data_pipeline_status"]["error"] = pipeline_error
+
+    return response
+
+
+@app.get("/admin/security-logs")
+@limiter.limit("10/minute")
+def admin_security_logs(
+    request: Request,
+    role: str = Depends(require_admin),
+    limit: int = Query(100, ge=10, le=1000),
+    minutes: int = Query(1440, ge=15, le=10080),
+):
+    cutoff = datetime.utcnow() - timedelta(minutes=minutes)
+    base_query = {"timestamp": {"$gte": cutoff}}
+
+    login_base = {**base_query, "event_type": "login_attempt"}
+    login_total = security_events_collection.count_documents(login_base)
+    login_success = security_events_collection.count_documents({**login_base, "status": "success"})
+    login_failed = security_events_collection.count_documents({**login_base, "status": "failed"})
+    login_blocked = security_events_collection.count_documents({**login_base, "status": "blocked"})
+
+    suspicious_total = security_events_collection.count_documents({**base_query, "event_type": "suspicious_activity"})
+
+    jwt_failed_recent = security_events_collection.count_documents(
+        {**base_query, "event_type": "jwt_validation", "status": "failed"}
+    )
+
+    events = [
+        serialize_doc(doc)
+        for doc in security_events_collection.find(base_query).sort("timestamp", DESCENDING).limit(limit)
+    ]
+
+    return {
+        "window_minutes": minutes,
+        "generated_at": datetime.utcnow().isoformat(),
+        "login_attempts": {
+            "total": int(login_total),
+            "success": int(login_success),
+            "failed": int(login_failed),
+            "blocked": int(login_blocked),
+        },
+        "suspicious_activity": {
+            "total": int(suspicious_total),
+        },
+        "jwt_token_monitoring": {
+            **_security_metrics_snapshot(),
+            "recent_failed_validations": int(jwt_failed_recent),
+        },
+        "events": events,
+    }
+
+def _identity_from_ws_credentials(
+    x_api_key: str | None = None,
+    api_key: str | None = None,
+    authorization: str | None = None,
+    token: str | None = None,
+):
+    # Prefer JWT from explicit query token, then Authorization header, then API key fallback.
+    candidate_token = (token or "").strip()
+    if candidate_token:
+        try:
+            return decode_access_token(candidate_token, source="websocket_query_token")
+        except HTTPException:
+            return None
+
+    bearer = (authorization or "").strip()
+    if bearer.lower().startswith("bearer "):
+        try:
+            return decode_access_token(bearer.split(" ", 1)[1].strip(), source="websocket_authorization_header")
+        except HTTPException:
+            return None
+
+    return _identity_from_api_key(x_api_key or api_key)
+
+
 # =====================================================
 # REAL-TIME RISK STREAM
 # =====================================================
@@ -2396,12 +3610,20 @@ def observability_global_mood_validation_run(request: Request, role: str = Depen
 # REAL-TIME RISK STREAM WITH TOPICS
 # =====================================================
 @app.websocket("/ws/risk")
-async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(None), api_key: str = Query(None)):
-    # --- Security check ---
-    # Support both header and query parameter for API key
-    key = (x_api_key or api_key or "").strip()
-    valid_key = any(hmac.compare_digest(key, k) for k in USER_API_KEYS.union(ADMIN_API_KEYS))
-    if not valid_key:
+async def websocket_risk(
+    websocket: WebSocket,
+    x_api_key: str = Header(None),
+    authorization: str = Header(None),
+    api_key: str = Query(None),
+    token: str = Query(None),
+):
+    identity = _identity_from_ws_credentials(
+        x_api_key=x_api_key,
+        api_key=api_key,
+        authorization=authorization,
+        token=token,
+    )
+    if not identity:
         await websocket.close(code=1008)
         return
 
@@ -2432,10 +3654,20 @@ async def websocket_risk(websocket: WebSocket, x_api_key: str = Header(None), ap
 # SENTINEL AI REAL-TIME WEBSOCKET
 # =====================================================
 @app.websocket("/ws/country-risk-map")
-async def websocket_country_risk_map(websocket: WebSocket, x_api_key: str = Header(None), api_key: str = Query(None)):
-    key = (x_api_key or api_key or "").strip()
-    valid_key = any(hmac.compare_digest(key, k) for k in USER_API_KEYS.union(ADMIN_API_KEYS))
-    if not valid_key:
+async def websocket_country_risk_map(
+    websocket: WebSocket,
+    x_api_key: str = Header(None),
+    authorization: str = Header(None),
+    api_key: str = Query(None),
+    token: str = Query(None),
+):
+    identity = _identity_from_ws_credentials(
+        x_api_key=x_api_key,
+        api_key=api_key,
+        authorization=authorization,
+        token=token,
+    )
+    if not identity:
         await websocket.close(code=1008)
         return
 
@@ -2506,19 +3738,26 @@ async def websocket_country_risk_map(websocket: WebSocket, x_api_key: str = Head
                 pass
 
 @app.websocket("/ws/sentinel")
-async def websocket_sentinel(websocket: WebSocket, x_api_key: str = Header(None), api_key: str = Query(None)):
+async def websocket_sentinel(
+    websocket: WebSocket,
+    x_api_key: str = Header(None),
+    authorization: str = Header(None),
+    api_key: str = Query(None),
+    token: str = Query(None),
+):
     """
     WebSocket endpoint for Sentinel AI real-time updates.
     Provides risk score, analysis, and alerts to connected clients.
     """
-    # --- Security check (optional for local dev) ---
-    # Support both header and query parameter for API key
-    key = (x_api_key or api_key or "").strip()
-    if key and (USER_API_KEYS or ADMIN_API_KEYS):
-        valid_key = any(hmac.compare_digest(key, k) for k in USER_API_KEYS.union(ADMIN_API_KEYS))
-        if not valid_key:
-            await websocket.close(code=1008)
-            return
+    identity = _identity_from_ws_credentials(
+        x_api_key=x_api_key,
+        api_key=api_key,
+        authorization=authorization,
+        token=token,
+    )
+    if not identity:
+        await websocket.close(code=1008)
+        return
 
     # --- Connect client ---
     await websocket.accept()
@@ -2698,40 +3937,42 @@ def analytics_advanced_insights(request: Request, role: str = Depends(check_role
         
         # Transform anomalies
         anomalies_data = results.get("anomalies", results.get("anomaly_detection", {}))
-        if isinstance(anomalies_data, dict):
+        if isinstance(anomalies_data, list):
+            anomalies_list = anomalies_data
+        elif isinstance(anomalies_data, dict):
             anomalies_list = anomalies_data.get("anomalies", [])
-            if isinstance(anomalies_list, list):
-                anomalies_transformed = [
-                    {
-                        "timestamp": a.get("timestamp", datetime.utcnow().isoformat()),
-                        "anomaly_score": float(a.get("anomaly_score", a.get("score", 0.5))),
-                        "features": a.get("features", {}),
-                        "severity": a.get("severity", "medium")
-                    }
-                    for a in anomalies_list[:10]
-                ]
-            else:
-                anomalies_transformed = []
         else:
-            anomalies_transformed = []
+            anomalies_list = []
+
+        anomalies_transformed = [
+            {
+                "timestamp": a.get("timestamp", datetime.utcnow().isoformat()),
+                "anomaly_score": float(a.get("anomaly_score", a.get("score", 0.5))),
+                "features": a.get("features", {}),
+                "severity": a.get("severity", "medium")
+            }
+            for a in anomalies_list[:10]
+            if isinstance(a, dict)
+        ]
         
         # Transform causal graph
         causal_data = results.get("causal_graph", results.get("causal_discovery", {}))
-        if isinstance(causal_data, dict):
+        if isinstance(causal_data, list):
+            causal_list = causal_data
+        elif isinstance(causal_data, dict):
             causal_list = causal_data.get("causal_links", causal_data.get("links", []))
-            if isinstance(causal_list, list):
-                causal_graph_transformed = [
-                    {
-                        "source": c.get("source", c.get("from", "")),
-                        "target": c.get("target", c.get("to", "")),
-                        "strength": float(c.get("strength", c.get("weight", 0.5)))
-                    }
-                    for c in causal_list[:20]
-                ]
-            else:
-                causal_graph_transformed = []
         else:
-            causal_graph_transformed = []
+            causal_list = []
+
+        causal_graph_transformed = [
+            {
+                "source": c.get("source", c.get("from", "")),
+                "target": c.get("target", c.get("to", "")),
+                "strength": float(c.get("strength", c.get("weight", 0.5)))
+            }
+            for c in causal_list[:20]
+            if isinstance(c, dict)
+        ]
         
         # Transform sentiment momentum
         momentum_data = results.get("sentiment_momentum", results.get("sentiment", {}))
@@ -2777,21 +4018,41 @@ def analytics_advanced_insights(request: Request, role: str = Depends(check_role
             "anomalies": anomalies_transformed,
             "causal_graph": causal_graph_transformed,
             "sentiment_momentum": sentiment_momentum_transformed,
-            "ai_report": ai_report_transformed
+            "ai_report": ai_report_transformed,
+            "ml_observability": results.get("ml_observability", {}),
         }
         
     except Exception as e:
         logger.error(f"Advanced analytics failed: {e}")
+
+        # Dynamic fallback anchored to the latest observed global risk.
+        baseline_risk = 50.0
+        try:
+            latest_doc = get_latest_global_doc("online")
+            latest_features = (latest_doc or {}).get("features", {}) if isinstance(latest_doc, dict) else {}
+            baseline_risk = float(latest_features.get("global_risk_score", 50.0))
+        except Exception:
+            baseline_risk = 50.0
+
+        baseline_risk = max(0.0, min(100.0, baseline_risk))
+        drifts = [0.0, -0.08, -0.15, -0.22]
+        horizons = ["1h", "6h", "24h", "7d"]
+        dynamic_preds = []
+        for idx, horizon in enumerate(horizons):
+            projected = baseline_risk + (baseline_risk - 50.0) * drifts[idx]
+            dynamic_preds.append(
+                {
+                    "horizon": horizon,
+                    "risk_score": round(max(0.0, min(100.0, projected)), 2),
+                    "confidence": round(max(0.2, 0.75 - (idx * 0.07)), 2),
+                }
+            )
+
         return {
             "timestamp": datetime.utcnow().isoformat(),
             "predictions": {
-                "predictions": [
-                    {"horizon": "1h", "risk_score": 50.0, "confidence": 0.75},
-                    {"horizon": "6h", "risk_score": 50.0, "confidence": 0.70},
-                    {"horizon": "24h", "risk_score": 50.0, "confidence": 0.65},
-                    {"horizon": "7d", "risk_score": 50.0, "confidence": 0.60}
-                ],
-                "model_type": "LSTM"
+                "predictions": dynamic_preds,
+                "model_type": "statistical_fallback"
             },
             "anomalies": [],
             "causal_graph": [],
@@ -2804,7 +4065,7 @@ def analytics_advanced_insights(request: Request, role: str = Depends(check_role
             },
             "ai_report": {
                 "title": "Global Risk Analysis Report",
-                "summary": "Unable to generate report at this time.",
+                "summary": "Unable to generate full advanced report right now; showing dynamic fallback projections.",
                 "key_findings": [],
                 "recommendations": [],
                 "risk_level": "moderate"
@@ -2813,26 +4074,106 @@ def analytics_advanced_insights(request: Request, role: str = Depends(check_role
 
 
 # =====================================================
-# STARTUP TEST USERS (ADD AT VERY BOTTOM OF FILE)
+# STARTUP USER MIGRATION / SEED
 # =====================================================
 
+def migrate_user_profiles() -> int:
+    migrated = 0
+    for doc in users_collection.find({}, {"role": 1, "user_type": 1, "active": 1}):
+        _, _, changed_role = ensure_user_role_shape(doc)
+        _, changed_active = ensure_user_active_shape(doc)
+        if changed_role or changed_active:
+            migrated += 1
+    return migrated
+
+
 @app.on_event("startup")
-def load_test_users():
+def bootstrap_and_migrate_users():
     bootstrap_users = [
-        {"email": "admin@wp.com", "password": "admin123", "role": "admin", "name": "Admin User"},
-        {"email": "researcher@wp.com", "password": "research123", "role": "researcher", "name": "Researcher User"},
-        {"email": "policy@wp.com", "password": "policy123", "role": "policy", "name": "Policy User"},
-        {"email": "student@wp.com", "password": "student123", "role": "student", "name": "Student User"},
+        {
+            "email": "admin@wp.com",
+            "password": "admin123",
+            "role": ROLE_ADMIN,
+            "user_type": "developer",
+            "name": "Admin User",
+        },
+        {
+            "email": "researcher@wp.com",
+            "password": "research123",
+            "role": ROLE_USER,
+            "user_type": "researcher",
+            "name": "Researcher User",
+        },
+        {
+            "email": "policy@wp.com",
+            "password": "policy123",
+            "role": ROLE_USER,
+            "user_type": "policy",
+            "name": "Policy User",
+        },
+        {
+            "email": "student@wp.com",
+            "password": "student123",
+            "role": ROLE_USER,
+            "user_type": "student",
+            "name": "Student User",
+        },
+        {
+            "email": "developer@wp.com",
+            "password": "developer123",
+            "role": ROLE_USER,
+            "user_type": "developer",
+            "name": "Developer User",
+        },
     ]
+
     for user in bootstrap_users:
-        existing = users_collection.find_one({"email": user["email"]})
-        if existing:
+        email = _sanitize_email(user["email"])
+        existing = users_collection.find_one({"email": email})
+
+        if not existing:
+            users_collection.insert_one({
+                "email": email,
+                "password": hash_password(user["password"]),
+                "role": normalize_role(user["role"]),
+                "user_type": normalize_user_type(user["user_type"], user["role"]),
+                "name": user["name"],
+                "active": True,
+                "deactivated_at": None,
+                "deactivated_by": None,
+                "created_at": datetime.utcnow().isoformat(),
+            })
             continue
-        users_collection.insert_one({
-            "email": user["email"],
-            "password": pwd_context.hash(user["password"]),
-            "role": user["role"],
-            "name": user["name"],
-            "created_at": datetime.utcnow().isoformat(),
-        })
+
+        desired_role = normalize_role(user["role"])
+        desired_user_type = normalize_user_type(user["user_type"], user["role"])
+        updates = {}
+
+        if str(existing.get("role") or "").strip().lower() != desired_role:
+            updates["role"] = desired_role
+        if str(existing.get("user_type") or "").strip().lower() != desired_user_type:
+            updates["user_type"] = desired_user_type
+        if "active" not in existing:
+            updates["active"] = True
+        if "deactivated_at" not in existing:
+            updates["deactivated_at"] = None
+        if "deactivated_by" not in existing:
+            updates["deactivated_by"] = None
+
+        if updates:
+            updates["updated_at"] = datetime.utcnow().isoformat()
+            users_collection.update_one({"_id": existing["_id"]}, {"$set": updates})
+
+    migrated = migrate_user_profiles()
+    if migrated:
+        logger.info(
+            "user_profiles_migrated",
+            extra={"event": {"count": migrated}},
+        )
+
+
+
+
+
+
 

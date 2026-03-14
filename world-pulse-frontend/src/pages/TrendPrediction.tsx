@@ -39,6 +39,7 @@ type PredictionData = {
   model_version: string;
   features: number[];
   drift_score?: number;
+  inference_probability?: number;
 };
 
 type SnapshotLike = {
@@ -442,21 +443,32 @@ export default function TrendPrediction() {
         ];
         setLatestFeatures(featureVector);
         setLatestFeaturesLoaded(true);
+        const globalRiskUnit = normalizeUnitValue(features.global_risk_score, 0.5);
+        const basePrediction: PredictionData = {
+          timestamp: new Date().toISOString(),
+          prediction: globalRiskUnit,
+          probability: globalRiskUnit,
+          model_version: "global_features",
+          features: featureVector,
+        };
 
         try {
           const predRes = await predictionService.getPrediction(featureVector);
           const nextPrediction: PredictionData = {
+            ...basePrediction,
             timestamp: new Date().toISOString(),
-            prediction: predRes.prediction,
-            probability: predRes.probability,
             model_version: predRes.model_version,
-            features: featureVector,
+            drift_score: predRes.drift_score ?? undefined,
+            inference_probability: normalizeUnitValue(predRes.probability, 0.5),
           };
           setCurrentPrediction(nextPrediction);
           writeCurrentPredictionCache(nextPrediction);
           resolvedCurrentPrediction = nextPrediction;
         } catch (e) {
           console.error("Current prediction load failed:", e);
+          setCurrentPrediction(basePrediction);
+          writeCurrentPredictionCache(basePrediction);
+          resolvedCurrentPrediction = basePrediction;
         }
 
       }

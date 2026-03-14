@@ -2,13 +2,38 @@ import { useEffect, useState } from "react";
 import { getAdvancedInsights } from "../services/api";
 
 // Types for the advanced analytics data
+interface PredictionInterval {
+  p10: number;
+  p50: number;
+  p90: number;
+}
+
+interface PredictionBlend {
+  neural_weight: number;
+  stat_weight: number;
+}
+
+interface PredictionItem {
+  horizon: string;
+  risk_score: number;
+  confidence: number;
+  interval?: PredictionInterval;
+  probability_high_risk?: number;
+  blend?: PredictionBlend;
+  latency_ms?: number;
+}
+
 interface MLPredictions {
-  predictions: {
-    horizon: string;
-    risk_score: number;
-    confidence: number;
-  }[];
+  predictions: PredictionItem[];
   model_type: string;
+}
+
+interface MLObservability {
+  prediction_latency_ms?: number;
+  model_age_hours?: number;
+  model_version?: string;
+  calibration_error?: Record<string, number>;
+  calibration_mode?: Record<string, string>;
 }
 
 interface Anomaly {
@@ -47,6 +72,7 @@ interface AdvancedInsights {
   causal_graph: CausalLink[];
   sentiment_momentum: SentimentMomentum;
   ai_report: AIReport;
+  ml_observability?: MLObservability;
 }
 
 export default function AdvancedAnalyticsPanel() {
@@ -98,6 +124,28 @@ export default function AdvancedAnalyticsPanel() {
         return "→→";
     }
   };
+
+  const getCalibrationStatus = (horizon: string) => {
+    const mode = data?.ml_observability?.calibration_mode?.[horizon] || "identity";
+    const err = data?.ml_observability?.calibration_error?.[horizon];
+
+    let tone: "good" | "warn" | "neutral" = "neutral";
+    if (typeof err === "number") {
+      if (err <= 0.08) tone = "good";
+      else if (err >= 0.16) tone = "warn";
+    }
+
+    const modeLabel = mode === "isotonic" ? "Isotonic" : mode === "platt" ? "Platt" : "Identity";
+    const errLabel = typeof err === "number" ? `Brier ${err.toFixed(3)}` : "Brier N/A";
+    return { modeLabel, errLabel, tone };
+  };
+
+  const shortVersion = (version?: string) => {
+    if (!version) return "N/A";
+    if (version.length <= 20) return version;
+    return `${version.slice(0, 12)}...${version.slice(-6)}`;
+  };
+
 
   return (
     <div className="advanced-analytics-panel">
@@ -151,25 +199,79 @@ export default function AdvancedAnalyticsPanel() {
             {activeTab === "predictions" && (
               <div className="predictions-tab">
                 <h4>Multi-Step Ahead Crisis Predictions</h4>
-                <div className="predictions-grid">
-                  {data.predictions?.predictions?.map((pred, idx) => (
-                    <div key={idx} className="prediction-card">
-                      <div className="horizon">{pred.horizon}</div>
-                      <div className="risk-score">{pred.risk_score.toFixed(1)}</div>
-                      <div className="confidence">
-                        Confidence: {(pred.confidence * 100).toFixed(1)}%
-                      </div>
-                      <div className="risk-bar">
-                        <div
-                          className="risk-fill"
-                          style={{ width: `${pred.risk_score}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
+
+                <div className="prediction-meta-row">
+                  <div className="meta-chip">
+                    <span className="meta-label">Latency</span>
+                    <span className="meta-value">{data.ml_observability?.prediction_latency_ms?.toFixed?.(0) ?? "N/A"} ms</span>
+                  </div>
+                  <div className="meta-chip">
+                    <span className="meta-label">Model Age</span>
+                    <span className="meta-value">{data.ml_observability?.model_age_hours?.toFixed?.(2) ?? "N/A"} h</span>
+                  </div>
+                  <div className="meta-chip">
+                    <span className="meta-label">Version</span>
+                    <span className="meta-value">{shortVersion(data.ml_observability?.model_version)}</span>
+                  </div>
                 </div>
+
+                <div className="predictions-grid">
+                  {data.predictions?.predictions?.map((pred, idx) => {
+                    const interval = pred.interval;
+                    const p10 = Math.max(0, Math.min(100, interval?.p10 ?? pred.risk_score));
+                    const p50 = Math.max(0, Math.min(100, interval?.p50 ?? pred.risk_score));
+                    const p90 = Math.max(0, Math.min(100, interval?.p90 ?? pred.risk_score));
+                    const intervalWidth = Math.max(1, p90 - p10);
+                    const calibration = getCalibrationStatus(pred.horizon);
+                    const highRiskPct = ((pred.probability_high_risk ?? pred.risk_score / 100) * 100);
+
+                    return (
+                      <div key={idx} className="prediction-card">
+                        <div className="prediction-card-headline">
+                          <div className="horizon">{pred.horizon}</div>
+                          <div className="blend-mini">
+                            {pred.blend ? `${(pred.blend.neural_weight * 100).toFixed(0)}/${(pred.blend.stat_weight * 100).toFixed(0)} N/S` : "-"}
+                          </div>
+                        </div>
+
+                        <div className="risk-score">{pred.risk_score.toFixed(1)}</div>
+
+                        <div className="metric-pills">
+                          <div className="metric-pill">
+                            <span>Conf</span>
+                            <strong>{(pred.confidence * 100).toFixed(0)}%</strong>
+                          </div>
+                          <div className="metric-pill">
+                            <span>P(high)</span>
+                            <strong>{highRiskPct.toFixed(0)}%</strong>
+                          </div>
+                        </div>
+
+                        <div className="risk-bar">
+                          <div className="risk-fill" style={{ width: `${pred.risk_score}%` }} />
+                        </div>
+
+                        <div className="interval-label">P10 {p10.toFixed(1)} | P50 {p50.toFixed(1)} | P90 {p90.toFixed(1)}</div>
+                        <div className="interval-track">
+                          <div className="interval-range" style={{ left: `${p10}%`, width: `${intervalWidth}%` }} />
+                          <div className="interval-median" style={{ left: `${p50}%` }} />
+                        </div>
+
+                        <div className={`calibration-inline ${calibration.tone}`}>
+                          {calibration.modeLabel} - {calibration.errLabel}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
                 <div className="model-info">
                   Model: {data.predictions?.model_type || "LSTM/Statistical Hybrid"}
+                  {String(data.predictions?.model_type || "").includes("fallback") ? (
+                    <div style={{ marginTop: "6px", color: "#fbbf24", fontSize: "12px" }}>
+                      Fallback mode active. Confidence is conservative until neural models are available.
+                    </div>
+                  ) : null}
                 </div>
               </div>
             )}
@@ -482,6 +584,82 @@ export default function AdvancedAnalyticsPanel() {
           margin: 8px 0;
         }
 
+        .prediction-meta-row {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+          gap: 8px;
+          margin-bottom: 12px;
+          font-size: 0.78rem;
+          color: #9ea8d2;
+        }
+
+        .probability-high-risk {
+          margin-top: 4px;
+          font-size: 0.78rem;
+          color: #b8f1ff;
+        }
+
+        .interval-label {
+          margin-top: 8px;
+          font-size: 0.75rem;
+          color: #95a2c8;
+        }
+
+        .interval-track {
+          position: relative;
+          height: 8px;
+          margin-top: 6px;
+          border-radius: 6px;
+          background: rgba(255, 255, 255, 0.08);
+          overflow: hidden;
+        }
+
+        .interval-range {
+          position: absolute;
+          top: 0;
+          height: 100%;
+          border-radius: 6px;
+          background: linear-gradient(90deg, rgba(0, 212, 255, 0.45), rgba(123, 44, 191, 0.6));
+        }
+
+        .interval-median {
+          position: absolute;
+          top: -2px;
+          width: 2px;
+          height: 12px;
+          background: #e7eeff;
+          opacity: 0.95;
+          transform: translateX(-50%);
+        }
+
+        .calibration-status {
+          margin-top: 8px;
+          font-size: 0.74rem;
+          padding: 4px 6px;
+          border-radius: 6px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: #c8d6ff;
+          background: rgba(255, 255, 255, 0.04);
+        }
+
+        .calibration-status.good {
+          border-color: rgba(56, 211, 159, 0.45);
+          color: #7fffd4;
+          background: rgba(56, 211, 159, 0.08);
+        }
+
+        .calibration-status.warn {
+          border-color: rgba(255, 170, 0, 0.55);
+          color: #ffd37a;
+          background: rgba(255, 170, 0, 0.1);
+        }
+
+        .blend-weights {
+          margin-top: 6px;
+          font-size: 0.72rem;
+          color: #8c99bf;
+        }
+
         .risk-bar {
           height: 4px;
           background: rgba(255, 255, 255, 0.1);
@@ -704,6 +882,101 @@ export default function AdvancedAnalyticsPanel() {
         .report-section li {
           margin-bottom: 5px;
           line-height: 1.5;
+        }
+
+
+        /* Prediction UI cleanup */
+        .prediction-meta-row {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+          gap: 10px;
+          margin-bottom: 14px;
+        }
+
+        .meta-chip {
+          border: 1px solid rgba(147, 175, 255, 0.28);
+          background: rgba(90, 116, 190, 0.12);
+          border-radius: 8px;
+          padding: 8px 10px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .meta-label {
+          font-size: 0.72rem;
+          color: #9aa8d5;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+
+        .meta-value {
+          font-size: 0.8rem;
+          color: #d9e3ff;
+        }
+
+        .prediction-card {
+          text-align: left;
+          padding: 14px;
+        }
+
+        .prediction-card-headline {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 6px;
+        }
+
+        .blend-mini {
+          font-size: 0.68rem;
+          color: #8090be;
+          border: 1px solid rgba(132, 152, 212, 0.28);
+          border-radius: 999px;
+          padding: 2px 8px;
+        }
+
+        .metric-pills {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 8px;
+          margin: 8px 0;
+        }
+
+        .metric-pill {
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          border-radius: 8px;
+          padding: 6px 8px;
+          display: flex;
+          justify-content: space-between;
+          font-size: 0.74rem;
+          color: #9ab0e8;
+        }
+
+        .metric-pill strong {
+          color: #ebf2ff;
+          font-size: 0.78rem;
+        }
+
+        .interval-label {
+          margin-top: 8px;
+          font-size: 0.72rem;
+          color: #90a2d4;
+        }
+
+        .calibration-inline {
+          margin-top: 8px;
+          font-size: 0.72rem;
+          color: #b2c5f8;
+        }
+
+        .calibration-inline.good {
+          color: #84f2ce;
+        }
+
+        .calibration-inline.warn {
+          color: #ffd68f;
         }
       `}</style>
     </div>

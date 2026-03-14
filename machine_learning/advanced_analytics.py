@@ -18,10 +18,25 @@ import os
 import sys
 import logging
 import traceback
+import time
 import numpy as np
 import pandas as pd
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
+
+try:
+    from sklearn.isotonic import IsotonicRegression
+    ISOTONIC_AVAILABLE = True
+except Exception:
+    IsotonicRegression = None
+    ISOTONIC_AVAILABLE = False
+
+try:
+    from sklearn.linear_model import LogisticRegression
+    LOGISTIC_AVAILABLE = True
+except Exception:
+    LogisticRegression = None
+    LOGISTIC_AVAILABLE = False
 
 # Configure logging
 LOG_DIR = "./logs"
@@ -36,9 +51,16 @@ logging.basicConfig(
 )
 
 def log_event(msg: str):
-    """Log event with timestamp"""
+    """Log event with timestamp (console-safe for non-UTF8 Windows terminals)."""
     ts = datetime.now(timezone.utc).isoformat()
-    print(f"[ADVANCED_ANALYTICS] {ts} | {msg}", flush=True)
+    text_msg = str(msg)
+    line = f"[ADVANCED_ANALYTICS] {ts} | {text_msg}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe_line = line.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe_line, flush=True)
 
 
 # ============================================================
@@ -56,6 +78,11 @@ FEATURE_COLUMNS = [
     "stock_volatility",
     "weather_anomaly"
 ]
+
+
+HORIZONS = ["1h", "6h", "24h", "7d"]
+HORIZON_STEPS = {"1h": 1, "6h": 6, "24h": 24, "7d": 168}
+LAST_ADVANCED_KPIS: Dict[str, Any] = {}
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -76,7 +103,30 @@ def derive_baseline_risk(data: Optional[pd.DataFrame]) -> float:
         return 50.0
 
 
-def build_statistical_fallback_predictions(baseline_risk: float) -> Dict[str, Any]:
+def derive_baseline_confidence(data: Optional[pd.DataFrame]) -> float:
+    """Use latest forecast confidence when available, else derive conservative default."""
+    try:
+        if data is None or len(data) == 0:
+            return 0.55
+
+        if "forecast_confidence" in data.columns:
+            latest = float(data["forecast_confidence"].iloc[-1])
+            if np.isfinite(latest):
+                return clamp(latest, 0.25, 0.95)
+
+        # Confidence proxy from data depth when explicit confidence is absent.
+        if len(data) >= 300:
+            return 0.72
+        if len(data) >= 120:
+            return 0.64
+        if len(data) >= 40:
+            return 0.58
+        return 0.52
+    except Exception:
+        return 0.55
+
+
+def build_statistical_fallback_predictions(baseline_risk: float, baseline_confidence: float = 0.55) -> Dict[str, Any]:
     """
     Build conservative fallback predictions anchored to current observed risk.
     Confidence is intentionally low because this path is non-neural fallback.
@@ -84,14 +134,17 @@ def build_statistical_fallback_predictions(baseline_risk: float) -> Dict[str, An
     base = clamp(float(baseline_risk), 0.0, 100.0)
     # Mild mean-reversion toward neutral risk (50) over longer horizons.
     deltas = [0.0, -0.08, -0.15, -0.22]
+    confidence_decay = [1.0, 0.9, 0.8, 0.7]
     horizons = ["1h", "6h", "24h", "7d"]
     preds = []
+    base_conf = clamp(float(baseline_confidence), 0.25, 0.95)
     for idx, horizon in enumerate(horizons):
         adjusted = base + (base - 50.0) * deltas[idx]
+        conf = clamp(base_conf * confidence_decay[idx], 0.2, 0.95)
         preds.append({
             "horizon": horizon,
             "risk_score": round(clamp(adjusted, 0.0, 100.0), 2),
-            "confidence": round(max(0.2, 0.45 - (idx * 0.07)), 2),
+            "confidence": round(conf, 2),
         })
     return {
         "predictions": preds,
@@ -124,6 +177,8 @@ def load_features_from_mongodb(limit=500, mode="online") -> pd.DataFrame:
                 "stock_volatility": features.get("stock_volatility"),
                 "weather_anomaly": features.get("weather_anomaly"),
                 "global_risk_score": features.get("global_risk_score"),
+                "forecast_confidence": features.get("forecast_confidence"),
+                "forecast_risk_score": features.get("forecast_risk_score"),
             }
             rows.append(row)
         df = pd.DataFrame(rows)
@@ -211,46 +266,343 @@ def create_sample_data() -> pd.DataFrame:
     return df
 
 
+def _hours_since_last_change(series: pd.Series, eps: float = 1e-9) -> int:
+    if series is None or len(series) <= 1:
+        return 0
+    values = pd.to_numeric(series, errors="coerce").fillna(0.0).to_numpy()
+    last = values[-1]
+    hours = 0
+    for idx in range(len(values) - 2, -1, -1):
+        if abs(float(last) - float(values[idx])) > eps:
+            break
+        hours += 1
+    return int(hours)
+
+
+def build_feature_quality_gate(data: pd.DataFrame) -> Dict[str, Any]:
+    rows = 0 if data is None else len(data)
+    if data is None or rows == 0:
+        default = {k: {"variance": 0.0, "staleness_hours": 0, "quality": 0.5, "gated": False} for k in FEATURE_COLUMNS}
+        return {"features": default, "active_features": len(FEATURE_COLUMNS)}
+
+    quality = {}
+    active = 0
+    for col in FEATURE_COLUMNS:
+        s = pd.to_numeric(data.get(col), errors="coerce").fillna(0.0) if col in data.columns else pd.Series([0.0])
+        var = float(np.nanvar(s.to_numpy()))
+        stale_h = _hours_since_last_change(s)
+
+        variance_score = clamp(var / 0.02, 0.0, 1.0)
+        freshness_score = clamp(1.0 - (stale_h / 48.0), 0.0, 1.0)
+        score = float(0.65 * variance_score + 0.35 * freshness_score)
+        gated = bool(var < 1e-5 or stale_h >= 72)
+
+        if not gated:
+            active += 1
+
+        quality[col] = {
+            "variance": round(var, 8),
+            "staleness_hours": int(stale_h),
+            "quality": round(score, 4),
+            "gated": gated,
+        }
+
+    return {"features": quality, "active_features": int(active)}
+
+
+def _weighted_risk_from_feature_predictions(pred_features: Dict[str, Any], quality_gate: Dict[str, Any], baseline_risk: float) -> float:
+    base_weights = {
+        "news_sentiment": -0.25,
+        "gdelt_sentiment": -0.20,
+        "crypto_return": 0.10,
+        "crypto_volatility": 0.15,
+        "stock_return": -0.10,
+        "stock_volatility": 0.10,
+        "weather_anomaly": 0.10,
+    }
+
+    risk_score = 50.0
+    gate_map = quality_gate.get("features", {}) if isinstance(quality_gate, dict) else {}
+
+    for feature, weight in base_weights.items():
+        if feature not in pred_features:
+            continue
+        raw_val = pred_features.get(feature)
+        if isinstance(raw_val, np.ndarray):
+            val = float(raw_val[-1]) if len(raw_val) else 0.0
+        elif isinstance(raw_val, (list, tuple)):
+            val = float(raw_val[-1]) if raw_val else 0.0
+        else:
+            val = float(raw_val)
+
+        q = gate_map.get(feature, {})
+        if q.get("gated"):
+            continue
+
+        quality_weight = clamp(float(q.get("quality", 0.5)), 0.0, 1.0)
+        risk_score += float(weight) * quality_weight * val * 100.0
+
+    # Stabilize around latest observed risk to avoid jumpy outputs.
+    return clamp(0.7 * risk_score + 0.3 * baseline_risk, 0.0, 100.0)
+
+
+def _estimate_neural_risk_from_sequence(pred: Dict[str, Any], data: pd.DataFrame, baseline_risk: float) -> float:
+    seq = pred.get("predictions") if isinstance(pred, dict) else None
+    if not isinstance(seq, (list, tuple)) or len(seq) == 0:
+        return baseline_risk
+
+    try:
+        ns = pd.to_numeric(data.get("news_sentiment"), errors="coerce").fillna(0.0)
+        ns_min = float(ns.min()) if len(ns) else -1.0
+        ns_max = float(ns.max()) if len(ns) else 1.0
+        if ns_max <= ns_min:
+            ns_max = ns_min + 1.0
+
+        pred_norm = float(seq[-1])
+        pred_news = ns_min + pred_norm * (ns_max - ns_min)
+        latest_news = float(ns.iloc[-1]) if len(ns) else 0.0
+
+        delta = pred_news - latest_news
+        # More negative sentiment implies higher risk.
+        adjusted = baseline_risk - (delta * 18.0)
+        return clamp(adjusted, 0.0, 100.0)
+    except Exception:
+        return baseline_risk
+
+
+def _empirical_residual_quantiles(data: pd.DataFrame, horizon_steps: int) -> Dict[str, float]:
+    if data is None or len(data) <= horizon_steps + 4 or "global_risk_score" not in data.columns:
+        return {"q10": -5.0, "q90": 5.0, "samples": 0}
+
+    risk = pd.to_numeric(data["global_risk_score"], errors="coerce").ffill().fillna(50.0).to_numpy()
+    base = risk[:-horizon_steps]
+    future = risk[horizon_steps:]
+    residuals = (future - base)
+
+    if len(residuals) < 20:
+        return {"q10": -5.0, "q90": 5.0, "samples": int(len(residuals))}
+
+    return {
+        "q10": float(np.quantile(residuals, 0.10)),
+        "q90": float(np.quantile(residuals, 0.90)),
+        "samples": int(len(residuals)),
+    }
+
+
+def _fit_horizon_calibrator(data: pd.DataFrame, horizon_steps: int) -> Dict[str, Any]:
+    if data is None or "global_risk_score" not in data.columns:
+        return {"mode": "identity", "error": 0.2, "samples": 0}
+
+    risk = pd.to_numeric(data["global_risk_score"], errors="coerce").ffill().fillna(50.0).to_numpy()
+    if len(risk) <= horizon_steps + 10:
+        return {"mode": "identity", "error": 0.2, "samples": 0}
+
+    x_raw = np.clip(risk[:-horizon_steps] / 100.0, 0.001, 0.999)
+    y = (risk[horizon_steps:] >= 70.0).astype(int)
+
+    if len(np.unique(y)) < 2:
+        return {"mode": "identity", "error": 0.15, "samples": int(len(y))}
+
+    pred_train = x_raw.copy()
+    calibrator = None
+    mode = "identity"
+
+    try:
+        if ISOTONIC_AVAILABLE and len(x_raw) >= 40:
+            calibrator = IsotonicRegression(out_of_bounds="clip")
+            calibrator.fit(x_raw, y)
+            pred_train = calibrator.predict(x_raw)
+            mode = "isotonic"
+        elif LOGISTIC_AVAILABLE and len(x_raw) >= 20:
+            calibrator = LogisticRegression(solver="lbfgs", max_iter=200)
+            calibrator.fit(x_raw.reshape(-1, 1), y)
+            pred_train = calibrator.predict_proba(x_raw.reshape(-1, 1))[:, 1]
+            mode = "platt"
+    except Exception:
+        calibrator = None
+        mode = "identity"
+        pred_train = x_raw.copy()
+
+    brier = float(np.mean((pred_train - y) ** 2)) if len(y) else 0.25
+    return {
+        "mode": mode,
+        "model": calibrator,
+        "error": round(brier, 6),
+        "samples": int(len(y)),
+    }
+
+
+def _apply_calibration(cal_info: Dict[str, Any], raw_prob: float) -> float:
+    p = clamp(float(raw_prob), 0.001, 0.999)
+    mode = str(cal_info.get("mode", "identity"))
+    model = cal_info.get("model")
+
+    try:
+        if mode == "isotonic" and model is not None:
+            return float(clamp(model.predict([p])[0], 0.001, 0.999))
+        if mode == "platt" and model is not None:
+            return float(clamp(model.predict_proba([[p]])[0][1], 0.001, 0.999))
+    except Exception:
+        return p
+    return p
+
+
+def _model_age_hours(model_meta: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(model_meta, dict):
+        return None
+    trained_at = model_meta.get("trained_at")
+    if not trained_at:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(trained_at).replace("Z", "+00:00"))
+        age_h = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds() / 3600.0
+        return round(max(0.0, age_h), 3)
+    except Exception:
+        return None
+
+
+def get_advanced_analytics_kpis() -> Dict[str, Any]:
+    return dict(LAST_ADVANCED_KPIS or {})
+
+
 # ============================================================
 # ML Module Imports with Fallbacks
 # ============================================================
 def get_lstm_predictions(data: pd.DataFrame) -> Dict[str, Any]:
-    """Get LSTM predictions with fallback"""
+    """Get probabilistic, calibrated, blended multi-horizon predictions."""
+    global LAST_ADVANCED_KPIS
+
+    horizons = HORIZONS
+    horizon_steps = HORIZON_STEPS
+    risk_drift = [0.0, -0.08, -0.15, -0.22]
+    blend_map = {
+        "1h": {"neural": 0.75, "stat": 0.25},
+        "6h": {"neural": 0.60, "stat": 0.40},
+        "24h": {"neural": 0.35, "stat": 0.65},
+        "7d": {"neural": 0.20, "stat": 0.80},
+    }
+
+    t0 = time.perf_counter()
+    baseline_risk = derive_baseline_risk(data)
+    baseline_conf = derive_baseline_confidence(data)
+
+    quality_gate = build_feature_quality_gate(data)
+    calibrators = {h: _fit_horizon_calibrator(data, horizon_steps[h]) for h in horizons}
+    residual_q = {h: _empirical_residual_quantiles(data, horizon_steps[h]) for h in horizons}
+
+    model_age_hours = None
+    model_version = None
+
     try:
-        from machine_learning.lstm_predictor import LSTMPredictor, load_features_data
-        
+        from machine_learning.lstm_predictor import LSTMPredictor, load_model_metadata
+
+        model_meta = load_model_metadata()
+        model_age_hours = _model_age_hours(model_meta)
+        model_version = model_meta.get("version") if isinstance(model_meta, dict) else None
+
         predictor = LSTMPredictor()
-        predictor.train(data, force_retrain=False)
-        
+        predictor.statistical_fallback.fit(data)
+        model_load = predictor.load_existing_models()
+        has_neural_models = bool(getattr(predictor, "models", {}))
+
         predictions_list = []
-        for horizon in ["1h", "6h", "24h", "7d"]:
-            try:
-                pred = predictor.predict(data, horizon)
-                # Extract risk score from predictions
-                risk_score = pred.get("risk_scores", {}).get(horizon, 50.0)
-                if isinstance(risk_score, dict):
-                    risk_score = 50.0
-                predictions_list.append({
-                    "horizon": horizon,
-                    "risk_score": float(risk_score),
-                    "confidence": 0.85 - (list(["1h", "6h", "24h", "7d"]).index(horizon) * 0.15)
-                })
-            except Exception as e:
-                log_event(f"⚠️ LSTM prediction error for {horizon}: {e}")
-                predictions_list.append({
-                    "horizon": horizon,
-                    "risk_score": 50.0,
-                    "confidence": 0.5
-                })
-        
+        for idx, horizon in enumerate(horizons):
+            horizon_start = time.perf_counter()
+            steps = horizon_steps[horizon]
+            blend_weights = blend_map[horizon]
+
+            stat_risk_default = baseline_risk + (baseline_risk - 50.0) * risk_drift[idx]
+            stat_risk = clamp(stat_risk_default, 0.0, 100.0)
+            neural_risk = stat_risk
+
+            pred = predictor.predict(data, horizon)
+
+            if isinstance(pred, dict) and isinstance(pred.get("predictions"), dict):
+                stat_risk = _weighted_risk_from_feature_predictions(pred["predictions"], quality_gate, baseline_risk)
+
+            if isinstance(pred, dict) and pred.get("model") == "lstm":
+                neural_risk = _estimate_neural_risk_from_sequence(pred, data, baseline_risk)
+
+            if has_neural_models:
+                blended_risk = (
+                    blend_weights["neural"] * neural_risk
+                    + blend_weights["stat"] * stat_risk
+                )
+                model_type = "horizon_blended"
+            else:
+                blended_risk = stat_risk
+                model_type = "statistical_fallback"
+
+            blended_risk = clamp(blended_risk, 0.0, 100.0)
+            q = residual_q[horizon]
+            p10 = clamp(blended_risk + float(q.get("q10", -5.0)), 0.0, 100.0)
+            p90 = clamp(blended_risk + float(q.get("q90", 5.0)), 0.0, 100.0)
+            interval_width = max(0.0, p90 - p10)
+
+            raw_prob = blended_risk / 100.0
+            calibrated_prob = _apply_calibration(calibrators[horizon], raw_prob)
+
+            # Confidence is learned from interval tightness + calibration quality.
+            cal_err = float(calibrators[horizon].get("error", 0.2))
+            interval_quality = clamp(1.0 - (interval_width / 100.0), 0.0, 1.0)
+            calibration_quality = clamp(1.0 - (cal_err / 0.25), 0.0, 1.0)
+            confidence = clamp(0.15 + 0.55 * interval_quality + 0.30 * calibration_quality, 0.2, 0.98)
+
+            if has_neural_models and horizon == "1h":
+                confidence = clamp(confidence + 0.04, 0.2, 0.98)
+            elif has_neural_models and horizon == "6h":
+                confidence = clamp(confidence + 0.02, 0.2, 0.98)
+
+            predictions_list.append({
+                "horizon": horizon,
+                "risk_score": round(blended_risk, 2),
+                "confidence": round(confidence, 2),
+                "interval": {
+                    "p10": round(p10, 2),
+                    "p50": round(blended_risk, 2),
+                    "p90": round(p90, 2),
+                },
+                "probability_high_risk": round(float(calibrated_prob), 4),
+                "blend": {
+                    "neural_weight": blend_weights["neural"] if has_neural_models else 0.0,
+                    "stat_weight": blend_weights["stat"] if has_neural_models else 1.0,
+                },
+                "latency_ms": round((time.perf_counter() - horizon_start) * 1000.0, 2),
+            })
+
+        if isinstance(model_load, dict) and model_load.get("status") == "statistical_fallback":
+            model_type = "statistical_fallback"
+
+        total_latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        LAST_ADVANCED_KPIS = {
+            "prediction_latency_ms": total_latency_ms,
+            "model_age_hours": model_age_hours,
+            "model_version": model_version,
+            "feature_quality": quality_gate,
+            "calibration_error": {h: calibrators[h].get("error") for h in horizons},
+            "calibration_mode": {h: calibrators[h].get("mode") for h in horizons},
+        }
+
         return {
             "predictions": predictions_list,
-            "model_type": "lstm_ensemble"
+            "model_type": model_type,
+            "observability": LAST_ADVANCED_KPIS,
         }
-    except Exception as e:
-        log_event(f"⚠️ LSTM module error: {e}")
-        return build_statistical_fallback_predictions(derive_baseline_risk(data))
 
+    except Exception as e:
+        log_event(f"LSTM module error: {e}")
+        fallback = build_statistical_fallback_predictions(baseline_risk, baseline_conf)
+        LAST_ADVANCED_KPIS = {
+            "prediction_latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+            "model_age_hours": model_age_hours,
+            "model_version": model_version,
+            "feature_quality": quality_gate,
+            "calibration_error": {h: calibrators[h].get("error") for h in horizons},
+            "calibration_mode": {h: calibrators[h].get("mode") for h in horizons},
+            "status": "fallback",
+        }
+        fallback["observability"] = LAST_ADVANCED_KPIS
+        return fallback
 
 def get_anomaly_detection(data: pd.DataFrame) -> List[Dict[str, Any]]:
     """Get anomaly detection with fallback"""
@@ -380,20 +732,73 @@ def get_sentiment_momentum(data: pd.DataFrame) -> Dict[str, Any]:
     """Get sentiment momentum analysis with fallback"""
     try:
         from processing.sentiment_momentum import analyze_sentiment_momentum
-        
-        momentum = analyze_sentiment_momentum()
-        
-        # Ensure all required fields
+
+        momentum = analyze_sentiment_momentum(data)
+        results = momentum.get("results", {}) if isinstance(momentum, dict) else {}
+        features = results.get("features", {}) if isinstance(results, dict) else {}
+        overall = results.get("overall", {}) if isinstance(results, dict) else {}
+
+        velocities = []
+        accelerations = []
+        rsis = []
+        macd_votes = []
+
+        for feature_payload in features.values():
+            if not isinstance(feature_payload, dict):
+                continue
+            ind = feature_payload.get("indicators", {}) if isinstance(feature_payload.get("indicators", {}), dict) else {}
+            velocities.append(float(ind.get("velocity", 0.0)))
+            accelerations.append(float(ind.get("acceleration", 0.0)))
+
+            rsi_payload = ind.get("rsi", {}) if isinstance(ind.get("rsi", {}), dict) else {}
+            rsis.append(float(rsi_payload.get("value", 50.0)))
+
+            macd_payload = ind.get("macd", {}) if isinstance(ind.get("macd", {}), dict) else {}
+            macd_votes.append(str(macd_payload.get("status", "neutral")))
+
+        velocity = float(np.mean(velocities)) if velocities else 0.0
+        acceleration = float(np.mean(accelerations)) if accelerations else 0.0
+        rsi = float(np.mean(rsis)) if rsis else 50.0
+
+        # Guardrails for stability in dashboard displays.
+        if not np.isfinite(velocity):
+            velocity = 0.0
+        if not np.isfinite(acceleration):
+            acceleration = 0.0
+        velocity = float(clamp(velocity, -1.0, 1.0))
+        acceleration = float(clamp(acceleration, -1.0, 1.0))
+
+        direction = str(overall.get("direction", "stable")).lower()
+        if "up" in direction:
+            trend = "accelerating"
+        elif "down" in direction:
+            trend = "decelerating"
+        elif velocity > 0.01:
+            trend = "accelerating"
+        elif velocity < -0.01:
+            trend = "decelerating"
+        else:
+            trend = "stable"
+
+        bullish = sum(1 for v in macd_votes if "bull" in v.lower())
+        bearish = sum(1 for v in macd_votes if "bear" in v.lower())
+        if bullish > bearish:
+            macd_signal = "bullish"
+        elif bearish > bullish:
+            macd_signal = "bearish"
+        else:
+            macd_signal = "neutral"
+
         return {
-            "velocity": float(momentum.get("velocity", 0)),
-            "acceleration": float(momentum.get("acceleration", 0)),
-            "trend": momentum.get("trend", "stable"),
-            "rsi": float(momentum.get("rsi", 50)),
-            "macd_signal": momentum.get("macd_signal", "neutral")
+            "velocity": velocity,
+            "acceleration": acceleration,
+            "trend": trend,
+            "rsi": rsi,
+            "macd_signal": macd_signal,
         }
     except Exception as e:
-        log_event(f"⚠️ Sentiment momentum error: {e}")
-    
+        log_event(f"Sentiment momentum error: {e}")
+
     # Calculate fallback momentum from data
     try:
         if "news_sentiment" not in data.columns or len(data) < 2:
@@ -452,21 +857,41 @@ def get_ai_report(data: pd.DataFrame) -> Dict[str, Any]:
     """Get AI-generated report with fallback"""
     try:
         from processing.ai_report_generator import AIReportGenerator
-        
+
         generator = AIReportGenerator()
         report = generator.generate_brief_report(data)
-        
-        # Map to frontend expected format
+
+        # Anchor report severity to the live global risk baseline.
+        baseline_risk = float(derive_baseline_risk(data))
+        if baseline_risk >= 75:
+            level = "critical"
+            rec = "Activate cross-team incident coordination and immediate risk controls."
+        elif baseline_risk >= 60:
+            level = "high"
+            rec = "Increase monitoring cadence and prepare contingency response playbooks."
+        elif baseline_risk >= 40:
+            level = "moderate"
+            rec = "Continue active monitoring and targeted mitigation planning."
+        else:
+            level = "low"
+            rec = "Maintain routine monitoring and periodic review."
+
+        trend_text = report.get("trend_analysis", "") if isinstance(report, dict) else ""
+
         return {
-            "title": report.get("headline", "Global Risk Assessment Report"),
-            "summary": report.get("summary", "Analysis complete."),
-            "key_findings": [report.get("trend_analysis", "")] if report.get("trend_analysis") else [],
-            "recommendations": [report.get("recommendations", {}).get("actions", ["Continue monitoring"])[0]] if isinstance(report.get("recommendations"), dict) else ["Continue monitoring"],
-            "risk_level": report.get("risk_assessment", {}).get("level", "moderate").lower()
+            "title": report.get("headline", "Global Risk Assessment Report") if isinstance(report, dict) else "Global Risk Assessment Report",
+            "summary": (
+                f"Current global risk assessment stands at {baseline_risk:.1f}/100, "
+                f"classified as {level} severity. "
+                f"{trend_text or 'Monitoring pipeline remains active.'}"
+            ),
+            "key_findings": [trend_text] if trend_text else ["Monitoring pipeline remains active."],
+            "recommendations": [rec],
+            "risk_level": level,
         }
     except Exception as e:
-        log_event(f"⚠️ AI report generator error: {e}")
-    
+        log_event(f"AI report generator error: {e}")
+
     # Generate fallback report from data
     try:
         if len(data) == 0:
@@ -623,6 +1048,7 @@ class AdvancedAnalyticsEngine:
                 "causal_graph": causal_graph,
                 "sentiment_momentum": sentiment_momentum,
                 "ai_report": ai_report,
+                "ml_observability": predictions.get("observability", {}),
                 "summary": {
                     "risk_level": risk_level,
                     "average_risk_score": float(avg_risk),
@@ -672,7 +1098,8 @@ def run_advanced_analytics() -> Dict[str, Any]:
             "anomalies": result.get("anomalies", []),
             "causal_graph": result.get("causal_graph", []),
             "sentiment_momentum": result.get("sentiment_momentum", get_fallback_momentum()),
-            "ai_report": result.get("ai_report", get_fallback_report())
+            "ai_report": result.get("ai_report", get_fallback_report()),
+            "ml_observability": result.get("ml_observability", get_advanced_analytics_kpis()),
         }
         
     except Exception as e:
@@ -683,8 +1110,12 @@ def run_advanced_analytics() -> Dict[str, Any]:
 
 
 def get_fallback_predictions() -> Dict[str, Any]:
-    """Get fallback predictions"""
-    return build_statistical_fallback_predictions(50.0)
+    """Get fallback predictions anchored to latest available data."""
+    data = load_features_data()
+    return build_statistical_fallback_predictions(
+        derive_baseline_risk(data),
+        derive_baseline_confidence(data),
+    )
 
 
 def get_fallback_analytics_response() -> Dict[str, Any]:
@@ -702,7 +1133,8 @@ def get_fallback_analytics_response() -> Dict[str, Any]:
         ],
         "causal_graph": get_fallback_causal_links(),
         "sentiment_momentum": get_fallback_momentum(),
-        "ai_report": get_fallback_report()
+        "ai_report": get_fallback_report(),
+        "ml_observability": get_advanced_analytics_kpis(),
     }
 
 

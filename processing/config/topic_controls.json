@@ -1,0 +1,37 @@
+{
+  "allowlist": [
+    "who",
+    "world health organization",
+    "global risk",
+    "earthquake",
+    "flood",
+    "outbreak",
+    "inflation",
+    "recession",
+    "cyberattack"
+  ],
+  "blocklist": [
+    "afmer",
+    "afme",
+    "loremipsum",
+    "asdf",
+    "qwerty"
+  ],
+  "manual_merges": {
+    "world health organization": "who",
+    "world health org": "who",
+    "w h o": "who",
+    "covid 19": "covid-19",
+    "covid19": "covid-19",
+    "climate change": "climate",
+    "cyber attack": "cyberattack"
+  },
+  "entity_aliases": {
+    "un": "united nations",
+    "u.n": "united nations",
+    "w.h.o": "who",
+    "who": "world health organization",
+    "us": "united states",
+    "usa": "united states"
+  }
+}

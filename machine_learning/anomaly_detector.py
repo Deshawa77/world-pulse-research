@@ -38,11 +38,19 @@ logging.basicConfig(
 )
 
 def log_event(msg: str):
-    """Log event with timestamp"""
+    """Log event with timestamp (console-safe for non-UTF8 terminals)."""
     ts = datetime.now(timezone.utc).isoformat()
-    print(f"[ANOMALY] {ts} | {msg}", flush=True)
+    text_msg = str(msg)
+    line = f"[ANOMALY] {ts} | {text_msg}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe_line = line.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe_line, flush=True)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{ts} | {msg}\n")
+        f.write(f"{ts} | {text_msg}\n")
+
 
 
 # ============================================================

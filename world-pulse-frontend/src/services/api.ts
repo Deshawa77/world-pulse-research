@@ -1,8 +1,106 @@
-import axios from "axios";
+import axios, { AxiosHeaders } from "axios";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 const API_KEY = import.meta.env.VITE_API_KEY || "super_secure_api_key";
-export const COUNTRY_RISK_WS_URL = `${API_URL.replace(/^http/, "ws")}/ws/country-risk-map?api_key=${encodeURIComponent(API_KEY)}`;
+
+const AUTH_STORAGE_KEYS = ["token", "role", "user_type", "name", "email"] as const;
+let unauthorizedRedirectScheduled = false;
+
+const clearStoredAuth = () => {
+  if (typeof window === "undefined") return;
+  AUTH_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
+};
+
+const decodeJwtPayload = (token: string): Record<string, unknown> | null => {
+  try {
+    const [, payloadBase64] = token.split(".");
+    if (!payloadBase64) return null;
+
+    const normalized = payloadBase64.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    const decodeBase64 =
+      typeof window !== "undefined" && typeof window.atob === "function"
+        ? window.atob.bind(window)
+        : typeof atob === "function"
+          ? atob
+          : null;
+
+    if (!decodeBase64) return null;
+
+    const payload = JSON.parse(decodeBase64(padded));
+    return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+};
+
+const isJwtExpired = (token: string): boolean => {
+  const payload = decodeJwtPayload(token);
+  const exp = Number(payload?.exp ?? 0);
+
+  if (!Number.isFinite(exp) || exp <= 0) return false;
+  return Date.now() >= exp * 1000;
+};
+
+const redirectToLogin = () => {
+  if (typeof window === "undefined" || unauthorizedRedirectScheduled) return;
+  if (window.location.pathname === "/login") return;
+
+  unauthorizedRedirectScheduled = true;
+  window.location.replace("/login");
+};
+
+const getStoredToken = () => {
+  if (typeof window === "undefined") return "";
+
+  const token = String(window.localStorage.getItem("token") || "").trim();
+  if (!token) return "";
+
+  if (isJwtExpired(token)) {
+    clearStoredAuth();
+    return "";
+  }
+
+  return token;
+};
+
+export const getAuthHeaders = (): Record<string, string> => {
+  const token = getStoredToken();
+  if (token) {
+    return { Authorization: `Bearer ${token}` };
+  }
+  return API_KEY ? { "x-api-key": API_KEY } : {};
+};
+
+const buildWebSocketBaseUrl = () => {
+  const wsBase = API_URL.replace(/^http/, "ws");
+  return wsBase.endsWith("/") ? wsBase : `${wsBase}/`;
+};
+
+export const buildWebSocketAuthUrl = (pathOrUrl: string): string => {
+  const trimmed = pathOrUrl.trim();
+  let url: URL;
+
+  if (/^wss?:\/\//i.test(trimmed)) {
+    url = new URL(trimmed);
+  } else {
+    const normalizedPath = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+    url = new URL(normalizedPath, buildWebSocketBaseUrl());
+  }
+
+  url.searchParams.delete("token");
+  url.searchParams.delete("api_key");
+
+  const token = getStoredToken();
+  if (token) {
+    url.searchParams.set("token", token);
+  } else if (API_KEY) {
+    url.searchParams.set("api_key", API_KEY);
+  }
+  return url.toString();
+};
+
+export const COUNTRY_RISK_WS_URL = buildWebSocketAuthUrl("/ws/country-risk-map");
 
 // Simple response cache to reduce 429 errors
 interface CacheEntry {
@@ -19,11 +117,11 @@ const API = axios.create({
   timeout: 20000,
 });
 
-// Add response caching interceptor
+// Add auth headers and response caching interceptor
 API.interceptors.request.use((config) => {
   const cacheKey = `${config.method}:${config.url}:${JSON.stringify(config.params || {})}`;
   const cached = responseCache.get(cacheKey);
-  
+
   if (cached && Date.now() - cached.timestamp < cached.ttl) {
     // Return cached response
     return Promise.reject({
@@ -32,7 +130,21 @@ API.interceptors.request.use((config) => {
       response: { data: cached.data, status: 200, statusText: "OK", headers: {}, config }
     });
   }
-  
+
+  const nextHeaders = AxiosHeaders.from(config.headers ?? {});
+  nextHeaders.delete("x-api-key");
+  nextHeaders.delete("X-API-KEY");
+  nextHeaders.delete("X-Api-Key");
+  nextHeaders.delete("Authorization");
+  nextHeaders.delete("authorization");
+
+  const authHeaders = getAuthHeaders();
+  Object.entries(authHeaders).forEach(([key, value]) => {
+    nextHeaders.set(key, value);
+  });
+
+  config.headers = nextHeaders;
+
   return config;
 });
 
@@ -46,7 +158,7 @@ API.interceptors.response.use(
       if (response.config.url?.includes("governance")) ttl = 10000; // 10s
       if (response.config.url?.includes("risk-map")) ttl = 5000; // 5s
       if (response.config.url?.includes("live-feed")) ttl = 3000; // 3s
-      
+
       responseCache.set(cacheKey, {
         data: response.data,
         timestamp: Date.now(),
@@ -60,23 +172,30 @@ API.interceptors.response.use(
     if (error.__cached) {
       return Promise.resolve(error.response);
     }
+    const config = error?.config as (typeof error.config & { __retryCount?: number }) | undefined;
+    const method = String(config?.method || "").toLowerCase();
+    const status = Number(error?.response?.status || 0);
 
-     const config = error?.config as (typeof error.config & { __retryCount?: number }) | undefined;
-     const method = String(config?.method || "").toLowerCase();
-     const status = Number(error?.response?.status || 0);
-     const isRetryableNetworkError =
-       error?.code === "ECONNABORTED" ||
-       error?.message === "Network Error" ||
-       RETRYABLE_STATUS_CODES.has(status);
+    if (status === 401) {
+      clearStoredAuth();
+      responseCache.clear();
+      redirectToLogin();
+      return Promise.reject(error);
+    }
 
-     if (config && method === "get" && isRetryableNetworkError) {
-       const retryCount = config.__retryCount ?? 0;
-       if (retryCount < 2) {
-         config.__retryCount = retryCount + 1;
-         await new Promise((resolve) => setTimeout(resolve, 700 * (retryCount + 1)));
-         return API.request(config);
-       }
-     }
+    const isRetryableNetworkError =
+      error?.code === "ECONNABORTED" ||
+      error?.message === "Network Error" ||
+      RETRYABLE_STATUS_CODES.has(status);
+
+    if (config && method === "get" && isRetryableNetworkError) {
+      const retryCount = config.__retryCount ?? 0;
+      if (retryCount < 2) {
+        config.__retryCount = retryCount + 1;
+        await new Promise((resolve) => setTimeout(resolve, 700 * (retryCount + 1)));
+        return API.request(config);
+      }
+    }
 
     return Promise.reject(error);
   }
@@ -92,7 +211,8 @@ setInterval(() => {
   }
 }, 30000); // Clean every 30s
 
-export const API_HEADERS = { "x-api-key": API_KEY };
+// Legacy constant retained for compatibility at call sites.
+export const API_HEADERS: Record<string, string> = {};
 
 
 export type LiveCommandFeed = {
@@ -459,6 +579,334 @@ export async function postAlertAction(payload: AlertActionPayload): Promise<bool
   }
 }
 
+export type UserRole = "admin" | "user";
+export type UserType = "researcher" | "policy" | "student" | "developer";
+
+export type UserProfile = {
+  id?: string;
+  email: string;
+  name: string;
+  organization?: string | null;
+  role: UserRole;
+  user_type: UserType;
+  active: boolean;
+  deactivated_at?: string | null;
+  deactivated_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  auth_type?: string;
+};
+
+const normalizeUserRole = (value: unknown): UserRole => {
+  return String(value).toLowerCase() === "admin" ? "admin" : "user";
+};
+
+const normalizeUserType = (value: unknown, fallback: UserType = "researcher"): UserType => {
+  const candidate = String(value || "").toLowerCase();
+  if (candidate === "researcher" || candidate === "policy" || candidate === "student" || candidate === "developer") {
+    return candidate;
+  }
+  return fallback;
+};
+
+const normalizeUserProfile = (value: unknown): UserProfile => {
+  if (!isRecord(value)) {
+    return {
+      email: "",
+      name: "",
+      role: "user",
+      user_type: "researcher",
+      active: true,
+      deactivated_at: null,
+      deactivated_by: null,
+    };
+  }
+
+  const role = normalizeUserRole(value.role);
+  const userTypeFallback: UserType = role === "admin" ? "developer" : "researcher";
+
+  return {
+    id: typeof value.id === "string" ? value.id : undefined,
+    email: typeof value.email === "string" ? value.email : "",
+    name: typeof value.name === "string" ? value.name : "",
+    organization: typeof value.organization === "string" ? value.organization : null,
+    role,
+    user_type: normalizeUserType(value.user_type, userTypeFallback),
+    active: value.active !== false,
+    deactivated_at: typeof value.deactivated_at === "string" ? value.deactivated_at : null,
+    deactivated_by: typeof value.deactivated_by === "string" ? value.deactivated_by : null,
+    created_at: typeof value.created_at === "string" ? value.created_at : undefined,
+    updated_at: typeof value.updated_at === "string" ? value.updated_at : undefined,
+    auth_type: typeof value.auth_type === "string" ? value.auth_type : undefined,
+  };
+};
+
+export async function getCurrentUser(): Promise<UserProfile> {
+  const res = await API.get("/auth/me", { headers: API_HEADERS });
+  return normalizeUserProfile(res.data);
+}
+
+export async function updateCurrentUserProfile(payload: { name?: string; organization?: string | null }): Promise<UserProfile> {
+  const res = await API.patch("/auth/me", payload, { headers: API_HEADERS });
+  return normalizeUserProfile(res.data);
+}
+
+export async function changeCurrentUserPassword(payload: {
+  current_password: string;
+  new_password: string;
+}): Promise<{ message: string }> {
+  const res = await API.post("/auth/change-password", payload, { headers: API_HEADERS });
+  return {
+    message: typeof res.data?.message === "string" ? res.data.message : "Password updated successfully",
+  };
+}
+
+export async function getAdminUsers(): Promise<UserProfile[]> {
+  const res = await API.get("/admin/users", { headers: API_HEADERS });
+  const payload = isRecord(res.data) ? res.data : {};
+  const rows = Array.isArray(payload.users) ? payload.users : [];
+  return rows
+    .filter(isRecord)
+    .map((row) => normalizeUserProfile(row));
+}
+
+export async function updateAdminUserAccess(
+  email: string,
+  payload: Partial<Pick<UserProfile, "role" | "user_type">>
+): Promise<UserProfile> {
+  const res = await API.patch(`/admin/users/${encodeURIComponent(email)}/access`, payload, { headers: API_HEADERS });
+  return normalizeUserProfile(res.data);
+}
+
+export async function updateAdminUserStatus(email: string, active: boolean): Promise<UserProfile> {
+  const res = await API.patch(
+    `/admin/users/${encodeURIComponent(email)}/status`,
+    { active },
+    { headers: API_HEADERS }
+  );
+  return normalizeUserProfile(res.data);
+}
+
+export type HealthStatus = {
+  status: string;
+  [key: string]: unknown;
+};
+
+export type HealthDependenciesResponse = {
+  status?: string;
+  dependencies?: Record<string, unknown>;
+};
+
+export type ObservabilityMetrics = {
+  runtime?: Record<string, unknown>;
+  security?: Record<string, unknown>;
+};
+
+export type ObservabilityModelSummary = Record<string, unknown>;
+export type ObservabilityStreamingSummary = Record<string, unknown>;
+export type ValidationSummary = Record<string, unknown>;
+
+export async function getHealthLive(): Promise<HealthStatus> {
+  const res = await API.get("/health/live", { headers: API_HEADERS });
+  return (res.data ?? {}) as HealthStatus;
+}
+
+export async function getHealthReady(): Promise<HealthStatus> {
+  const res = await API.get("/health/ready", { headers: API_HEADERS });
+  return (res.data ?? {}) as HealthStatus;
+}
+
+export async function getHealthDependencies(mode: string = "online"): Promise<HealthDependenciesResponse> {
+  const res = await API.get("/health/dependencies", { headers: API_HEADERS, params: { mode } });
+  return (res.data ?? {}) as HealthDependenciesResponse;
+}
+
+export async function getObservabilityMetrics(): Promise<ObservabilityMetrics> {
+  const res = await API.get("/observability/metrics", { headers: API_HEADERS });
+  return (res.data ?? {}) as ObservabilityMetrics;
+}
+
+export async function getObservabilityModel(window: number = 200): Promise<ObservabilityModelSummary> {
+  const res = await API.get("/observability/model", { headers: API_HEADERS, params: { window } });
+  return (res.data ?? {}) as ObservabilityModelSummary;
+}
+
+export async function getObservabilityStreaming(): Promise<ObservabilityStreamingSummary> {
+  const res = await API.get("/observability/streaming", { headers: API_HEADERS });
+  return (res.data ?? {}) as ObservabilityStreamingSummary;
+}
+
+export async function getCountryRiskValidationSummary(): Promise<ValidationSummary> {
+  const res = await API.get("/observability/country-risk-validation", { headers: API_HEADERS });
+  return (res.data ?? {}) as ValidationSummary;
+}
+
+export async function getGlobalMoodValidationSummary(): Promise<ValidationSummary> {
+  const res = await API.get("/observability/global-mood-validation", { headers: API_HEADERS });
+  return (res.data ?? {}) as ValidationSummary;
+}
+
+export type ValidationHistoryResponse = {
+  rows: ValidationSummary[];
+  limit: number;
+};
+
+export type BacktestSummary = Record<string, unknown>;
+export type BacktestHistoryResponse = {
+  rows: BacktestSummary[];
+  limit: number;
+};
+
+export type TrustReliabilitySnapshot = {
+  generated_at?: string;
+  api_health?: Record<string, unknown>;
+  uptime?: Record<string, unknown>;
+  data_freshness?: Record<string, unknown>;
+  latest_ingestion?: Record<string, unknown>;
+  confidence?: Record<string, unknown>;
+  validation?: Record<string, unknown>;
+};
+
+export async function getCountryRiskValidationHistory(limit: number = 30): Promise<ValidationHistoryResponse> {
+  const res = await API.get("/observability/country-risk-validation/history", { headers: API_HEADERS, params: { limit } });
+  const payload = isRecord(res.data) ? res.data : {};
+  return {
+    rows: Array.isArray(payload.rows) ? (payload.rows as ValidationSummary[]) : [],
+    limit: Number.isFinite(Number(payload.limit)) ? Number(payload.limit) : limit,
+  };
+}
+
+export async function getGlobalMoodValidationHistory(limit: number = 30): Promise<ValidationHistoryResponse> {
+  const res = await API.get("/observability/global-mood-validation/history", { headers: API_HEADERS, params: { limit } });
+  const payload = isRecord(res.data) ? res.data : {};
+  return {
+    rows: Array.isArray(payload.rows) ? (payload.rows as ValidationSummary[]) : [],
+    limit: Number.isFinite(Number(payload.limit)) ? Number(payload.limit) : limit,
+  };
+}
+
+export async function getCountryRiskBacktestSummary(): Promise<BacktestSummary> {
+  const res = await API.get("/observability/country-risk-backtest", { headers: API_HEADERS });
+  return (res.data ?? {}) as BacktestSummary;
+}
+
+export async function getGlobalMoodBacktestSummary(): Promise<BacktestSummary> {
+  const res = await API.get("/observability/global-mood-backtest", { headers: API_HEADERS });
+  return (res.data ?? {}) as BacktestSummary;
+}
+
+export async function runObservabilityBacktests(days: number = 60): Promise<Record<string, unknown>> {
+  const res = await API.post("/observability/backtests/run", null, { headers: API_HEADERS, params: { days } });
+  return (res.data ?? {}) as Record<string, unknown>;
+}
+
+export async function getTrustReliability(mode: string = "online"): Promise<TrustReliabilitySnapshot> {
+  const res = await API.get("/trust/reliability", { headers: API_HEADERS, params: { mode } });
+  const payload = isRecord(res.data) ? res.data : {};
+  return {
+    generated_at: typeof payload.generated_at === "string" ? payload.generated_at : undefined,
+    api_health: isRecord(payload.api_health) ? payload.api_health : {},
+    uptime: isRecord(payload.uptime) ? payload.uptime : {},
+    data_freshness: isRecord(payload.data_freshness) ? payload.data_freshness : {},
+    latest_ingestion: isRecord(payload.latest_ingestion) ? payload.latest_ingestion : {},
+    confidence: isRecord(payload.confidence) ? payload.confidence : {},
+    validation: isRecord(payload.validation) ? payload.validation : {},
+  };
+}
+
+export async function getTrustCountryBacktests(limit: number = 30): Promise<BacktestHistoryResponse> {
+  const res = await API.get("/trust/backtests/country", { headers: API_HEADERS, params: { limit } });
+  const payload = isRecord(res.data) ? res.data : {};
+  return {
+    rows: Array.isArray(payload.rows) ? (payload.rows as BacktestSummary[]) : [],
+    limit: Number.isFinite(Number(payload.limit)) ? Number(payload.limit) : limit,
+  };
+}
+
+export async function getTrustGlobalMoodBacktests(limit: number = 30): Promise<BacktestHistoryResponse> {
+  const res = await API.get("/trust/backtests/global-mood", { headers: API_HEADERS, params: { limit } });
+  const payload = isRecord(res.data) ? res.data : {};
+  return {
+    rows: Array.isArray(payload.rows) ? (payload.rows as BacktestSummary[]) : [],
+    limit: Number.isFinite(Number(payload.limit)) ? Number(payload.limit) : limit,
+  };
+}
+
+export type SystemMonitoringResponse = {
+  server_status?: Record<string, unknown>;
+  api_health?: Record<string, unknown>;
+  data_pipeline_status?: Record<string, unknown>;
+  uptime_statistics?: Record<string, unknown>;
+};
+
+export type SecurityLogEvent = {
+  _id?: string;
+  timestamp?: string;
+  event_type?: string;
+  status?: string;
+  detail?: string;
+  email?: string | null;
+  client_ip?: string | null;
+  meta?: Record<string, unknown>;
+};
+
+export type SecurityLogsResponse = {
+  window_minutes?: number;
+  generated_at?: string;
+  login_attempts?: Record<string, unknown>;
+  suspicious_activity?: Record<string, unknown>;
+  jwt_token_monitoring?: Record<string, unknown>;
+  events: SecurityLogEvent[];
+};
+
+const normalizeSecurityLogEvent = (value: unknown): SecurityLogEvent | null => {
+  if (!isRecord(value)) return null;
+  return {
+    _id: typeof value._id === "string" ? value._id : undefined,
+    timestamp: typeof value.timestamp === "string" ? value.timestamp : undefined,
+    event_type: typeof value.event_type === "string" ? value.event_type : undefined,
+    status: typeof value.status === "string" ? value.status : undefined,
+    detail: typeof value.detail === "string" ? value.detail : undefined,
+    email: typeof value.email === "string" ? value.email : null,
+    client_ip: typeof value.client_ip === "string" ? value.client_ip : null,
+    meta: isRecord(value.meta) ? value.meta : {},
+  };
+};
+
+export async function getAdminSystemMonitoring(mode: string = "online"): Promise<SystemMonitoringResponse> {
+  const res = await API.get("/admin/system-monitoring", { headers: API_HEADERS, params: { mode } });
+  const payload = isRecord(res.data) ? res.data : {};
+  return {
+    server_status: isRecord(payload.server_status) ? payload.server_status : {},
+    api_health: isRecord(payload.api_health) ? payload.api_health : {},
+    data_pipeline_status: isRecord(payload.data_pipeline_status) ? payload.data_pipeline_status : {},
+    uptime_statistics: isRecord(payload.uptime_statistics) ? payload.uptime_statistics : {},
+  };
+}
+
+export async function getAdminSecurityLogs(
+  limit: number = 100,
+  minutes: number = 1440
+): Promise<SecurityLogsResponse> {
+  const res = await API.get("/admin/security-logs", {
+    headers: API_HEADERS,
+    params: { limit, minutes },
+  });
+
+  const payload = isRecord(res.data) ? res.data : {};
+  const rows = Array.isArray(payload.events) ? payload.events : [];
+
+  return {
+    window_minutes: Number.isFinite(Number(payload.window_minutes)) ? Number(payload.window_minutes) : undefined,
+    generated_at: typeof payload.generated_at === "string" ? payload.generated_at : undefined,
+    login_attempts: isRecord(payload.login_attempts) ? payload.login_attempts : {},
+    suspicious_activity: isRecord(payload.suspicious_activity) ? payload.suspicious_activity : {},
+    jwt_token_monitoring: isRecord(payload.jwt_token_monitoring) ? payload.jwt_token_monitoring : {},
+    events: rows
+      .map(normalizeSecurityLogEvent)
+      .filter((row): row is SecurityLogEvent => Boolean(row)),
+  };
+}
 export type ScenarioStep = {
   label: string;
   marketShock: number;
@@ -795,11 +1243,42 @@ export type MLPrediction = {
   horizon: string;
   risk_score: number;
   confidence: number;
+  interval?: {
+    p10: number;
+    p50: number;
+    p90: number;
+  };
+  probability_high_risk?: number;
+  blend?: {
+    neural_weight: number;
+    stat_weight: number;
+  };
+  latency_ms?: number;
 };
 
 export type MLPredictionsData = {
   predictions: MLPrediction[];
   model_type: string;
+};
+
+export type AdvancedMLObservability = {
+  prediction_latency_ms?: number;
+  model_age_hours?: number;
+  model_version?: string;
+  calibration_error?: Record<string, number>;
+  calibration_mode?: Record<string, string>;
+  feature_quality?: {
+    active_features?: number;
+    features?: Record<
+      string,
+      {
+        variance?: number;
+        staleness_hours?: number;
+        quality?: number;
+        gated?: boolean;
+      }
+    >;
+  };
 };
 
 export type AnomalyData = {
@@ -838,6 +1317,7 @@ export type AdvancedInsightsData = {
   causal_graph: CausalLink[];
   sentiment_momentum: SentimentMomentumData;
   ai_report: AIReportData;
+  ml_observability?: AdvancedMLObservability;
 };
 
 export async function getMLPredictions(): Promise<MLPredictionsData> {
@@ -874,3 +1354,5 @@ export async function getAdvancedInsights(): Promise<AdvancedInsightsData> {
 }
 
 export default API;
+
+

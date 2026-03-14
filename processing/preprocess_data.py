@@ -47,6 +47,9 @@ def remove_duplicates(collection_name, unique_keys):
                     val = None
             key_vals.append(val)
         key_vals = tuple(key_vals)
+        # Skip dedupe when none of the configured keys exist on a record.
+        if all(v is None for v in key_vals):
+            continue
         if key_vals in seen:
             bulk_ops.append(UpdateOne({"_id": doc["_id"]}, {"$set": {"_duplicate": True}}))
             duplicates += 1
@@ -217,14 +220,14 @@ def main():
     remove_duplicates("reddit", ["data.title", "data.query"])
     remove_duplicates("crypto", ["data.timestamp"])
     remove_duplicates("stocks", ["data.timestamp"])
-    remove_duplicates("weather", ["data.timestamp"])
+    remove_duplicates("weather", ["data.timestamp", "data.date", "data.city", "data_city", "data_timestamp"])
 
     # Timestamp normalization
     standardize_timestamps("news", ["data.published_at"])
     standardize_timestamps("reddit", ["data.created_utc"])
     standardize_timestamps("crypto", ["data.timestamp"])
     standardize_timestamps("stocks", ["data.timestamp"])
-    standardize_timestamps("weather", ["data.timestamp"])
+    standardize_timestamps("weather", ["data.timestamp", "data.date", "data_timestamp", "collected_at"])
 
     # Time-series processing
     fill_missing_timeseries("crypto", "price")
@@ -253,3 +256,5 @@ def main():
 # --------------------------
 if __name__ == "__main__":
     main()
+
+

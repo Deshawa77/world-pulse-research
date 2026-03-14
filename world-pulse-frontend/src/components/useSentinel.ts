@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import API, { API_HEADERS } from "../services/api";
+import API, { API_HEADERS, buildWebSocketAuthUrl } from "../services/api";
 
-const API_KEY = import.meta.env.VITE_API_KEY || "super_secure_api_key";
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 const deriveWebSocketUrl = (explicitUrl?: string) => {
@@ -369,9 +368,7 @@ export function useSentinel(options: UseSentinelOptions = {}) {
 
     try {
       wsConnectingRef.current = true;
-      const wsUrl = validWsUrl.includes("?")
-        ? `${validWsUrl}&api_key=${API_KEY}`
-        : `${validWsUrl}?api_key=${API_KEY}`;
+      const wsUrl = buildWebSocketAuthUrl(validWsUrl);
       const ws = new WebSocket(wsUrl);
       
       ws.onopen = () => {

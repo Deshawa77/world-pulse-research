@@ -72,8 +72,8 @@ export default function RiskCorrelationMatrix({ data, height = 400 }: RiskCorrel
   }, [data]);
 
   function calculateCorrelation(x: number[], y: number[]): number {
-    if (x.length !== y.length || x.length === 0) return 0;
-    
+    if (x.length !== y.length || x.length === 0) return Number.NaN;
+
     const n = x.length;
     const sumX = x.reduce((a, b) => a + b, 0);
     const sumY = y.reduce((a, b) => a + b, 0);
@@ -86,7 +86,7 @@ export default function RiskCorrelationMatrix({ data, height = 400 }: RiskCorrel
       (n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY)
     );
 
-    if (denominator === 0) return 0;
+    if (denominator === 0) return Number.NaN;
     return numerator / denominator;
   }
 
@@ -114,7 +114,11 @@ export default function RiskCorrelationMatrix({ data, height = 400 }: RiskCorrel
         formatter: (params: any) => {
           const xLabel = FEATURE_LABELS[FEATURE_KEYS[params.data[1]]];
           const yLabel = FEATURE_LABELS[FEATURE_KEYS[params.data[0]]];
-          return `<strong>${xLabel}</strong> vs <strong>${yLabel}</strong><br/>Correlation: ${params.data[2].toFixed(3)}`;
+          const corr = params.data[2];
+          if (!Number.isFinite(corr)) {
+            return `<strong>${xLabel}</strong> vs <strong>${yLabel}</strong><br/>Correlation: N/A (insufficient variance)`;
+          }
+          return `<strong>${xLabel}</strong> vs <strong>${yLabel}</strong><br/>Correlation: ${corr.toFixed(3)}`;
         },
       },
       grid: {
@@ -170,7 +174,10 @@ export default function RiskCorrelationMatrix({ data, height = 400 }: RiskCorrel
           data: heatmapData,
           label: {
             show: true,
-            formatter: (params: any) => params.data[2].toFixed(2),
+            formatter: (params: any) => {
+              const corr = params.data[2];
+              return Number.isFinite(corr) ? corr.toFixed(2) : "N/A";
+            },
             color: "#fff",
             fontSize: 9,
           },
@@ -211,6 +218,7 @@ export default function RiskCorrelationMatrix({ data, height = 400 }: RiskCorrel
     }
 
     return correlations
+      .filter((corr) => Number.isFinite(corr.value))
       .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
       .slice(0, 5);
   }, [correlationMatrix]);

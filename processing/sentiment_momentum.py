@@ -38,11 +38,19 @@ logging.basicConfig(
 )
 
 def log_event(msg: str):
-    """Log event with timestamp"""
+    """Log event with timestamp (console-safe for non-UTF8 terminals)."""
     ts = datetime.now(timezone.utc).isoformat()
-    print(f"[MOMENTUM] {ts} | {msg}", flush=True)
+    text_msg = str(msg)
+    line = f"[MOMENTUM] {ts} | {text_msg}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe_line = line.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe_line, flush=True)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{ts} | {msg}\n")
+        f.write(f"{ts} | {text_msg}\n")
+
 
 
 # ============================================================
@@ -82,21 +90,76 @@ EXTREME_POSITIVE = 0.5
 # ============================================================
 # Data Loading
 # ============================================================
+def load_features_from_mongodb(limit: int = 500, mode: str = "online") -> Optional[pd.DataFrame]:
+    """Load global features from MongoDB and flatten nested feature payloads."""
+    try:
+        from database.mongo import get_historical_global_features
+
+        docs = get_historical_global_features(limit=limit, mode=mode)
+        if not docs:
+            return None
+
+        rows = []
+        for doc in docs:
+            features = doc.get("features", {}) if isinstance(doc, dict) else {}
+            if not features:
+                features = {k: doc.get(k) for k in FEATURE_COLUMNS} if isinstance(doc, dict) else {}
+
+            row = {
+                "timestamp": doc.get("timestamp") if isinstance(doc, dict) else None,
+                "news_sentiment": features.get("news_sentiment"),
+                "gdelt_sentiment": features.get("gdelt_sentiment"),
+                "crypto_return": features.get("crypto_return"),
+                "crypto_volatility": features.get("crypto_volatility"),
+                "stock_return": features.get("stock_return"),
+                "stock_volatility": features.get("stock_volatility"),
+                "weather_anomaly": features.get("weather_anomaly"),
+            }
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        if len(df) == 0:
+            return None
+
+        if "timestamp" in df.columns:
+            df = df.sort_values("timestamp").reset_index(drop=True)
+
+        for col in FEATURE_COLUMNS:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").ffill().fillna(0.0)
+            else:
+                df[col] = 0.0
+
+        return df
+    except Exception as e:
+        log_event(f"Mongo momentum load warning: {e}")
+        return None
+
+
 def load_features_data() -> pd.DataFrame:
-    """Load hourly features from CSV"""
+    """Load momentum features with MongoDB preference, then CSV fallback."""
+    df = load_features_from_mongodb(limit=500, mode="online")
+    if df is not None and len(df) >= RSI_PERIOD:
+        return df
+
+    df = load_features_from_mongodb(limit=500, mode="offline")
+    if df is not None and len(df) >= RSI_PERIOD:
+        return df
+
     if not os.path.exists(FEATURES_CSV):
         return create_sample_data()
-    
+
     df = pd.read_csv(FEATURES_CSV)
-    
     time_cols = [c for c in df.columns if "time" in c.lower() or "date" in c.lower()]
     if time_cols:
         df.rename(columns={time_cols[0]: "timestamp"}, inplace=True)
-    
+
     for col in FEATURE_COLUMNS:
         if col in df.columns:
-            df[col] = df[col].fillna(method='ffill').fillna(0)
-    
+            df[col] = pd.to_numeric(df[col], errors="coerce").ffill().fillna(0.0)
+        else:
+            df[col] = 0.0
+
     return df
 
 
@@ -303,7 +366,7 @@ class SentimentMomentumAnalyzer:
             if feature not in df.columns:
                 continue
                 
-            values = df[feature].values
+            values = pd.to_numeric(df[feature], errors="coerce").ffill().fillna(0.0).to_numpy(dtype=float)
             
             if len(values) < RSI_PERIOD:
                 log_event(f"⚠️ Insufficient data for {feature}")

@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 World Pulse Orchestrator - Optimized Production Streaming
-Collectors → Kafka → Consumer → Data Lake → Preprocessing → Mongo → NLP → Feature Store → ML → Alerts
+Collectors â†’ Kafka â†’ Consumer â†’ Data Lake â†’ Preprocessing â†’ Mongo â†’ NLP â†’ Feature Store â†’ ML â†’ Alerts
 """
 
 import sys, io, os, json, logging, traceback, time, hashlib, re
 from threading import Thread, Lock
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from collections import Counter
 from kafka import KafkaProducer, KafkaConsumer
 import pandas as pd
 import numpy as np
@@ -115,7 +114,7 @@ def mongo_safe_upsert(collection, record):
         )
         return True
     except Exception as e:
-        log_event(f"❌ Mongo upsert failed: {e}")
+        log_event(f"âŒ Mongo upsert failed: {e}")
         traceback.print_exc()
         return False
 
@@ -162,9 +161,9 @@ def send_email(subject, body):
             server.starttls()
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
-        log_event("📧 Email alert sent!")
+        log_event("ðŸ“§ Email alert sent!")
     except Exception as e:
-        log_event(f"❌ Failed to send email: {e}")
+        log_event(f"âŒ Failed to send email: {e}")
 
 # -------------------------------
 # Kafka Setup
@@ -218,6 +217,7 @@ from processing.nlp_analysis import clean_text, analyze_text
 from processing.daily_feature_builder import build_hourly_features, load_hourly_features
 from processing.country_daily_risk import country_daily_refresh_if_due
 from processing.topic_modeling_with_nlp import process_record as topic_modeling_process_record
+from processing.robust_topic_pipeline import RobustTopicPipeline
 from processing.global_crisis_detector import detect_crisis
 from feature_store.feature_store import FeatureStore
 from feature_store.load_models import load_all_models
@@ -229,7 +229,11 @@ from backend.country_risk_stream import run_normalizer_loop, run_risk_loop
 from config import HOURLY_FEATURES_CSV, FEATURE_COLUMNS
 fs = FeatureStore()
 db_connection = db
-
+topic_pipeline = RobustTopicPipeline(
+    db=db_connection,
+    controls_path="processing/config/topic_controls.json",
+    log_fn=log_event,
+)
 # -------------------------------
 # Paths
 # -------------------------------
@@ -240,24 +244,39 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # -------------------------------
 # Collector Tasks
 # -------------------------------
+TREND_KEYWORDS = [
+    "earthquake",
+    "flood",
+    "wildfire",
+    "hurricane",
+    "outbreak",
+    "inflation",
+    "recession",
+    "cyberattack",
+]
+
 COLLECTOR_TASKS = {
     "news": (lambda: news.fetch_news("earthquake", page_size=5), "news_topic"),
     "gdelt": (lambda: gdelt.fetch_gdelt_articles("(earthquake OR flood)", max_records=5), "gdelt_topic"),
     "wiki": (lambda: wiki.fetch_pageviews("Earthquake", days=5), "wiki_topic"),
-    "trends": (lambda: trends.fetch_trends("earthquake"), "trends_topic"),
+    "trends": (lambda: trends.fetch_trends_multi(TREND_KEYWORDS, max_retries=2), "trends_topic"),
     "earthquakes": (lambda: usgs.fetch_earthquakes(), "earthquakes_topic"),
     "weather": (lambda: weather.collect_weather_for_orchestrator(), "weather_topic"),
     "crypto": (lambda: coingecko.fetch_crypto(coingecko.get_configured_coin_ids(), "usd", 5), "crypto_topic"),
     "fred": (lambda: fred.fetch_indicator("GDP","2025-01-01","2026-01-01"), "fred_topic"),
     "exchange_rates": (lambda: frankfurter.fetch_exchange_rates("USD"), "exchange_rates_topic"),
-    "who": (lambda: who.fetch_who_indicator("WHOSIS_000001", max_results=5), "who_topic"),
+    "who": (lambda: who.fetch_who_indicator("WHOSIS_000001", max_results=50), "who_topic"),
     "stocks": (lambda: twelvedata.fetch_stock("AAPL","1day",5), "stocks_topic"),
     "worldbank": (lambda: worldbank.fetch_worldbank_data(date="2020:2025", per_page=5), "worldbank_topic"),
     "reddit": (lambda: reddit.fetch_reddit_posts("worldnews", limit=5), "reddit_topic")
 }
 
-topic_feature_map = {topic: build_hourly_features for _, topic in COLLECTOR_TASKS.values()}
+TOPIC_COLLECTION_MAP = {
+    "who_topic": "health",
+    "exchange_rates_topic": "economics",
+}
 
+topic_feature_map = {topic: build_hourly_features for _, topic in COLLECTOR_TASKS.values()}
 # -------------------------------
 # Collector Loop
 # -------------------------------
@@ -297,9 +316,9 @@ def load_model():
     return loaded_models
 
 def classify_risk(prob):
-    if prob >= ALERT_THRESHOLD_HIGH: return "🔴 CRITICAL", "GLOBAL CRISIS IMMINENT"
-    if prob >= ALERT_THRESHOLD_MED: return "🟠 ELEVATED", "INSTABILITY DETECTED"
-    return "🟢 LOW", "STABLE SYSTEM"
+    if prob >= ALERT_THRESHOLD_HIGH: return "ðŸ”´ CRITICAL", "GLOBAL CRISIS IMMINENT"
+    if prob >= ALERT_THRESHOLD_MED: return "ðŸŸ  ELEVATED", "INSTABILITY DETECTED"
+    return "ðŸŸ¢ LOW", "STABLE SYSTEM"
 
 def compute_forecast(latest, days=7):
     forecasts = []
@@ -319,32 +338,27 @@ def detect_anomalies(df):
             anomalies[col] = df[col][abs(z)>2].tolist()
     return anomalies
 
-TOPIC_STOPWORDS = {
-    "the", "and", "for", "with", "this", "that", "from", "are", "was", "were",
-    "has", "have", "had", "not", "you", "your", "about", "into", "over", "under",
-    "latest", "breaking", "report", "global", "world", "update", "today", "after",
-    "before", "will", "can", "new"
-}
+TOPIC_PIPELINE_MAX_DOCS = 260
 
-def extract_recent_topics(db, top_n=5, max_docs=200):
+def extract_recent_topic_intelligence(db, top_n=5, max_docs=TOPIC_PIPELINE_MAX_DOCS):
     try:
-        news_docs = list(db.news.find({}, {"data.title": 1, "title": 1}).sort("collected_at", -1).limit(max_docs))
-        gdelt_docs = list(db.gdelt.find({}, {"data.title": 1, "title": 1}).sort("collected_at", -1).limit(max_docs))
+        result = topic_pipeline.extract_topic_intelligence_from_mongo(
+            db,
+            top_n=top_n,
+            max_docs=max_docs,
+        )
+        return result.top_topics, result.topic_pressure, result.observability
     except Exception as e:
-        log_event(f"Topic extraction read failed: {e}")
-        return ["no data"]
+        log_event(f"Topic intelligence pipeline failed: {e}")
+        return ["no data"], [], {}
 
-    words = []
-    for doc in news_docs + gdelt_docs:
-        title = (doc.get("data", {}) or {}).get("title") or doc.get("title")
-        if not isinstance(title, str) or not title.strip():
-            continue
-        tokens = re.findall(r"\b[a-zA-Z]{3,}\b", title.lower())
-        words.extend([t for t in tokens if t not in TOPIC_STOPWORDS])
-
-    if not words:
-        return ["no data"]
-    return [word for word, _ in Counter(words).most_common(top_n)]
+def extract_recent_topics(db, top_n=5, max_docs=TOPIC_PIPELINE_MAX_DOCS):
+    top_topics, _topic_pressure, _topic_obs = extract_recent_topic_intelligence(
+        db,
+        top_n=top_n,
+        max_docs=max_docs,
+    )
+    return top_topics
 
 def compute_model_risk_score(models, feature_values):
     try:
@@ -388,7 +402,7 @@ def sanitize_for_mongo(record):
 def run_ml_engine():
     try:
         # -------------------------
-        # 0️⃣ Load models
+        # 0ï¸âƒ£ Load models
         # -------------------------
         models = load_model()
         gb_model = models.get("gb_model")
@@ -396,19 +410,19 @@ def run_ml_engine():
         log_model = models.get("logistic_model")
 
         # -------------------------
-        # 1️⃣ Load features CSV
+        # 1ï¸âƒ£ Load features CSV
         # -------------------------
         if not os.path.exists(HOURLY_FEATURES_CSV):
-            log_event("⚠️ hourly_features.csv not found. Skipping ML cycle.")
+            log_event("âš ï¸ hourly_features.csv not found. Skipping ML cycle.")
             return
 
         df_features = pd.read_csv(HOURLY_FEATURES_CSV)
         if df_features.empty:
-            log_event("⚠️ No features available to run ML engine.")
+            log_event("âš ï¸ No features available to run ML engine.")
             return
 
         # -------------------------
-        # 2️⃣ Latest features
+        # 2ï¸âƒ£ Latest features
         # -------------------------
         latest = df_features.iloc[-1]
         X = pd.DataFrame([latest[FEATURE_COLUMNS].values], columns=FEATURE_COLUMNS)
@@ -419,7 +433,7 @@ def run_ml_engine():
         level, message = classify_risk(prob)
 
         # -------------------------
-        # 3️⃣ Forecast (for logging only)
+        # 3ï¸âƒ£ Forecast (for logging only)
         # -------------------------
         forecast_df = compute_forecast(latest)
         forecast_probs = []
@@ -429,7 +443,7 @@ def run_ml_engine():
             forecast_probs.append(np.mean(row_probs))
 
         # -------------------------
-        # 4️⃣ Country-level risks (for logging only)
+        # 4ï¸âƒ£ Country-level risks (for logging only)
         # -------------------------
         country_df = fs.read_country()
         if country_df.empty:
@@ -442,19 +456,19 @@ def run_ml_engine():
             country_risks[row["country"]] = round(float(np.mean(row_probs)), 3)
 
         # -------------------------
-        # 5️⃣ Load history & detect anomalies
+        # 5ï¸âƒ£ Load history & detect anomalies
         # -------------------------
         df_history = load_hourly_features()
         df_history.dropna(subset=["news_sentiment", "gdelt_sentiment"], how="all", inplace=True)
         anomalies = detect_anomalies(df_history)
 
         # -------------------------
-        # 6️⃣ Extract top topics from recent news/gdelt titles
+        # 6ï¸âƒ£ Extract top topics from recent news/gdelt titles
         # -------------------------
-        top_topics = extract_recent_topics(db, top_n=5)
+        top_topics, topic_pressure, topic_obs = extract_recent_topic_intelligence(db, top_n=5)
 
         # -------------------------
-        # 7️⃣ Prepare global_features document
+        # 7ï¸âƒ£ Prepare global_features document
         # -------------------------
         now_iso = datetime.utcnow().isoformat()
         now_dt = datetime.utcnow()
@@ -473,6 +487,8 @@ def run_ml_engine():
                 "timestamp": now_iso,
                 "global_risk_score": round(prob * 100, 2),
                 "top_topics": top_topics,
+                "top_topic_pressure": topic_pressure,
+                "topic_pipeline_observability": topic_obs,
                 **operational_features,
             }
         }
@@ -482,12 +498,12 @@ def run_ml_engine():
         mongo_safe_upsert(db.global_features, global_doc)
 
         # -------------------------
-        # 8️⃣ Update dashboard
+        # 8ï¸âƒ£ Update dashboard
         # -------------------------
         update_dashboard(global_doc)
 
         # -------------------------
-        # 9️⃣ Logging
+        # 9ï¸âƒ£ Logging
         # -------------------------
         log_event(f"Time: {datetime.now(timezone.utc).isoformat()}")
         log_event(f"Crisis Probability: {prob:.4f} | Risk Level: {level}")
@@ -505,16 +521,16 @@ def run_ml_engine():
         )
 
         # -------------------------
-        # 🔟 Send alert email if critical
+        # ðŸ”Ÿ Send alert email if critical
         # -------------------------
-        if level == "🔴 CRITICAL":
+        if level == "ðŸ”´ CRITICAL":
             send_email(
-                "🚨 GLOBAL CRISIS ALERT",
+                "ðŸš¨ GLOBAL CRISIS ALERT",
                 f"Crisis probability: {prob:.2f}\n{country_risks}"
             )
 
     except Exception as e:
-        log_event(f"❌ ML Engine error: {e}")
+        log_event(f"âŒ ML Engine error: {e}")
         traceback.print_exc()
 
 # -------------------------------
@@ -547,7 +563,7 @@ def upsert_delta(collection_name, record, unique_key="id"):
 
 
 # -------------------------------
-# Kafka Consumer → Full End-to-End Processing (Batching & CSV Safe)
+# Kafka Consumer â†’ Full End-to-End Processing (Batching & CSV Safe)
 # -------------------------------
 from threading import Thread, Lock
 import threading 
@@ -580,7 +596,7 @@ def flush_batch_to_csv(batch, csv_path="./data/raw_stream.csv"):
     log_event(f"Flushed {len(batch)} messages to {csv_path}")
 
 def process_message(record, topic):
-    collection = topic.replace("_topic","")
+    collection = TOPIC_COLLECTION_MAP.get(topic, topic.replace("_topic", ""))
     global message_batch
     try:
         os.makedirs("data_lake", exist_ok=True)
@@ -591,6 +607,7 @@ def process_message(record, topic):
             record = json.loads(record)
 
         processed_record = preprocess_record(record)
+        processed_record = topic_pipeline.enrich_record(processed_record, collection_hint=collection)
 
         if 'text' in processed_record:
             processed_record['cleaned_text'] = clean_text(processed_record['text'])
@@ -653,20 +670,20 @@ if __name__=="__main__":
         health_status = health_check(model=model, feature_columns=FEATURE_COLUMNS, db_client=db)
         log_event(f"Service health status: {health_status}")
         if not all(health_status.values()):
-            log_event("⚠️ Warning: some components are unhealthy at startup")
+            log_event("âš ï¸ Warning: some components are unhealthy at startup")
     except Exception as e:
-        log_event(f"❌ Startup health check failed: {e}")
+        log_event(f"âŒ Startup health check failed: {e}")
         traceback.print_exc()
 
     # -------------------------------
     # Preprocessing pipeline
     # -------------------------------
     try:
-        log_event("🚀 Running full preprocessing (preprocess_data.main)...")
+        log_event("ðŸš€ Running full preprocessing (preprocess_data.main)...")
         preprocess_main()
-        log_event("✅ Preprocessing completed successfully")
+        log_event("âœ… Preprocessing completed successfully")
     except Exception as e:
-        log_event(f"❌ Preprocessing pipeline failed: {e}")
+        log_event(f"âŒ Preprocessing pipeline failed: {e}")
         traceback.print_exc()
 
     # -------------------------------
@@ -680,33 +697,33 @@ if __name__=="__main__":
         while True:
             time.sleep(interval_sec)
             try:
-                # 1️⃣ Update hourly_features CSV / collection
+                # 1ï¸âƒ£ Update hourly_features CSV / collection
                 populate_hourly_features()
                 log_event("Hourly features updated")
 
-                # 2️⃣ Read latest feature row from hourly_features CSV
+                # 2ï¸âƒ£ Read latest feature row from hourly_features CSV
                 if not os.path.exists(HOURLY_FEATURES_CSV):
-                    log_event("⚠️ hourly_features.csv missing, skipping global_features update")
+                    log_event("âš ï¸ hourly_features.csv missing, skipping global_features update")
                     continue
 
                 df_hourly = pd.read_csv(HOURLY_FEATURES_CSV)
                 if df_hourly.empty:
-                    log_event("⚠️ hourly_features.csv empty, skipping global_features update")
+                    log_event("âš ï¸ hourly_features.csv empty, skipping global_features update")
                     continue
 
-                # ✅ Use latest CSV row as source of truth
+                # âœ… Use latest CSV row as source of truth
                 features = df_hourly.iloc[-1].to_dict()
 
-                # 3️⃣ Define timestamp
+                # 3ï¸âƒ£ Define timestamp
                 now_iso = datetime.utcnow().isoformat()
                 now_dt = datetime.utcnow()
 
-                # 4️⃣ Compute model-aligned risk + top topics
+                # 4ï¸âƒ£ Compute model-aligned risk + top topics
                 models = load_model()
                 risk_score = compute_model_risk_score(models, features)
-                top_topics = extract_recent_topics(db, top_n=5)
+                top_topics, topic_pressure, topic_obs = extract_recent_topic_intelligence(db, top_n=5)
 
-                # 5️⃣ Build global_features document
+                # 5ï¸âƒ£ Build global_features document
                 operational_features = compute_global_operational_features(
                     current_risk_score=risk_score,
                     mode="online",
@@ -725,18 +742,20 @@ if __name__=="__main__":
                         "timestamp": now_iso,
                         "global_risk_score": risk_score,
                         "top_topics": top_topics,
+                        "top_topic_pressure": topic_pressure,
+                        "topic_pipeline_observability": topic_obs,
                         **operational_features,
                     }
                 }
 
-                # 6️⃣ Upsert to global_features
+                # 6ï¸âƒ£ Upsert to global_features
                 if mongo_safe_upsert(db.global_features, global_doc):
-                    log_event(f"Global_features updated from hourly_features ✅ {global_doc['timestamp']}")
+                    log_event(f"Global_features updated from hourly_features âœ… {global_doc['timestamp']}")
                 else:
-                    log_event("❌ Global_features upsert from hourly_features failed")
+                    log_event("âŒ Global_features upsert from hourly_features failed")
                     continue
 
-                # 7️⃣ Update dashboard with latest global features
+                # 7ï¸âƒ£ Update dashboard with latest global features
                 update_dashboard(global_doc)
                 log_event("Dashboard updated with latest global_features")
 
@@ -782,11 +801,10 @@ if __name__=="__main__":
         while True:
             try:
                 run_ml_engine()
-                log_event("✅ ML engine cycle completed")
+                log_event("âœ… ML engine cycle completed")
             except Exception as e:
-                log_event(f"❌ ML engine loop error: {e}")
+                log_event(f"âŒ ML engine loop error: {e}")
             time.sleep(interval_sec)
 
     # Start ML engine thread so it runs periodically in background
     Thread(target=ml_engine_loop, daemon=True).start()
-

@@ -53,9 +53,41 @@ def fetch_news_texts(query="bitcoin", page_size=20):
 def compute_sentiment(texts):
     return [analyzer.polarity_scores(t)["compound"] for t in texts if t]
 
-# --- Fetch GDELT (placeholder still, replace if you have collector) ---
-def fetch_gdelt_sentiments(query="bitcoin"):
-    return [0.05, -0.02]
+def _get_nested(doc, *paths):
+    for path in paths:
+        cursor = doc
+        valid = True
+        for part in path.split('.'):
+            if isinstance(cursor, dict) and part in cursor:
+                cursor = cursor.get(part)
+            else:
+                valid = False
+                break
+        if valid and cursor is not None:
+            return cursor
+    return None
+
+
+# --- Fetch GDELT sentiment from stored collector data ---
+def fetch_gdelt_sentiments(query="bitcoin", limit=60):
+    sentiments = []
+    try:
+        from database.mongo import db as mongo_db
+        docs = list(mongo_db.gdelt.find().sort("collected_at", -1).limit(limit))
+        for doc in docs:
+            text = _get_nested(doc, "data.title", "title", "data.description", "description", "text_en", "text_original")
+            if not text:
+                continue
+            sentiments.append(analyzer.polarity_scores(str(text))["compound"])
+    except Exception:
+        sentiments = []
+
+    if sentiments:
+        return sentiments
+
+    # Fallback: derive approximate sentiment from latest news texts instead of static constants.
+    texts = fetch_news_texts(query, page_size=20)
+    return compute_sentiment(texts) if texts else []
 
 # --- Crypto Prices ---
 def get_crypto_prices(coin="bitcoin", vs_currency="usd", minutes=60):
@@ -99,19 +131,53 @@ def fetch_stock_prices_twelvedata(symbols=["AAPL"], interval="5min", outputsize=
     return stock_dict
 
 # --- Weather ---
+def fetch_weather_from_mongo(limit=24):
+    temps = []
+    try:
+        from database.mongo import db as mongo_db
+        docs = list(mongo_db.weather.find().sort("collected_at", -1).limit(limit))
+        for doc in reversed(docs):
+            temp = _get_nested(
+                doc,
+                "data.main.temp",
+                "data.temperature",
+                "data.temp",
+                "data_temperature",
+                "temperature",
+                "temp",
+            )
+            if temp is None:
+                continue
+            value = float(temp)
+            if np.isfinite(value):
+                temps.append(value)
+    except Exception:
+        return []
+    return temps
+
+
 def fetch_weather(lat=6.9271, lon=79.8612):
+    if not OPENWEATHER_KEY:
+        return []
+
     url = f"https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&exclude=minutely,daily&appid={OPENWEATHER_KEY}&units=metric"
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
         data = r.json()
-        temps = [h["temp"] for h in data.get("hourly", [])]
-        return temps
-    except:
+        temps = [h["temp"] for h in data.get("hourly", []) if "temp" in h]
+        return [float(t) for t in temps if isinstance(t, (int, float))]
+    except Exception:
         return []
 
+
 def compute_weather_anomaly(weather_data):
-    return pd.Series(weather_data).diff().mean() if weather_data else np.nan
+    if not weather_data:
+        return 0.0
+    diffs = pd.Series(weather_data).diff().dropna()
+    if diffs.empty:
+        return 0.0
+    return float(diffs.mean())
 
 # --- Global Risk ---
 def calculate_global_risk(news_mean, gdelt_mean, crypto_vol, weather_anomaly):
@@ -151,8 +217,10 @@ def populate_hourly_features():
 
 
     # Weather
-    weather_data = fetch_weather(6.9271, 79.8612)
-    weather_anomaly = compute_weather_anomaly(weather_data) if weather_data else 0.0
+    weather_data = fetch_weather_from_mongo(limit=24)
+    if not weather_data:
+        weather_data = fetch_weather(6.9271, 79.8612)
+    weather_anomaly = compute_weather_anomaly(weather_data)
 
     # Global Risk
     global_risk_score = calculate_global_risk(news_mean, gdelt_mean, crypto_volatility, weather_anomaly)
@@ -180,7 +248,15 @@ def populate_hourly_features():
     csv_path = HOURLY_FEATURES_CSV
     columns = list(row.keys())
     if os.path.exists(csv_path):
-        df_existing = pd.read_csv(csv_path)
+        try:
+            df_existing = pd.read_csv(csv_path)
+        except pd.errors.EmptyDataError:
+            df_existing = pd.DataFrame(columns=columns)
+        if df_existing.empty:
+            df_existing = pd.DataFrame(columns=columns)
+        for col in columns:
+            if col not in df_existing.columns:
+                df_existing[col] = pd.NA
         df_new = pd.DataFrame([row], columns=columns)
         df_combined = pd.concat([df_existing[columns], df_new], ignore_index=True)
     else:

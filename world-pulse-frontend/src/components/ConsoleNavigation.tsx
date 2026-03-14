@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import "../pages/Dashboard.css";
 
@@ -8,8 +8,9 @@ type DashboardNavItem = {
   logout?: boolean;
 };
 
-const DASHBOARD_NAV_ITEMS: DashboardNavItem[] = [
+const BASE_DASHBOARD_NAV_ITEMS: DashboardNavItem[] = [
   { label: "Dashboard", path: "/dashboard" },
+  { label: "Profile", path: "/profile" },
   { label: "Predictions", path: "/trend-prediction" },
   { label: "Historical", path: "/historical-trends" },
   { label: "Scenario Studio", path: "/scenario" },
@@ -37,6 +38,21 @@ export default function ConsoleNavigation({
   const navigate = useNavigate();
   const location = useLocation();
   const [navOpen, setNavOpen] = useState(false);
+  const isAdminUser = localStorage.getItem("role") === "admin";
+
+  const navItems = useMemo(() => {
+    if (!isAdminUser) return BASE_DASHBOARD_NAV_ITEMS;
+
+    const withAdmin = [...BASE_DASHBOARD_NAV_ITEMS];
+    withAdmin.splice(
+      5,
+      0,
+      { label: "Admin", path: "/admin" },
+      { label: "System Monitor", path: "/admin/system-monitoring" },
+      { label: "Security Logs", path: "/admin/security-logs" },
+    );
+    return withAdmin;
+  }, [isAdminUser]);
 
   useEffect(() => {
     if (!navOpen) return;
@@ -55,6 +71,10 @@ export default function ConsoleNavigation({
     if (item.logout) {
       setNavOpen(false);
       localStorage.removeItem("token");
+      localStorage.removeItem("role");
+      localStorage.removeItem("user_type");
+      localStorage.removeItem("name");
+      localStorage.removeItem("email");
       navigate("/login");
       return;
     }
@@ -92,7 +112,7 @@ export default function ConsoleNavigation({
           </button>
         </div>
         <nav className="dashboard-drawer__nav" aria-label="Dashboard navigation">
-          {DASHBOARD_NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <button
               key={item.label}
               type="button"

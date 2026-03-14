@@ -9,6 +9,8 @@ from database.mongo import db
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GROUND_TRUTH_CSV = os.path.join(PROJECT_ROOT, 'data', 'country_risk_ground_truth.csv')
+VALIDATION_COLLECTION = db['country_model_validation']
+BACKTEST_COLLECTION = db['country_model_backtests']
 
 
 def _parse_day(value):
@@ -95,7 +97,7 @@ def run_country_risk_validation(day: datetime | None = None, persist: bool = Tru
             'calibration_bins': [],
         }
         if persist:
-            db.country_model_validation.insert_one(summary)
+            VALIDATION_COLLECTION.insert_one(summary)
         return summary
 
     labels = [row['label'] for row in rows]
@@ -127,13 +129,123 @@ def run_country_risk_validation(day: datetime | None = None, persist: bool = Tru
         'evaluated_rows': rows,
     }
     if persist:
-        db.country_model_validation.insert_one(summary)
+        VALIDATION_COLLECTION.insert_one(summary)
     return summary
 
 
 def latest_country_risk_validation():
-    doc = db.country_model_validation.find_one(sort=[('_id', DESCENDING)])
+    doc = VALIDATION_COLLECTION.find_one(sort=[('_id', DESCENDING)])
     if not doc:
         return {'status': 'missing'}
     doc['_id'] = str(doc['_id'])
     return doc
+
+
+def list_country_risk_validation_history(limit: int = 30):
+    rows = list(VALIDATION_COLLECTION.find().sort('_id', DESCENDING).limit(max(1, int(limit))))
+    for row in rows:
+        row['_id'] = str(row.get('_id'))
+    return rows
+
+
+def run_country_risk_backtest(days: int = 60, persist: bool = True):
+    truth_df = load_ground_truth(None)
+    if truth_df.empty:
+        summary = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'status': 'no_ground_truth',
+            'window_days': int(days),
+            'evaluated_days': 0,
+            'matched_days': 0,
+            'total_samples': 0,
+            'daily_results': [],
+        }
+        if persist:
+            BACKTEST_COLLECTION.insert_one(summary)
+        return summary
+
+    day_series = truth_df.get('date')
+    if day_series is None:
+        summary = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'status': 'invalid_ground_truth_schema',
+            'window_days': int(days),
+            'evaluated_days': 0,
+            'matched_days': 0,
+            'total_samples': 0,
+            'daily_results': [],
+        }
+        if persist:
+            BACKTEST_COLLECTION.insert_one(summary)
+        return summary
+
+    parsed_days = sorted({_parse_day(value) for value in day_series.tolist() if _parse_day(value) is not None})
+    selected_days = parsed_days[-max(1, int(days)):]
+
+    daily_results = []
+    total_samples = 0
+    brier_weighted = 0.0
+    log_loss_weighted = 0.0
+    acc50_weighted = 0.0
+    acc70_weighted = 0.0
+
+    for day_value in selected_days:
+        run_day = datetime(day_value.year, day_value.month, day_value.day, tzinfo=timezone.utc)
+        result = run_country_risk_validation(day=run_day, persist=False)
+        sample_count = int(result.get('sample_count', 0) or 0)
+        status = str(result.get('status') or 'unknown')
+        metrics = result.get('metrics') or {}
+
+        daily_results.append({
+            'date': day_value.isoformat(),
+            'status': status,
+            'sample_count': sample_count,
+            'brier_score': float(metrics.get('brier_score', 0.0) or 0.0) if sample_count else None,
+            'log_loss': float(metrics.get('log_loss', 0.0) or 0.0) if sample_count else None,
+            'accuracy_at_50': float(metrics.get('accuracy_at_50', 0.0) or 0.0) if sample_count else None,
+            'accuracy_at_70': float(metrics.get('accuracy_at_70', 0.0) or 0.0) if sample_count else None,
+        })
+
+        if status != 'ok' or sample_count <= 0:
+            continue
+
+        total_samples += sample_count
+        brier_weighted += float(metrics.get('brier_score', 0.0) or 0.0) * sample_count
+        log_loss_weighted += float(metrics.get('log_loss', 0.0) or 0.0) * sample_count
+        acc50_weighted += float(metrics.get('accuracy_at_50', 0.0) or 0.0) * sample_count
+        acc70_weighted += float(metrics.get('accuracy_at_70', 0.0) or 0.0) * sample_count
+
+    matched_days = len([row for row in daily_results if row.get('status') == 'ok' and int(row.get('sample_count', 0) or 0) > 0])
+    summary = {
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'status': 'ok' if matched_days > 0 else 'no_ground_truth_matches',
+        'window_days': int(days),
+        'evaluated_days': len(selected_days),
+        'matched_days': matched_days,
+        'total_samples': total_samples,
+        'metrics': {
+            'weighted_brier_score': round((brier_weighted / total_samples), 4) if total_samples else None,
+            'weighted_log_loss': round((log_loss_weighted / total_samples), 4) if total_samples else None,
+            'weighted_accuracy_at_50': round((acc50_weighted / total_samples), 4) if total_samples else None,
+            'weighted_accuracy_at_70': round((acc70_weighted / total_samples), 4) if total_samples else None,
+        },
+        'daily_results': daily_results,
+    }
+    if persist:
+        BACKTEST_COLLECTION.insert_one(summary)
+    return summary
+
+
+def latest_country_risk_backtest():
+    doc = BACKTEST_COLLECTION.find_one(sort=[('_id', DESCENDING)])
+    if not doc:
+        return {'status': 'missing'}
+    doc['_id'] = str(doc['_id'])
+    return doc
+
+
+def list_country_risk_backtests(limit: int = 30):
+    rows = list(BACKTEST_COLLECTION.find().sort('_id', DESCENDING).limit(max(1, int(limit))))
+    for row in rows:
+        row['_id'] = str(row.get('_id'))
+    return rows

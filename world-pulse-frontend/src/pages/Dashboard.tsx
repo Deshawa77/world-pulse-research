@@ -1,26 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
 import ConsoleNavigation from "../components/ConsoleNavigation";
-import { lazy, Suspense } from "react";
-
 import type { OperatorEvent } from "../components/EventLog";
-
-
 import {
-  COUNTRY_RISK_WS_URL,
+  buildWebSocketAuthUrl,
   getCountryDrilldown,
   getLiveCommandFeed,
   getLatestGlobalFeatures,
   getRiskMap,
   getRiskMapCoverage,
+  getTrustReliability,
   postAlertAction,
   refreshRiskMapBatch,
   type CountryDrilldownData,
   type LiveCommandFeed,
   type RiskMapCoverage,
   type RiskMapPoint,
+  type TrustReliabilitySnapshot,
 } from "../services/api";
 
 const CountryDrilldown = lazy(() => import("../components/CountryDrilldown"));
@@ -288,6 +285,7 @@ export default function Dashboard() {
   });
   const [riskMap, setRiskMap] = useState<RiskMapPoint[]>([]);
   const [riskCoverage, setRiskCoverage] = useState<RiskMapCoverage>({ total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 });
+  const [trustSnapshot, setTrustSnapshot] = useState<TrustReliabilitySnapshot | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [fpsLow, setFpsLow] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
@@ -324,11 +322,13 @@ export default function Dashboard() {
     riskMap: { data: RiskMapPoint[] | null; timestamp: number; ttl: number };
     riskCoverage: { data: RiskMapCoverage | null; timestamp: number; ttl: number };
     global: { data: any | null; timestamp: number; ttl: number };
+    trust: { data: TrustReliabilitySnapshot | null; timestamp: number; ttl: number };
   }>({
     liveFeed: { data: null, timestamp: 0, ttl: 3000 },
     riskMap: { data: null, timestamp: 0, ttl: 5000 },
     riskCoverage: { data: null, timestamp: 0, ttl: 5000 },
     global: { data: null, timestamp: 0, ttl: 2000 },
+    trust: { data: null, timestamp: 0, ttl: 5000 },
   });
 
   const inFlightRef = useRef<Set<string>>(new Set());
@@ -435,6 +435,20 @@ export default function Dashboard() {
   const dockConnectionLabel = `${connectionState.charAt(0).toUpperCase()}${connectionState.slice(1)}`;
   const liveSignalCount = coverageState.verified || verifiedRiskMap.length || liveFeedState.incidents?.length || 0;
   const telemetryStatusLine = `${dockConnectionLabel} • ${liveSignalCount} verified signals • Updated ${formatTelemetryTime(liveFeedState.lastUpdated)}`;
+  const trustValidation = (trustSnapshot?.validation ?? {}) as Record<string, unknown>;
+  const trustFreshness = (trustSnapshot?.data_freshness ?? {}) as Record<string, unknown>;
+  const trustConfidence = (trustSnapshot?.confidence ?? {}) as Record<string, unknown>;
+  const countryBacktest = (trustValidation.country_backtest ?? {}) as Record<string, unknown>;
+  const globalBacktest = (trustValidation.global_backtest ?? {}) as Record<string, unknown>;
+  const staleSources = safeN(trustFreshness.stale_count, 0);
+  const freshSources = safeN(trustFreshness.fresh_count, 0);
+  const reliabilityStatus = staleSources > 0 ? "Degraded" : "Healthy";
+  const countryBacktestBrier = safeN(countryBacktest.weighted_brier_score, Number.NaN);
+  const countryBacktestDays = safeN(countryBacktest.matched_days, 0);
+  const globalBacktestMae = safeN(globalBacktest.weighted_mae, Number.NaN);
+  const moodUncertaintyDisplay = safeN(trustConfidence.global_mood_uncertainty, globalMoodUncertainty);
+  const forecastConfidenceDisplay = Math.max(0, Math.min(1, safeN(trustConfidence.forecast_confidence, forecastConfidence)));
+
   const domainCards = [
     {
       title: "Multi-Source Signal Fusion",
@@ -449,14 +463,19 @@ export default function Dashboard() {
     {
       title: "Predictive Outlook",
       value: `${forecastRiskScore.toFixed(1)} / 100`,
-      detail: `${forecastHorizonHours}h risk forecast with ${forecastRiskDelta >= 0 ? "rising" : "cooling"} momentum ${forecastRiskDelta >= 0 ? "+" : ""}${forecastRiskDelta.toFixed(2)} | confidence ${(forecastConfidence * 100).toFixed(0)}%`,
+      detail: `${forecastHorizonHours}h risk forecast with ${forecastRiskDelta >= 0 ? "rising" : "cooling"} momentum ${forecastRiskDelta >= 0 ? "+" : ""}${forecastRiskDelta.toFixed(2)} | confidence ${(forecastConfidenceDisplay * 100).toFixed(0)}%`,
     },
     {
-      title: "Reliability + Validation",
-      value: validationSummary?.status === "ok" ? "Validated" : connectionState,
-      detail: validationSummary?.sample_count
-        ? `${validationSummary.sample_count} benchmark rows, Brier ${safeN(validationSummary.brier_score).toFixed(3)}`
-        : `Feed ${connectionState}, latest stream ${liveFreshness}`,
+      title: "Confidence + Uncertainty",
+      value: `${(globalMoodConfidence * 100).toFixed(0)}% mood confidence`,
+      detail: `Uncertainty +/- ${moodUncertaintyDisplay.toFixed(1)} pts | ${globalMoodCountrySummary}`,
+    },
+    {
+      title: "Reliability + Backtests",
+      value: reliabilityStatus,
+      detail: Number.isFinite(countryBacktestBrier)
+        ? `${freshSources} fresh / ${staleSources} stale feeds | Country Brier ${countryBacktestBrier.toFixed(3)} over ${countryBacktestDays} days${Number.isFinite(globalBacktestMae) ? `, mood MAE ${globalBacktestMae.toFixed(2)}` : ""}`
+        : `Validation ${validationSummary?.status ?? connectionState}, latest stream ${liveFreshness}`,
     },
   ];
   
@@ -542,11 +561,12 @@ export default function Dashboard() {
       if (stop) return;
       setConnectionState(retriesRef.current > 0 ? "reconnecting" : "connecting");
       try {
-        const [liveResult, mapRowsResult, coverageResult, globalResult] = await Promise.allSettled([
+        const [liveResult, mapRowsResult, coverageResult, globalResult, trustResult] = await Promise.allSettled([
           getCachedOrFetch("liveFeed", getLiveCommandFeed),
           getCachedOrFetch("riskMap", getRiskMap),
           getCachedOrFetch("riskCoverage", getRiskMapCoverage),
           getCachedOrFetch("global", getLatestGlobalFeatures),
+          getCachedOrFetch("trust", () => getTrustReliability("online")),
         ]);
 
         const live = liveResult.status === "fulfilled"
@@ -561,6 +581,7 @@ export default function Dashboard() {
           initialRiskMapLoadedRef.current = true;
         }
         const global = globalResult.status === "fulfilled" ? globalResult.value : null;
+        const trust = trustResult.status === "fulfilled" ? trustResult.value : null;
         const features = global?.features;
 
         if (features) {
@@ -583,6 +604,7 @@ export default function Dashboard() {
           ...coverageFromRows(nextMapRows),
           latest_validation: coverage.latest_validation,
         });
+        setTrustSnapshot(trust);
         panelUpdated.current.map = Date.now();
         panelUpdated.current.stream = Date.now();
         setErrorText("");
@@ -600,6 +622,7 @@ export default function Dashboard() {
           cacheRef.current.riskMap.timestamp = 0;
           cacheRef.current.riskCoverage.timestamp = 0;
           cacheRef.current.global.timestamp = 0;
+          cacheRef.current.trust.timestamp = 0;
         }
       } finally {
         const baseDelay = retriesRef.current > 0 ? Math.min(15000, 2000 * (retriesRef.current + 1)) : 3000;
@@ -624,7 +647,8 @@ export default function Dashboard() {
     const connect = () => {
       if (closed) return;
       try {
-        socket = new WebSocket(COUNTRY_RISK_WS_URL);
+        const wsUrl = buildWebSocketAuthUrl("/ws/country-risk-map");
+        socket = new WebSocket(wsUrl);
       } catch {
         retryTimer = window.setTimeout(connect, 3000);
         return;
@@ -1289,3 +1313,16 @@ export default function Dashboard() {
     </main>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+

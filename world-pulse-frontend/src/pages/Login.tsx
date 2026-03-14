@@ -19,6 +19,9 @@ export default function Login() {
       if (!res.access_token) throw new Error("No access token received from server");
       localStorage.setItem("token", res.access_token);
       localStorage.setItem("role", res.role || "user");
+      localStorage.setItem("user_type", res.user_type || "researcher");
+      if (res.name) localStorage.setItem("name", res.name);
+      if (res.email) localStorage.setItem("email", res.email);
       window.location.href = "/dashboard";
     } catch (err: any) {
       setError(err.response?.data?.detail || err.message || "Login failed. Please check your credentials.");

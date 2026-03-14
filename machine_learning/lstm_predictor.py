@@ -39,11 +39,18 @@ logging.basicConfig(
 )
 
 def log_event(msg: str):
-    """Log event with timestamp"""
+    """Log event with timestamp (console-safe for non-UTF8 terminals)."""
     ts = datetime.now(timezone.utc).isoformat()
-    print(f"[LSTM] {ts} | {msg}", flush=True)
+    text_msg = str(msg)
+    line = f"[LSTM] {ts} | {text_msg}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe_line = line.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe_line, flush=True)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{ts} | {msg}\n")
+        f.write(f"{ts} | {text_msg}\n")
 
 
 # ============================================================
@@ -81,6 +88,7 @@ except ImportError as e:
 # ============================================================
 MODEL_DIR = "./models"
 os.makedirs(MODEL_DIR, exist_ok=True)
+MODEL_METADATA_PATH = os.path.join(MODEL_DIR, "lstm_model_metadata.json")
 
 DATA_DIR = "./data"
 FEATURES_CSV = os.path.join(DATA_DIR, "hourly_features.csv")
@@ -113,6 +121,31 @@ LEARNING_RATE = 0.001
 # Threshold for early warning
 CRISIS_THRESHOLD_HIGH = 0.75
 CRISIS_THRESHOLD_MED = 0.40
+
+
+def build_model_version(payload: dict) -> str:
+    raw = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()[:10]
+    return f"lstm-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{digest}"
+
+
+def write_model_metadata(metadata: dict) -> None:
+    try:
+        with open(MODEL_METADATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=True, indent=2, default=str)
+    except Exception as exc:
+        log_event(f"Failed writing model metadata: {exc}")
+
+
+def load_model_metadata() -> dict:
+    if not os.path.exists(MODEL_METADATA_PATH):
+        return {}
+    try:
+        with open(MODEL_METADATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        log_event(f"Failed loading model metadata: {exc}")
+        return {}
 
 
 # ============================================================
@@ -419,7 +452,20 @@ class LSTMPredictor:
         
         if not USE_TENSORFLOW:
             log_event("📝 Using statistical fallback - LSTM training skipped")
-            return {"status": "statistical_fallback", "message": "TensorFlow not available"}
+            metadata = {
+                "version": build_model_version({"mode": "statistical_fallback", "rows": len(df)}),
+                "trained_at": datetime.now(timezone.utc).isoformat(),
+                "mode": "statistical_fallback",
+                "tensorflow_available": False,
+                "data_rows": int(len(df)),
+                "data_start": str(df["timestamp"].iloc[0]) if "timestamp" in df.columns and len(df) else None,
+                "data_end": str(df["timestamp"].iloc[-1]) if "timestamp" in df.columns and len(df) else None,
+                "training_results": {},
+                "model_paths": self.model_paths,
+                "feature_variance": {c: float(np.nanvar(pd.to_numeric(df.get(c), errors="coerce").fillna(0.0))) for c in FEATURE_COLUMNS},
+            }
+            write_model_metadata(metadata)
+            return {"status": "statistical_fallback", "message": "TensorFlow not available", "metadata": metadata}
         
         training_results = {}
         
@@ -503,7 +549,57 @@ class LSTMPredictor:
                 training_results[horizon_name] = {"status": "failed", "error": str(e)}
         
         self.is_trained = len(self.models) > 0
-        return training_results
+
+        metadata_payload = {
+            "rows": int(len(df)),
+            "force_retrain": bool(force_retrain),
+            "trained_horizons": sorted([k for k, v in training_results.items() if v.get("status") in {"trained", "loaded"}]),
+            "training_results": training_results,
+            "use_bilstm": bool(self.use_bilstm),
+            "tensorflow_available": bool(USE_TENSORFLOW),
+        }
+        model_version = build_model_version(metadata_payload)
+        metadata = {
+            "version": model_version,
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "mode": "lstm" if self.is_trained else "statistical_fallback",
+            "tensorflow_available": bool(USE_TENSORFLOW),
+            "data_rows": int(len(df)),
+            "data_start": str(df["timestamp"].iloc[0]) if "timestamp" in df.columns and len(df) else None,
+            "data_end": str(df["timestamp"].iloc[-1]) if "timestamp" in df.columns and len(df) else None,
+            "training_results": training_results,
+            "model_paths": self.model_paths,
+            "feature_variance": {c: float(np.nanvar(pd.to_numeric(df.get(c), errors="coerce").fillna(0.0))) for c in FEATURE_COLUMNS},
+        }
+        write_model_metadata(metadata)
+
+        return {
+            "training_results": training_results,
+            "metadata": metadata,
+        }
+
+    def load_existing_models(self) -> Dict[str, Any]:
+        """
+        Load already-trained horizon models from disk without training.
+        Used by API inference paths to avoid expensive request-time retraining.
+        """
+        loaded = {}
+        if not USE_TENSORFLOW:
+            return {"status": "statistical_fallback", "loaded": loaded, "message": "TensorFlow not available"}
+
+        for horizon_name, model_path in self.model_paths.items():
+            if not os.path.exists(model_path):
+                continue
+            try:
+                self.models[horizon_name] = keras.models.load_model(model_path)
+                loaded[horizon_name] = "loaded"
+                log_event(f"? Loaded existing model for {horizon_name}")
+            except Exception as e:
+                loaded[horizon_name] = f"failed: {e}"
+                log_event(f"?? Failed to load model {horizon_name}: {e}")
+
+        self.is_trained = len(self.models) > 0
+        return {"status": "success", "loaded": loaded, "model_count": len(self.models)}
     
     def predict(self, df: pd.DataFrame, horizon: str = "24h") -> Dict[str, Any]:
         """
@@ -670,8 +766,9 @@ def get_lstm_predictions() -> Dict[str, Any]:
         # Initialize predictor
         predictor = LSTMPredictor()
         
-        # Try to load existing models
-        predictor.train(df, force_retrain=False)
+        # Fit statistical fallback and load existing models only (no request-time training).
+        predictor.statistical_fallback.fit(df)
+        predictor.load_existing_models()
         
         # Get predictions for all horizons
         predictions = predictor.predict_all_horizons(df)
@@ -709,10 +806,13 @@ def train_lstm_models(force: bool = False) -> Dict[str, Any]:
         
         predictor = LSTMPredictor()
         results = predictor.train(df, force_retrain=force)
-        
+        training_results = results.get("training_results", results) if isinstance(results, dict) else {}
+        metadata = results.get("metadata", load_model_metadata()) if isinstance(results, dict) else load_model_metadata()
+
         return {
             "status": "success",
-            "training_results": results,
+            "training_results": training_results,
+            "model_metadata": metadata,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
