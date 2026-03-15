@@ -1,5 +1,19 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Globe, TrendingUp, AlertCircle, Clock, ExternalLink, X, ChevronRight, Newspaper, Shield, Cloud, Users, Cpu } from "lucide-react";
+import {
+  Globe,
+  TrendingUp,
+  AlertCircle,
+  Clock,
+  ExternalLink,
+  X,
+  ChevronRight,
+  Newspaper,
+  Shield,
+  Cloud,
+  Users,
+  Cpu,
+  Target,
+} from "lucide-react";
 
 import { getGlobalIntelligenceFeed, type IntelligenceFeedItem } from "../services/api";
 
@@ -7,9 +21,11 @@ interface GlobalIntelligenceFeedProps {
   className?: string;
   maxRows?: number;
   refreshInterval?: number;
+  selectedCountry?: string | null;
+  onClearCountry?: () => void;
+  onVisibleItemsChange?: (items: IntelligenceFeedItem[]) => void;
 }
 
-// Category icons mapping
 const categoryIcons: Record<string, React.ReactNode> = {
   political: <Shield className="w-4 h-4" />,
   economic: <TrendingUp className="w-4 h-4" />,
@@ -19,12 +35,13 @@ const categoryIcons: Record<string, React.ReactNode> = {
   technology: <Cpu className="w-4 h-4" />,
 };
 
-
-
-export default function GlobalIntelligenceFeed({ 
-  className = "", 
+export default function GlobalIntelligenceFeed({
+  className = "",
   maxRows = 3,
-  refreshInterval = 5000 
+  refreshInterval = 5000,
+  selectedCountry = null,
+  onClearCountry,
+  onVisibleItemsChange,
 }: GlobalIntelligenceFeedProps) {
   const [feedItems, setFeedItems] = useState<IntelligenceFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -33,49 +50,63 @@ export default function GlobalIntelligenceFeed({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [animatingItems, setAnimatingItems] = useState<Set<string>>(new Set());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   const prevItemsRef = useRef<IntelligenceFeedItem[]>([]);
 
   const fetchFeed = useCallback(async () => {
     try {
       const data = await getGlobalIntelligenceFeed();
-      
-      // Detect new items for animation
+      const scoped = selectedCountry
+        ? data.filter((item) => item.country === selectedCountry)
+        : data;
+
+      const visible = scoped.slice(0, maxRows);
       const newAnimating = new Set<string>();
-      data.slice(0, maxRows).forEach((item, index) => {
-        const existing = prevItemsRef.current.find(prev => prev.id === item.id);
+      visible.forEach((item, index) => {
+        const existing = prevItemsRef.current.find((prev) => prev.id === item.id);
         if (!existing && index < maxRows) {
           newAnimating.add(item.id);
         }
       });
-      
+
       if (newAnimating.size > 0) {
         setAnimatingItems(newAnimating);
-        // Clear animation after 600ms
         setTimeout(() => setAnimatingItems(new Set()), 600);
       }
-      
-      prevItemsRef.current = data;
-      setFeedItems(data.slice(0, maxRows));
+
+      prevItemsRef.current = visible;
+      setFeedItems(visible);
+      onVisibleItemsChange?.(visible);
       setError(null);
     } catch (err) {
       setError("Failed to load intelligence feed");
       console.error("Error fetching intelligence feed:", err);
+      onVisibleItemsChange?.([]);
     } finally {
       setLoading(false);
     }
-  }, [maxRows]);
+  }, [maxRows, onVisibleItemsChange, selectedCountry]);
 
   useEffect(() => {
-    fetchFeed();
-    intervalRef.current = setInterval(fetchFeed, refreshInterval);
-    
+    void fetchFeed();
+    intervalRef.current = setInterval(() => {
+      void fetchFeed();
+    }, refreshInterval);
+
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
       }
     };
   }, [fetchFeed, refreshInterval]);
+
+  useEffect(() => {
+    if (!selectedItem) return;
+    const stillVisible = feedItems.some((item) => item.id === selectedItem.id);
+    if (!stillVisible) {
+      setIsModalOpen(false);
+      setSelectedItem(null);
+    }
+  }, [feedItems, selectedItem]);
 
   const handleRowClick = (item: IntelligenceFeedItem) => {
     setSelectedItem(item);
@@ -88,10 +119,10 @@ export default function GlobalIntelligenceFeed({
   };
 
   const getRiskColor = (score: number) => {
-    if (score >= 75) return "#ff4757"; // Critical - Red
-    if (score >= 50) return "#ff6b6b"; // Elevated - Orange-Red
-    if (score >= 25) return "#ffe66d"; // Guarded - Yellow
-    return "#2ecc71"; // Stable - Green
+    if (score >= 75) return "#ff4757";
+    if (score >= 50) return "#ff6b6b";
+    if (score >= 25) return "#ffe66d";
+    return "#2ecc71";
   };
 
   const getRiskLabel = (score: number) => {
@@ -105,19 +136,23 @@ export default function GlobalIntelligenceFeed({
     const date = new Date(timestamp);
     const now = new Date();
     const diff = Math.floor((now.getTime() - date.getTime()) / 1000);
-    
+
     if (diff < 60) return "Just now";
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
     return date.toLocaleDateString();
   };
 
+  const title = selectedCountry
+    ? `Country Intelligence Feed (${selectedCountry})`
+    : "Global Intelligence Feed";
+
   if (loading) {
     return (
       <div className={`global-intelligence-feed ${className}`} style={containerStyle}>
         <div style={headerStyle}>
           <Globe className="w-5 h-5" style={{ color: "#00e0ff" }} />
-          <span style={titleStyle}>Global Intelligence Feed</span>
+          <span style={titleStyle}>{title}</span>
         </div>
         <div style={loadingStyle}>
           <div style={spinnerStyle} />
@@ -132,7 +167,7 @@ export default function GlobalIntelligenceFeed({
       <div className={`global-intelligence-feed ${className}`} style={containerStyle}>
         <div style={headerStyle}>
           <Globe className="w-5 h-5" style={{ color: "#00e0ff" }} />
-          <span style={titleStyle}>Global Intelligence Feed</span>
+          <span style={titleStyle}>{title}</span>
         </div>
         <div style={errorStyle}>
           <AlertCircle className="w-5 h-5" style={{ color: "#ff4757" }} />
@@ -145,29 +180,42 @@ export default function GlobalIntelligenceFeed({
   return (
     <>
       <div className={`global-intelligence-feed ${className}`} style={containerStyle}>
-        {/* Header */}
         <div style={headerStyle}>
           <Globe className="w-5 h-5" style={{ color: "#00e0ff" }} />
-          <span style={titleStyle}>Global Intelligence Feed</span>
+          <span style={titleStyle}>{title}</span>
+          {selectedCountry ? (
+            <button onClick={onClearCountry} style={focusResetButtonStyle}>
+              <Target className="w-4 h-4" />
+              Clear Focus
+            </button>
+          ) : null}
           <div style={liveIndicatorStyle}>
             <span style={liveDotStyle} />
             <span style={liveTextStyle}>LIVE</span>
           </div>
         </div>
 
-        {/* Feed Rows */}
         <div style={feedContainerStyle}>
+          {feedItems.length === 0 ? (
+            <div style={emptyStateStyle}>
+              <AlertCircle className="w-5 h-5" style={{ color: "#f97316" }} />
+              <span>
+                {selectedCountry
+                  ? `No latest country-specific headlines for ${selectedCountry}.`
+                  : "No intelligence feed items available."}
+              </span>
+            </div>
+          ) : null}
+
           {feedItems.map((item, index) => {
             const isAnimating = animatingItems.has(item.id);
             const delay = `${index * 200}ms`;
-            
-            // Combine animation with delay inline when animating to avoid React conflict
             const rowAnimationStyle: React.CSSProperties = isAnimating
               ? {
                   animation: `hologramPop 0.6s ${delay} cubic-bezier(0.34, 1.56, 0.64, 1) forwards, glowPulse 2s ${delay} ease-in-out`,
                 }
               : {};
-            
+
             return (
               <div
                 key={item.id}
@@ -179,7 +227,6 @@ export default function GlobalIntelligenceFeed({
                 }}
                 className="intelligence-row"
               >
-                {/* Country Flag & Code */}
                 <div style={countrySectionStyle}>
                   <div style={flagContainerStyle}>
                     <span style={flagStyle}>{getCountryFlag(item.country)}</span>
@@ -190,7 +237,6 @@ export default function GlobalIntelligenceFeed({
                   </div>
                 </div>
 
-                {/* News Content */}
                 <div style={contentSectionStyle}>
                   <div style={headlineStyle}>
                     <span style={categoryIconStyle} title={item.category}>
@@ -201,7 +247,6 @@ export default function GlobalIntelligenceFeed({
                   <p style={summaryStyle}>{item.summary}</p>
                 </div>
 
-                {/* Meta Info */}
                 <div style={metaSectionStyle}>
                   <div style={riskBadgeStyle(getRiskColor(item.risk_score))}>
                     <span style={riskScoreStyle}>{Math.round(item.risk_score)}</span>
@@ -216,7 +261,6 @@ export default function GlobalIntelligenceFeed({
                   </div>
                 </div>
 
-                {/* Click Indicator */}
                 <div style={clickIndicatorStyle}>
                   <ChevronRight className="w-4 h-4" />
                 </div>
@@ -225,25 +269,24 @@ export default function GlobalIntelligenceFeed({
           })}
         </div>
 
-        {/* Footer */}
         <div style={footerStyle}>
           <span style={footerTextStyle}>
-            Showing {feedItems.length} of 233 countries â€¢ Auto-refresh every {refreshInterval / 1000}s
+            {selectedCountry
+              ? `Showing ${feedItems.length} latest headline(s) for ${selectedCountry} • Auto-refresh ${refreshInterval / 1000}s`
+              : `Showing ${feedItems.length} latest global rows • Auto-refresh ${refreshInterval / 1000}s`}
           </span>
         </div>
       </div>
 
-      {/* Detail Modal */}
       {isModalOpen && selectedItem && (
         <div style={modalOverlayStyle} onClick={closeModal}>
           <div style={modalContentStyle} onClick={(e) => e.stopPropagation()}>
-            {/* Modal Header */}
             <div style={modalHeaderStyle}>
               <div style={modalHeaderLeftStyle}>
                 <span style={modalFlagStyle}>{getCountryFlag(selectedItem.country)}</span>
                 <div>
                   <h2 style={modalTitleStyle}>{selectedItem.country_name}</h2>
-                  <span style={modalSubtitleStyle}>{selectedItem.country} â€¢ {selectedItem.category}</span>
+                  <span style={modalSubtitleStyle}>{selectedItem.country} • {selectedItem.category}</span>
                 </div>
               </div>
               <button onClick={closeModal} style={closeButtonStyle}>
@@ -251,7 +294,6 @@ export default function GlobalIntelligenceFeed({
               </button>
             </div>
 
-            {/* Risk Score Banner */}
             <div style={riskBannerStyle(getRiskColor(selectedItem.risk_score))}>
               <AlertCircle className="w-5 h-5" />
               <div>
@@ -260,10 +302,8 @@ export default function GlobalIntelligenceFeed({
               </div>
             </div>
 
-            {/* Article Content */}
             <div style={modalBodyStyle}>
               <h3 style={articleHeadlineStyle}>{selectedItem.headline}</h3>
-              
               <div style={articleMetaStyle}>
                 <span style={articleSourceStyle}>
                   <Newspaper className="w-4 h-4" />
@@ -274,22 +314,15 @@ export default function GlobalIntelligenceFeed({
                   {new Date(selectedItem.timestamp).toLocaleString()}
                 </span>
               </div>
-
               <div style={articleContentStyle}>
-                {selectedItem.full_article.split('\n\n').map((paragraph, idx) => (
+                {selectedItem.full_article.split("\n\n").map((paragraph, idx) => (
                   <p key={idx} style={paragraphStyle}>{paragraph}</p>
                 ))}
               </div>
             </div>
 
-            {/* Modal Footer */}
             <div style={modalFooterStyle}>
-              <a
-                href={selectedItem.source_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={sourceLinkStyle}
-              >
+              <a href={selectedItem.source_url} target="_blank" rel="noopener noreferrer" style={sourceLinkStyle}>
                 <ExternalLink className="w-4 h-4" />
                 Visit Source Website
               </a>
@@ -303,75 +336,38 @@ export default function GlobalIntelligenceFeed({
 
       <style>{`
         @keyframes hologramPop {
-          0% {
-            opacity: 0;
-            transform: translateY(20px) scale(0.95);
-          }
-          50% {
-            opacity: 1;
-            transform: translateY(-5px) scale(1.02);
-          }
-          100% {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-          }
+          0% { opacity: 0; transform: translateY(20px) scale(0.95); }
+          50% { opacity: 1; transform: translateY(-5px) scale(1.02); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
         }
-
         @keyframes glowPulse {
-          0%, 100% {
-            box-shadow: 0 0 5px rgba(0, 224, 255, 0.3);
-          }
-          50% {
-            box-shadow: 0 0 20px rgba(0, 224, 255, 0.6), 0 0 40px rgba(0, 224, 255, 0.3);
-          }
+          0%, 100% { box-shadow: 0 0 5px rgba(255, 71, 87, 0.25); }
+          50% { box-shadow: 0 0 18px rgba(255, 71, 87, 0.45), 0 0 30px rgba(255, 71, 87, 0.25); }
         }
-
         @keyframes livePulse {
-          0%, 100% {
-            opacity: 1;
-            transform: scale(1);
-          }
-          50% {
-            opacity: 0.5;
-            transform: scale(1.2);
-          }
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.5; transform: scale(1.2); }
         }
-
-        @keyframes shimmer {
-          0% {
-            background-position: -200% 0;
-          }
-          100% {
-            background-position: 200% 0;
-          }
-        }
-
-        .intelligence-row {
-          will-change: transform, opacity;
-        }
-
+        .intelligence-row { will-change: transform, opacity; }
         .intelligence-row:hover {
           transform: translateX(4px) scale(1.01);
-          background: rgba(0, 224, 255, 0.08);
-          border-color: rgba(0, 224, 255, 0.4);
+          background: rgba(255, 71, 87, 0.08);
+          border-color: rgba(255, 71, 87, 0.35);
         }
       `}</style>
     </>
   );
 }
 
-// Helper function to get country flag emoji
 function getCountryFlag(countryCode: string): string {
   const codePoints = countryCode
     .toUpperCase()
     .slice(0, 2)
-    .split('')
-    .map(char => 127397 + char.charCodeAt(0));
-  
+    .split("")
+    .map((char) => 127397 + char.charCodeAt(0));
   return String.fromCodePoint(...codePoints);
 }
 
-// Styles
 const containerStyle: React.CSSProperties = {
   background: "rgba(11, 18, 32, 0.7)",
   border: "1px solid rgba(0, 224, 255, 0.2)",
@@ -391,12 +387,26 @@ const headerStyle: React.CSSProperties = {
 };
 
 const titleStyle: React.CSSProperties = {
-  fontSize: "14px",
+  fontSize: "13px",
   fontWeight: 700,
   color: "#e0f7ff",
   textTransform: "uppercase",
   letterSpacing: "1px",
   flex: 1,
+};
+
+const focusResetButtonStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "6px",
+  border: "1px solid rgba(255, 71, 87, 0.45)",
+  background: "rgba(255, 71, 87, 0.12)",
+  color: "#ffd3d8",
+  borderRadius: "8px",
+  padding: "4px 10px",
+  fontSize: "11px",
+  fontWeight: 700,
+  cursor: "pointer",
 };
 
 const liveIndicatorStyle: React.CSSProperties = {
@@ -429,6 +439,18 @@ const feedContainerStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: "10px",
+};
+
+const emptyStateStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  padding: "14px",
+  borderRadius: "8px",
+  border: "1px solid rgba(249, 115, 22, 0.25)",
+  background: "rgba(249, 115, 22, 0.08)",
+  color: "#ffd2a8",
+  fontSize: "12px",
 };
 
 const rowStyle: React.CSSProperties = {
@@ -629,7 +651,6 @@ const errorTextStyle: React.CSSProperties = {
   color: "#ff4757",
 };
 
-// Modal Styles
 const modalOverlayStyle: React.CSSProperties = {
   position: "fixed",
   top: 0,
@@ -714,7 +735,7 @@ const riskBannerStyle = (color: string): React.CSSProperties => ({
   padding: "16px 24px",
   background: `${color}15`,
   borderBottom: `1px solid ${color}40`,
-  color: color,
+  color,
 });
 
 const riskBannerScoreStyle: React.CSSProperties = {

@@ -2033,3 +2033,140 @@ button:hover {
     align-items: flex-start;
   }
 }
+.country-drilldown-v2 {
+  gap: 14px;
+}
+
+.country-drilldown-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 8px 0;
+  background: rgba(7, 12, 22, 0.96);
+}
+
+.drilldown-brain-section {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.drilldown-brain-view {
+  min-height: 220px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: radial-gradient(circle at 30% 20%, rgba(14, 165, 233, 0.14), rgba(17, 24, 39, 0.85));
+  overflow: hidden;
+}
+
+.drilldown-country-telemetry {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.drilldown-telemetry-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  display: grid;
+  gap: 4px;
+}
+
+.drilldown-telemetry-card span {
+  font-size: 0.75rem;
+  color: rgba(191, 219, 254, 0.85);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.drilldown-telemetry-card strong {
+  font-size: 1rem;
+}
+
+.drilldown-telemetry-card.tone-up {
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.drilldown-telemetry-card.tone-down {
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.drilldown-drivers-card {
+  grid-column: 1 / -1;
+}
+
+.drilldown-driver-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.drilldown-driver-chip {
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 0.75rem;
+  background: rgba(14, 116, 144, 0.2);
+}
+
+.drilldown-section-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.drilldown-section-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  display: grid;
+  gap: 8px;
+}
+
+.drilldown-section-card h4 {
+  margin: 0;
+}
+
+.drilldown-list {
+  display: grid;
+  gap: 6px;
+}
+
+.drilldown-list-row {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  display: grid;
+  gap: 4px;
+}
+
+.drilldown-list-row span {
+  font-size: 0.82rem;
+  color: rgba(226, 232, 240, 0.78);
+}
+
+.trigger-high {
+  border-color: rgba(239, 68, 68, 0.55);
+}
+
+.trigger-medium {
+  border-color: rgba(251, 146, 60, 0.55);
+}
+
+.trigger-low {
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+@media (max-width: 980px) {
+  .drilldown-section-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .drilldown-country-telemetry {
+    grid-template-columns: 1fr;
+  }
+}

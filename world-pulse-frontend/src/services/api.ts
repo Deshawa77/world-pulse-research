@@ -1061,8 +1061,10 @@ export type HealthAlert = {
   type: string;
   severity: "critical" | "elevated" | "guarded";
   location: string;
-  cases: number;
-  deaths: number;
+  cases: number | null;
+  deaths: number | null;
+  indicator_value?: number | null;
+  indicator_value_raw?: string | null;
   status: "active" | "monitoring";
   timestamp: string;
   source: string;
@@ -1107,6 +1109,103 @@ export type TrendsRadarData = {
   trends: TrendItem[];
   summary: TrendsSummary;
   last_updated: string;
+};
+
+
+export type CausalDriver = {
+  feature: string;
+  label: string;
+  value: number;
+  weight: number;
+  impact: number;
+  direction: "upward" | "downward";
+};
+
+export type CausalGraphNode = {
+  id: string;
+  label: string;
+  value: number;
+  type: "target" | "driver";
+};
+
+export type CausalGraphEdge = {
+  source: string;
+  target: string;
+  weight: number;
+  polarity: "positive" | "negative";
+};
+
+export type CausalExplanationResponse = {
+  scope: "global" | "country";
+  country?: string | null;
+  mode: string;
+  risk_score: number;
+  risk_delta?: number;
+  threat_level: "stable" | "guarded" | "elevated" | "critical";
+  drivers: CausalDriver[];
+  root_cause_graph: {
+    nodes: CausalGraphNode[];
+    edges: CausalGraphEdge[];
+  };
+  evidence: Array<{
+    title: string;
+    detail: string;
+    confidence: number;
+  }>;
+  timestamp: string;
+  data_freshness_minutes?: number | null;
+  summary: string;
+};
+
+export type CounterfactualResponse = {
+  country?: string | null;
+  scope: "global" | "country";
+  mode: string;
+  timestamp: string;
+  base_risk_score: number;
+  projected_risk_score: number;
+  projected_risk_delta: number;
+  trajectory: "improving" | "stable" | "worsening";
+  confidence: number;
+  feature_impacts: Array<{
+    feature: string;
+    before: number;
+    after: number;
+    shock: number;
+    estimated_risk_delta: number;
+  }>;
+};
+
+export type ActionPlanResponse = {
+  country?: string | null;
+  scope: "global" | "country";
+  mode: string;
+  timestamp: string;
+  risk_score: number;
+  threat_level: string;
+  projected_total_risk_reduction: number;
+  recommendations: Array<{
+    feature: string;
+    title: string;
+    action: string;
+    priority: "high" | "medium" | "low";
+    eta_hours: number;
+    expected_risk_reduction: number;
+    confidence: number;
+  }>;
+};
+
+export type PolicyReplayResponse = {
+  country?: string | null;
+  scope: "global" | "country";
+  mode: string;
+  timestamp: string;
+  interventions: string[];
+  baseline_series: Array<{ timestamp: string; risk: number }>;
+  simulated_series: Array<{ timestamp: string; risk: number }>;
+  baseline_final_risk: number;
+  simulated_final_risk: number;
+  projected_delta: number;
 };
 
 export async function getCryptoPulse(limit: number = 10): Promise<CryptoPulseData> {
@@ -1356,3 +1455,56 @@ export async function getAdvancedInsights(): Promise<AdvancedInsightsData> {
 export default API;
 
 
+
+
+export async function getCausalExplanations(country?: string | null, mode: string = "online"): Promise<CausalExplanationResponse> {
+  const params: Record<string, string> = { mode };
+  if (country) params.country = country;
+  const res = await API.get("/dashboard/causal-explanations", { headers: API_HEADERS, params });
+  return res.data as CausalExplanationResponse;
+}
+
+export async function runCounterfactual(
+  scenario: Record<string, number>,
+  country?: string | null,
+  mode: string = "online"
+): Promise<CounterfactualResponse> {
+  const res = await API.post(
+    "/dashboard/counterfactual",
+    { scenario, country: country || null, mode },
+    { headers: API_HEADERS }
+  );
+  return res.data as CounterfactualResponse;
+}
+
+export async function getActionPlan(
+  country?: string | null,
+  mode: string = "online",
+  maxActions: number = 4
+): Promise<ActionPlanResponse> {
+  const res = await API.post(
+    "/dashboard/action-plan",
+    { country: country || null, mode, max_actions: maxActions },
+    { headers: API_HEADERS }
+  );
+  return res.data as ActionPlanResponse;
+}
+
+export async function runPolicyReplay(
+  interventions: string[],
+  country?: string | null,
+  horizonDays: number = 30,
+  mode: string = "online"
+): Promise<PolicyReplayResponse> {
+  const res = await API.post(
+    "/dashboard/policy-replay",
+    {
+      country: country || null,
+      mode,
+      horizon_days: horizonDays,
+      interventions,
+    },
+    { headers: API_HEADERS }
+  );
+  return res.data as PolicyReplayResponse;
+}

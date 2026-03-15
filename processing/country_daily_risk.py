@@ -658,10 +658,6 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             "source_count": len(country_docs),
             "source_diversity_score": source_diversity_score,
             "source_reliability_score": source_reliability_score,
-            "country_mood_score": feature_doc["country_mood_score"],
-            "country_mood_baseline": feature_doc["country_mood_baseline"],
-            "country_mood_sentiment_delta": feature_doc["country_mood_sentiment_delta"],
-            "country_mood_sentiment_zscore": feature_doc["country_mood_sentiment_zscore"],
             "conflict_headline_count": conflict_indicators["conflict_headline_count"],
             "weighted_keyword_severity": conflict_indicators["weighted_keyword_severity"],
             "source_confidence": conflict_indicators["source_confidence"],
@@ -732,3 +728,4 @@ def country_daily_refresh_if_due(day: datetime | None = None, max_records: int =
 
 if __name__ == "__main__":
     print(build_daily_country_features())
+

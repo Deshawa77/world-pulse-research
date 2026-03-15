@@ -379,19 +379,23 @@ const trendsContainerStyle: React.CSSProperties = {
   flexDirection: "column",
   gap: "8px",
   flex: 1,
-  overflow: "auto",
+  minHeight: 0,
+  overflowY: "auto",
+  overflowX: "hidden",
+  paddingRight: "4px",
 };
 
 const trendCardStyle: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "50px 1fr 100px",
+  gridTemplateColumns: "44px minmax(0, 1fr) minmax(120px, 138px)",
   alignItems: "center",
-  gap: "12px",
-  padding: "12px",
+  gap: "10px",
+  padding: "10px",
   background: "rgba(139, 92, 246, 0.03)",
   border: "1px solid rgba(139, 92, 246, 0.1)",
   borderRadius: "10px",
   transition: "all 0.3s ease",
+  minWidth: 0,
 };
 
 const rankSectionStyle: React.CSSProperties = {
@@ -468,12 +472,17 @@ const queryTagStyle: React.CSSProperties = {
   borderRadius: "4px",
   fontSize: "9px",
   color: "rgba(180, 230, 255, 0.6)",
+  maxWidth: "100%",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
 };
 
 const metricsStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: "8px",
+  gap: "6px",
+  minWidth: 0,
 };
 
 const interestBarContainerStyle: React.CSSProperties = {
@@ -591,3 +600,4 @@ const errorStyle: React.CSSProperties = {
   fontSize: "12px",
   flex: 1,
 };
+

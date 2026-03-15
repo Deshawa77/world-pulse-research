@@ -15,21 +15,23 @@ import {
   refreshRiskMapBatch,
   type CountryDrilldownData,
   type LiveCommandFeed,
+  type IntelligenceFeedItem,
   type RiskMapCoverage,
   type RiskMapPoint,
   type TrustReliabilitySnapshot,
 } from "../services/api";
+import { getCountryWeatherByCoords, type CountryWeatherSnapshot } from "../services/weather";
 
 const CountryDrilldown = lazy(() => import("../components/CountryDrilldown"));
 const EventLog = lazy(() => import("../components/EventLog"));
 const BrainModelViewer = lazy(() => import("../components/BrainModelViewer"));
-const DataBurstModal = lazy(() => import("../components/DataBurstModal"));
 const GlobalIntelligenceFeed = lazy(() => import("../components/GlobalIntelligenceFeed"));
 const CryptoMarketPulse = lazy(() => import("../components/CryptoMarketPulse"));
 const GlobalDisasterMonitor = lazy(() => import("../components/GlobalDisasterMonitor"));
 const EconomicIndicatorsFeed = lazy(() => import("../components/EconomicIndicatorsFeed"));
 const HealthAlertStream = lazy(() => import("../components/HealthAlertStream"));
 const GoogleTrendsRadar = lazy(() => import("../components/GoogleTrendsRadar"));
+const CausalRiskNavigator = lazy(() => import("../components/CausalRiskNavigator"));
 
 type Features = {
   news_sentiment: number;
@@ -94,6 +96,69 @@ const DRIVER_LABELS: Record<string, string> = {
   stock_volatility: "Stock Volatility",
   weather_anomaly: "Weather Anomaly",
 };
+const COUNTRY_FOCUS_COORDS: Record<string, { lat: number; lon: number }> = {
+  USA: { lat: 39.8, lon: -98.6 },
+  CAN: { lat: 56.1, lon: -106.3 },
+  MEX: { lat: 23.6, lon: -102.6 },
+  BRA: { lat: -14.2, lon: -51.9 },
+  ARG: { lat: -38.4, lon: -63.6 },
+  GBR: { lat: 55.4, lon: -3.4 },
+  FRA: { lat: 46.2, lon: 2.2 },
+  DEU: { lat: 51.2, lon: 10.4 },
+  ESP: { lat: 40.4, lon: -3.7 },
+  ITA: { lat: 42.8, lon: 12.5 },
+  RUS: { lat: 61.5, lon: 105.3 },
+  CHN: { lat: 35.9, lon: 104.2 },
+  IND: { lat: 20.6, lon: 78.9 },
+  JPN: { lat: 36.2, lon: 138.3 },
+  KOR: { lat: 36.5, lon: 127.9 },
+  AUS: { lat: -25.3, lon: 133.8 },
+  ZAF: { lat: -30.6, lon: 22.9 },
+  EGY: { lat: 26.8, lon: 30.8 },
+  NGA: { lat: 9.1, lon: 8.7 },
+  TUR: { lat: 38.9, lon: 35.2 },
+  SAU: { lat: 23.9, lon: 45.1 },
+  IDN: { lat: -0.8, lon: 113.9 },
+  PAK: { lat: 30.4, lon: 69.3 },
+  UKR: { lat: 48.4, lon: 31.2 },
+  LKA: { lat: 7.9, lon: 80.7 },
+  DZA: { lat: 28.0, lon: 1.7 },
+  IRN: { lat: 32.4, lon: 53.7 },
+  AFG: { lat: 33.9, lon: 67.7 },
+  BGD: { lat: 23.7, lon: 90.4 },
+  NPL: { lat: 28.4, lon: 84.1 },
+  MMR: { lat: 21.2, lon: 96.0 },
+  THA: { lat: 15.9, lon: 100.9 },
+  VNM: { lat: 14.1, lon: 108.3 },
+  MYS: { lat: 4.2, lon: 102.0 },
+  PHL: { lat: 12.9, lon: 121.8 },
+  NZL: { lat: -41.5, lon: 172.8 },
+  NOR: { lat: 60.5, lon: 8.5 },
+  SWE: { lat: 60.1, lon: 18.6 },
+  FIN: { lat: 64.5, lon: 26.0 },
+  POL: { lat: 52.1, lon: 19.4 },
+  NLD: { lat: 52.1, lon: 5.3 },
+  BEL: { lat: 50.8, lon: 4.5 },
+  CHE: { lat: 46.8, lon: 8.2 },
+  AUT: { lat: 47.6, lon: 14.1 },
+  ISR: { lat: 31.0, lon: 34.8 },
+  IRQ: { lat: 33.2, lon: 43.7 },
+  QAT: { lat: 25.3, lon: 51.2 },
+  ARE: { lat: 24.3, lon: 54.4 },
+  KWT: { lat: 29.3, lon: 47.5 },
+  KEN: { lat: -0.0, lon: 37.9 },
+  ETH: { lat: 9.1, lon: 40.5 },
+  GHA: { lat: 7.9, lon: -1.0 },
+  MAR: { lat: 31.8, lon: -7.1 },
+  TUN: { lat: 34.0, lon: 9.6 },
+};
+
+function resolveCountryFocus(country: string, clickLat?: number, clickLon?: number): { lat: number; lon: number } | null {
+  if (Number.isFinite(clickLat) && Number.isFinite(clickLon)) {
+    return { lat: Number(clickLat), lon: Number(clickLon) };
+  }
+  return COUNTRY_FOCUS_COORDS[country] ?? null;
+}
 
 function safeN(value: unknown, fallback = 0): number {
   const n = Number(value);
@@ -295,6 +360,15 @@ export default function Dashboard() {
   }, [selectedCountry]);
 
   useEffect(() => {
+    if (!selectedCountry) {
+      setSelectedCountryFocus(null);
+      setSelectedCountryNews([]);
+      setSelectedCountryWeather(null);
+      setCountryWeatherError("");
+    }
+  }, [selectedCountry]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       setShowDeferredPanels(true);
     }, 250);
@@ -306,9 +380,11 @@ export default function Dashboard() {
   const [countryLoading, setCountryLoading] = useState(false);
   const [operatorEvents, setOperatorEvents] = useState<OperatorEvent[]>(() => readJson(EVENTS_KEY, [] as OperatorEvent[]));
   const [mapHover, setMapHover] = useState<{ country: string; risk: number; quality: string } | null>(null);
-  const [dataBurstOpen, setDataBurstOpen] = useState(false);
-  const [dataBurstCountry, setDataBurstCountry] = useState<string>("");
-  const [dataBurstRisk, setDataBurstRisk] = useState<number>(0);
+  const [selectedCountryNews, setSelectedCountryNews] = useState<IntelligenceFeedItem[]>([]);
+  const [selectedCountryFocus, setSelectedCountryFocus] = useState<{ lat: number; lon: number } | null>(null);
+  const [selectedCountryWeather, setSelectedCountryWeather] = useState<CountryWeatherSnapshot | null>(null);
+  const [countryWeatherLoading, setCountryWeatherLoading] = useState(false);
+  const [countryWeatherError, setCountryWeatherError] = useState("");
   const [errorText, setErrorText] = useState("");
   const [refreshingMap, setRefreshingMap] = useState(false);
 
@@ -349,6 +425,7 @@ export default function Dashboard() {
   const rotationRafRef = useRef<number | null>(null);
   const isRotatingRef = useRef<boolean>(false);
   const selectedCountryRef = useRef<string | null>(null);
+  const weatherCacheRef = useRef<Record<string, CountryWeatherSnapshot>>({});
   const initialRiskMapLoadedRef = useRef(false);
   const pendingRiskMapUpdatesRef = useRef<Map<string, RiskMapPoint>>(new Map());
   const pendingRiskMapFlushTimerRef = useRef<number | null>(null);
@@ -399,6 +476,44 @@ export default function Dashboard() {
   const riskDelta = active && previous ? active.riskScore - previous.riskScore : 0;
   const verifiedRiskMap = useMemo(() => riskMapRows.filter((row): row is RiskMapPoint & { risk: number } => Boolean(row.validated_today) && typeof row.risk === "number"), [riskMapRows]);
   const unverifiedRiskMap = useMemo(() => riskMapRows.filter((row) => !row.validated_today), [riskMapRows]);
+  const selectedCountryFeedItems = useMemo(
+    () => (selectedCountry ? selectedCountryNews.filter((item) => item.country === selectedCountry) : []),
+    [selectedCountryNews, selectedCountry]
+  );
+  const effectiveCountryFocus = useMemo(
+    () => (selectedCountry ? selectedCountryFocus ?? COUNTRY_FOCUS_COORDS[selectedCountry] ?? null : null),
+    [selectedCountry, selectedCountryFocus]
+  );
+  const mapBeaconPoints = useMemo(() => {
+    if (!selectedCountry || !selectedCountryFeedItems.length) {
+      return [] as Array<{ lat?: number; lon?: number; headline: string; source: string }>;
+    }
+
+    return selectedCountryFeedItems.slice(0, 5).map((item, index) => {
+      if (!effectiveCountryFocus) {
+        return { headline: item.headline, source: item.source };
+      }
+      const phase = (index + 1) * 1.618;
+      const latOffset = Math.sin(phase * 7.1) * 1.05;
+      const lonOffset = Math.cos(phase * 5.3) * 1.35;
+      return {
+        lat: Math.max(-85, Math.min(85, effectiveCountryFocus.lat + latOffset)),
+        lon: Math.max(-180, Math.min(180, effectiveCountryFocus.lon + lonOffset)),
+        headline: item.headline,
+        source: item.source,
+      };
+    });
+  }, [selectedCountry, selectedCountryFeedItems, effectiveCountryFocus]);
+  const weatherRainStrength = selectedCountryWeather
+    ? Math.min(1, Math.max(safeN(selectedCountryWeather.rainMm), safeN(selectedCountryWeather.precipitationMm)) / 6)
+    : 0;
+  const weatherWindStrength = selectedCountryWeather
+    ? Math.min(1, safeN(selectedCountryWeather.windSpeedKmh) / 55)
+    : 0;
+  const showRainAnimation = Boolean(selectedCountry && weatherRainStrength > 0);
+  const showWindAnimation = Boolean(selectedCountry);
+  const rainDropCount = Math.max(12, Math.min(72, Math.round(12 + weatherRainStrength * 60)));
+  const windLineCount = Math.max(18, Math.min(40, Math.round(18 + weatherWindStrength * 22)));
   const topTopic = active?.topics?.find((topic) => topic && topic !== "no data") ?? "No dominant topic";
   const validationSummary = coverageState.latest_validation;
   const liveFreshness = formatRelativeTime(liveFeedState.lastUpdated);
@@ -708,49 +823,141 @@ export default function Dashboard() {
       try {
         const Plotly = await loadPlotly();
         if (stopped || !mapRef.current) return;
-        const traces = riskMapRows.length ? [
-          {
+        const selectedRiskRow = riskMapRows.find((row) => row.country === selectedCountry) ?? null;
+        const selectedRiskValue = normalizeRisk(selectedRiskRow?.risk ?? 0);
+
+        const traces = selectedCountry
+          ? [
+              {
+                type: "choropleth",
+                locationmode: "ISO-3",
+                locations: [selectedCountry],
+                z: [selectedRiskValue],
+                zmin: 0,
+                zmax: 100,
+                colorscale: [
+                  [0, "#22c55e"],
+                  [0.4, "#facc15"],
+                  [0.7, "#fb923c"],
+                  [1, "#ef4444"],
+                ],
+                hovertemplate: "%{location}<br>Risk: %{z:.1f}<extra></extra>",
+                marker: {
+                  line: { color: "#ff2d55", width: 2.6 },
+                },
+                showscale: false,
+              },
+            ] as any
+          : riskMapRows.length
+            ? [
+                {
+                  type: "choropleth",
+                  locationmode: "ISO-3",
+                  locations: unverifiedRiskMap.map((r) => r.country),
+                  z: unverifiedRiskMap.map(() => 1),
+                  zmin: 0,
+                  zmax: 1,
+                  colorscale: [
+                    [0, "#334155"],
+                    [1, "#64748b"],
+                  ],
+                  customdata: unverifiedRiskMap.map((r) => [r.data_quality ?? "unknown"]),
+                  hovertemplate: "%{location}<br>Status: %{customdata[0]}<br>No verified same-day risk yet<extra></extra>",
+                  showscale: false,
+                },
+                {
+                  type: "choropleth",
+                  locationmode: "ISO-3",
+                  locations: verifiedRiskMap.map((r) => r.country),
+                  z: verifiedRiskMap.map((r) => normalizeRisk(r.risk ?? 0)),
+                  zmin: 0,
+                  zmax: 100,
+                  colorscale: [
+                    [0, "#22c55e"],
+                    [0.4, "#facc15"],
+                    [0.7, "#fb923c"],
+                    [1, "#ef4444"],
+                  ],
+                  customdata: verifiedRiskMap.map((r) => [r.data_quality ?? "verified"]),
+                  hovertemplate: "%{location}<br>Risk: %{z:.1f}<br>Status: %{customdata[0]}<extra></extra>",
+                  showscale: false,
+                },
+              ] as any
+            : [
+                {
+                  type: "scattergeo",
+                  lon: [],
+                  lat: [],
+                  mode: "markers",
+                  hoverinfo: "skip",
+                  showlegend: false,
+                },
+              ] as any;
+        if (selectedCountry) {
+          traces.push({
             type: "choropleth",
             locationmode: "ISO-3",
-            locations: unverifiedRiskMap.map((r) => r.country),
-            z: unverifiedRiskMap.map(() => 1),
+            locations: [selectedCountry],
+            z: [1],
             zmin: 0,
             zmax: 1,
             colorscale: [
-              [0, "#334155"],
-              [1, "#64748b"],
+              [0, "rgba(0,0,0,0)"],
+              [1, "rgba(0,0,0,0)"],
             ],
-            customdata: unverifiedRiskMap.map((r) => [r.data_quality ?? "unknown"]),
-            hovertemplate: "%{location}<br>Status: %{customdata[0]}<br>No verified same-day risk yet<extra></extra>",
+            marker: {
+              line: { color: "#ff2d55", width: 2.6 },
+            },
+            hovertemplate: "%{location}<br>Selected country focus<extra></extra>",
             showscale: false,
-          },
-          {
-            type: "choropleth",
-            locationmode: "ISO-3",
-            locations: verifiedRiskMap.map((r) => r.country),
-            z: verifiedRiskMap.map((r) => normalizeRisk(r.risk ?? 0)),
-            zmin: 0,
-            zmax: 100,
-            colorscale: [
-              [0, "#22c55e"],
-              [0.4, "#facc15"],
-              [0.7, "#fb923c"],
-              [1, "#ef4444"],
-            ],
-            customdata: verifiedRiskMap.map((r) => [r.data_quality ?? "verified"]),
-            hovertemplate: "%{location}<br>Risk: %{z:.1f}<br>Status: %{customdata[0]}<extra></extra>",
-            showscale: false,
-          },
-        ] as any : [
-          {
+          });
+        }
+
+        if (selectedCountry && mapBeaconPoints.length) {
+          traces.push({
             type: "scattergeo",
-            lon: [],
-            lat: [],
             mode: "markers",
-            hoverinfo: "skip",
+            ...(effectiveCountryFocus
+              ? {
+                  lon: mapBeaconPoints.map((point) => point.lon),
+                  lat: mapBeaconPoints.map((point) => point.lat),
+                }
+              : {
+                  locationmode: "ISO-3",
+                  locations: mapBeaconPoints.map(() => selectedCountry),
+                }),
+            text: mapBeaconPoints.map((point) => `${point.headline}<br>${point.source}`),
+            hovertemplate: "<b>News Beacon</b><br>%{text}<extra></extra>",
+            marker: {
+              size: 24,
+              color: "rgba(255,45,85,0.22)",
+              line: { color: "rgba(255,71,120,0.5)", width: 1 },
+            },
             showlegend: false,
-          },
-        ] as any;
+          });
+          traces.push({
+            type: "scattergeo",
+            mode: "markers",
+            ...(effectiveCountryFocus
+              ? {
+                  lon: mapBeaconPoints.map((point) => point.lon),
+                  lat: mapBeaconPoints.map((point) => point.lat),
+                }
+              : {
+                  locationmode: "ISO-3",
+                  locations: mapBeaconPoints.map(() => selectedCountry),
+                }),
+            text: mapBeaconPoints.map((point) => `${point.headline}<br>${point.source}`),
+            hovertemplate: "<b>News Beacon</b><br>%{text}<extra></extra>",
+            marker: {
+              size: 9,
+              color: "#ff2d55",
+              line: { color: "#ffd2dd", width: 1.2 },
+              symbol: "circle",
+            },
+            showlegend: false,
+          });
+        }
         await Plotly.react(
           mapRef.current,
           traces,
@@ -759,7 +966,11 @@ export default function Dashboard() {
             paper_bgcolor: "rgba(0,0,0,0)",
             plot_bgcolor: "rgba(0,0,0,0)",
             geo: {
-              projection: { type: "natural earth" },
+              projection: { type: selectedCountry ? "mercator" : "natural earth", scale: 1 },
+              fitbounds: selectedCountry ? "locations" : false,
+              center: effectiveCountryFocus ? { lon: effectiveCountryFocus.lon, lat: effectiveCountryFocus.lat } : undefined,
+              lonaxis: effectiveCountryFocus ? { range: [effectiveCountryFocus.lon - 18, effectiveCountryFocus.lon + 18] } : undefined,
+              lataxis: effectiveCountryFocus ? { range: [effectiveCountryFocus.lat - 12, effectiveCountryFocus.lat + 12] } : undefined,
               showframe: false,
               bgcolor: "rgba(0,0,0,0)",
               showland: true,
@@ -798,11 +1009,10 @@ export default function Dashboard() {
             const p = e?.points?.[0];
             if (!p?.location) return;
             const country = String(p.location);
-            const risk = Number(p.z);
             setSelectedCountry(country);
-            setDataBurstCountry(country);
-            setDataBurstRisk(risk);
-            setDataBurstOpen(true);
+            const lat = Number(p.lat);
+            const lon = Number(p.lon);
+            setSelectedCountryFocus(resolveCountryFocus(country, lat, lon));
           });
           (mapRef.current as any).on?.("plotly_unhover", () => setMapHover(null));
         }
@@ -815,7 +1025,7 @@ export default function Dashboard() {
     return () => {
       stopped = true;
     };
-  }, [verifiedRiskMap, unverifiedRiskMap]);
+  }, [verifiedRiskMap, unverifiedRiskMap, selectedCountry, selectedCountryFocus, effectiveCountryFocus, mapBeaconPoints]);
 
   const startAutoRotation = (Plotly: any) => {
     if (isRotatingRef.current || !mapRef.current) return;
@@ -875,6 +1085,53 @@ export default function Dashboard() {
       closed = true;
     };
   }, [selectedCountry, liveFeedState.lastUpdated]);
+
+  useEffect(() => {
+    if (!selectedCountry || !effectiveCountryFocus) {
+      setSelectedCountryWeather(null);
+      setCountryWeatherError("");
+      return;
+    }
+
+    let canceled = false;
+    let timer: number | null = null;
+
+    const pullWeather = async () => {
+      setCountryWeatherLoading(true);
+      try {
+        const snapshot = await getCountryWeatherByCoords(effectiveCountryFocus.lat, effectiveCountryFocus.lon, {
+          retries: 2,
+          country: selectedCountry,
+        });
+        if (canceled) return;
+        weatherCacheRef.current[selectedCountry] = snapshot;
+        setSelectedCountryWeather(snapshot);
+        setCountryWeatherError(snapshot.warning || "");
+      } catch {
+        if (canceled) return;
+        const cached = weatherCacheRef.current[selectedCountry] ?? null;
+        if (cached) {
+          setSelectedCountryWeather(cached);
+          setCountryWeatherError("Live weather temporarily unavailable. Showing last successful snapshot.");
+        } else {
+          setSelectedCountryWeather(null);
+          setCountryWeatherError("Live weather temporarily unavailable.");
+        }
+      } finally {
+        if (!canceled) setCountryWeatherLoading(false);
+      }
+    };
+
+    void pullWeather();
+    timer = window.setInterval(() => {
+      void pullWeather();
+    }, 90000);
+
+    return () => {
+      canceled = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [selectedCountry, effectiveCountryFocus?.lat, effectiveCountryFocus?.lon]);
 
   const triggerMapRefresh = async () => {
     setRefreshingMap(true);
@@ -1017,12 +1274,64 @@ export default function Dashboard() {
             <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`}>
               <div className="panel-head">
                 <h3>Global Behavior Map</h3>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <button onClick={triggerMapRefresh} disabled={refreshingMap}>{refreshingMap ? "Refreshing..." : "Refresh Next 50"}</button>
+                {selectedCountry ? (
+                  <button onClick={() => setSelectedCountry(null)}>Clear Country Focus</button>
+                ) : null}
+              </div>
               </div>
               {panelStale.map ? <div className="panel-stale">stale</div> : null}
               <div className="panel-content wp-map-surface map-surface-advanced">
                 <div className="proposal-map-stage">
                   <div ref={mapRef} className="echart-map" />
+                  {selectedCountry ? (
+                    <div className="map-weather-overlay" aria-hidden="true">
+                      {showRainAnimation ? (
+                        <div className="map-rain-layer">
+                          {Array.from({ length: rainDropCount }).map((_, idx) => (
+                            <span
+                              key={`rain-${idx}`}
+                              style={{
+                                left: `${(idx * 37) % 100}%`,
+                                animationDelay: `${(idx % 9) * 0.18}s`,
+                                animationDuration: `${0.75 + (((idx * 13) % 7) * 0.12)}s`,
+                              }}
+                            />
+                          ))}
+                        </div>
+                      ) : null}
+                      {showWindAnimation ? (
+                        <div className="map-wind-layer">
+                          {Array.from({ length: windLineCount }).map((_, idx) => (
+                            <span
+                              key={`wind-${idx}`}
+                              style={{
+                                top: `${(idx * 19) % 95}%`,
+                                animationDelay: `${(idx % 8) * 0.28}s`,
+                                animationDuration: `${1.8 + (((idx * 11) % 6) * 0.22)}s`,
+                              }}
+                            />
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {selectedCountry ? (
+                    <div className="map-weather-live-chip">
+                      {selectedCountryWeather ? (
+                        <>
+                          <strong>{selectedCountryWeather.conditionLabel}</strong>
+                          <span>{selectedCountryWeather.temperatureC.toFixed(1)}C</span>
+                          <span>Wind {selectedCountryWeather.windSpeedKmh.toFixed(1)} km/h</span>
+                          <span>{selectedCountryWeather.provider === "open-meteo" ? "Open-Meteo" : "Met.no"}</span>
+                        </>
+                      ) : (
+                        <strong>Live weather temporarily unavailable</strong>
+                      )}
+                      {countryWeatherLoading ? <span>Updating...</span> : null}
+                    </div>
+                  ) : null}
                   {mapHover ? (
                     <div className="map-hover-box map-hover-card">
                       <strong className="map-hover-title">{mapHover.country}</strong>
@@ -1032,7 +1341,7 @@ export default function Dashboard() {
                 </div>
                 <div className="proposal-map-meta">
                   <p style={{ fontSize: 12, color: "#d1d5db" }}>
-                    {coverageState.verified} / {coverageState.total || riskMapRows.length} countries verified today. Gray countries have no same-day source data yet. Click a country for drilldown analysis.
+                    {coverageState.verified} / {coverageState.total || riskMapRows.length} countries verified today. Gray countries have no same-day source data yet. Click a country to zoom/focus, show red news beacons, and open drilldown analysis.
                   </p>
                   <p style={{ fontSize: 12, color: "#94a3b8" }}>
                     Latest validation: {validationSummary?.status ?? "not available"}{validationSummary?.sample_count ? `, ${validationSummary.sample_count} benchmark rows, Brier ${safeN(validationSummary.brier_score).toFixed(3)}` : ""}.
@@ -1054,7 +1363,13 @@ export default function Dashboard() {
               <div className="panel-content">
                 {showDeferredPanels ? (
                   <Suspense fallback={<DeferredPanelPlaceholder label="Loading global intelligence feed..." />}>
-                    <GlobalIntelligenceFeed maxRows={3} refreshInterval={5000} />
+                    <GlobalIntelligenceFeed
+                      maxRows={selectedCountry ? 6 : 3}
+                      refreshInterval={5000}
+                      selectedCountry={selectedCountry}
+                      onVisibleItemsChange={setSelectedCountryNews}
+                      onClearCountry={() => setSelectedCountry(null)}
+                    />
                   </Suspense>
                 ) : (
                   <DeferredPanelPlaceholder label="Preparing global intelligence feed..." />
@@ -1135,7 +1450,7 @@ export default function Dashboard() {
           <div className="panel-content panel-content-scrollless">
             {showDeferredPanels ? (
               <Suspense fallback={<DeferredPanelPlaceholder label="Loading crypto market pulse..." />}>
-                <CryptoMarketPulse maxItems={8} refreshInterval={15000} />
+                <CryptoMarketPulse maxItems={12} refreshInterval={15000} />
               </Suspense>
             ) : (
               <DeferredPanelPlaceholder label="Preparing crypto market pulse..." />
@@ -1157,7 +1472,7 @@ export default function Dashboard() {
           <div className="panel-content panel-content-scrollless">
             {showDeferredPanels ? (
               <Suspense fallback={<DeferredPanelPlaceholder label="Loading disaster monitor..." />}>
-                <GlobalDisasterMonitor maxItems={6} refreshInterval={20000} />
+                <GlobalDisasterMonitor maxItems={10} refreshInterval={20000} />
               </Suspense>
             ) : (
               <DeferredPanelPlaceholder label="Preparing disaster monitor..." />
@@ -1201,7 +1516,7 @@ export default function Dashboard() {
           <div className="panel-content panel-content-scrollless">
             {showDeferredPanels ? (
               <Suspense fallback={<DeferredPanelPlaceholder label="Loading health alert stream..." />}>
-                <HealthAlertStream maxItems={6} refreshInterval={25000} />
+                <HealthAlertStream maxItems={10} refreshInterval={25000} />
               </Suspense>
             ) : (
               <DeferredPanelPlaceholder label="Preparing health alert stream..." />
@@ -1223,10 +1538,31 @@ export default function Dashboard() {
           <div className="panel-content panel-content-scrollless">
             {showDeferredPanels ? (
               <Suspense fallback={<DeferredPanelPlaceholder label="Loading trends radar..." />}>
-                <GoogleTrendsRadar maxItems={8} refreshInterval={30000} />
+                <GoogleTrendsRadar maxItems={16} refreshInterval={30000} />
               </Suspense>
             ) : (
               <DeferredPanelPlaceholder label="Preparing trends radar..." />
+            )}
+          </div>
+        </article>
+
+        {/* Causal Risk Navigator - Full Width */}
+        <article className={`wp-card panel-frame realtime-domain-card realtime-domain-card-wide ${fpsLow ? "" : "panel-animated"}`}>
+          <div className="panel-head futuristic-panel-header domain-header domain-header-orange">
+            <div className="header-glow domain-header-glow domain-header-glow-orange"></div>
+            <h3>
+              <span className="header-icon">AI</span>
+              Causal Risk Navigator
+              <span className="header-badge domain-badge domain-badge-orange">NEW</span>
+            </h3>
+          </div>
+          <div className="panel-content panel-content-scrollless">
+            {showDeferredPanels ? (
+              <Suspense fallback={<DeferredPanelPlaceholder label="Loading causal risk navigator..." />}>
+                <CausalRiskNavigator selectedCountry={selectedCountry} refreshInterval={30000} />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder label="Preparing causal risk navigator..." />
             )}
           </div>
         </article>
@@ -1263,6 +1599,52 @@ export default function Dashboard() {
             loading={countryLoading}
             data={countryData}
             events={operatorEvents}
+            countryNews={selectedCountryFeedItems}
+            liveIncidents={liveFeedState.incidents ?? []}
+            threatLabel={deriveThreatMeta(safeN(countryData?.risk, globalRiskScore)).label}
+            trendLabel={deriveTrendMeta(
+              safeN(countryData?.risk, globalRiskScore) -
+                safeN(countryData?.trend?.[Math.max((countryData?.trend?.length ?? 1) - 2, 0)]?.value, safeN(countryData?.risk, globalRiskScore))
+            ).label}
+            riskDelta={
+              safeN(countryData?.risk, globalRiskScore) -
+              safeN(countryData?.trend?.[Math.max((countryData?.trend?.length ?? 1) - 2, 0)]?.value, safeN(countryData?.risk, globalRiskScore))
+            }
+            topDrivers={
+              countryData?.drivers?.length
+                ? [...countryData.drivers]
+                    .sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution))
+                    .slice(0, 3)
+                    .map((driver) => formatDriverLabel(driver.feature))
+                : telemetryDrivers
+            }
+            forecast={{
+              score: normalizeRisk(
+                safeN(countryData?.risk, globalRiskScore) +
+                  (
+                    safeN(countryData?.risk, globalRiskScore) -
+                    safeN(countryData?.trend?.[Math.max((countryData?.trend?.length ?? 1) - 2, 0)]?.value, safeN(countryData?.risk, globalRiskScore))
+                  ) * 2.2
+              ),
+              delta:
+                (
+                  safeN(countryData?.risk, globalRiskScore) -
+                  safeN(countryData?.trend?.[Math.max((countryData?.trend?.length ?? 1) - 2, 0)]?.value, safeN(countryData?.risk, globalRiskScore))
+                ) * 2.2,
+              confidence: forecastConfidenceDisplay,
+              horizonHours: 48,
+            }}
+            reliability={{
+              status: reliabilityStatus,
+              freshSources,
+              staleSources,
+              confidence: forecastConfidenceDisplay,
+              uncertainty: moodUncertaintyDisplay,
+              coverage: verifiedCoverageLabel,
+            }}
+            weather={selectedCountryWeather}
+            weatherLoading={countryWeatherLoading}
+            weatherError={countryWeatherError}
             onClose={() => setSelectedCountry(null)}
             onAcknowledge={(comment) => {
               void addEvent("acknowledge", comment);
@@ -1272,33 +1654,6 @@ export default function Dashboard() {
             }}
             onAssign={(owner, comment) => {
               void addEvent("assign", comment, owner);
-            }}
-          />
-
-          <DataBurstModal
-            isOpen={dataBurstOpen}
-            onClose={() => setDataBurstOpen(false)}
-            region={dataBurstCountry}
-            riskScore={dataBurstRisk}
-            threatLevel={dataBurstRisk > 75 ? "critical" : dataBurstRisk > 50 ? "elevated" : dataBurstRisk > 25 ? "guarded" : "stable"}
-            countryData={{
-              alerts: [
-                { id: "1", title: "Geopolitical tension rising", severity: "high", timestamp: new Date().toISOString(), source: "GDELT" },
-                { id: "2", title: "Market volatility detected", severity: "medium", timestamp: new Date().toISOString(), source: "Financial" },
-              ],
-              news: [
-                { id: "1", headline: "Regional stability concerns emerge", sentiment: -0.4, source: "Reuters", timestamp: new Date().toISOString() },
-                { id: "2", headline: "Economic indicators show mixed signals", sentiment: 0.1, source: "Bloomberg", timestamp: new Date().toISOString() },
-              ],
-              metrics: {
-                riskHistory: Array.from({ length: 24 }, (_, i) => ({
-                  timestamp: new Date(Date.now() - i * 3600000).toISOString(),
-                  value: Math.max(0, Math.min(100, dataBurstRisk + (Math.random() - 0.5) * 20)),
-                })).reverse(),
-                sentimentTrend: [],
-                volatilityIndex: Math.random() * 0.5 + 0.2,
-                eventCount: Math.floor(Math.random() * 10) + 1,
-              },
             }}
           />
         </Suspense>
@@ -1313,6 +1668,26 @@ export default function Dashboard() {
     </main>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

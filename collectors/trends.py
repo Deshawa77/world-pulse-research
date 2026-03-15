@@ -8,14 +8,22 @@ from backend.kafka_client import send_to_kafka  # Make sure this exists
 from pytrends.exceptions import TooManyRequestsError
 
 DEFAULT_TREND_KEYWORDS = [
-    "earthquake",
-    "flood",
-    "wildfire",
-    "hurricane",
-    "outbreak",
+    "election",
+    "ai",
+    "stock market",
+    "bitcoin",
     "inflation",
-    "recession",
+    "job market",
+    "climate change",
+    "travel",
+    "football",
+    "olympics",
+    "movie releases",
+    "celebrity",
+    "earthquake",
+    "outbreak",
     "cyberattack",
+    "geopolitics",
 ]
 
 
@@ -26,13 +34,24 @@ def infer_keyword_category(keyword):
     token = str(keyword or "").strip().lower()
     if token in {"earthquake", "flood", "wildfire", "hurricane"}:
         return "Disaster"
-    if token in {"outbreak", "pandemic"}:
+    if token in {"outbreak", "pandemic", "public health"}:
         return "Health"
-    if token in {"inflation", "recession"}:
+    if token in {"inflation", "recession", "stock market", "job market", "bitcoin"}:
         return "Economy"
-    if token in {"cyberattack", "cyber threat"}:
-        return "Security"
+    if token in {"cyberattack", "cyber threat", "ai"}:
+        return "Technology"
+    if token in {"election", "geopolitics", "war", "diplomacy"}:
+        return "Politics"
+    if token in {"football", "olympics", "cricket", "nba", "nfl"}:
+        return "Sports"
+    if token in {"movie releases", "celebrity", "music", "streaming"}:
+        return "Entertainment"
+    if token in {"travel", "tourism"}:
+        return "Travel"
+    if token in {"climate change", "climate", "heatwave"}:
+        return "Climate"
     return "Public Interest"
+
 
 
 def fetch_trends(keyword="football", max_retries=5):
@@ -121,11 +140,13 @@ def convert_for_json(obj):
         return obj
 
 
-def collect_trends(keyword="earthquake"):
+def collect_trends(keyword=None):
     """
     Fetch Google Trends data, send each record to Kafka, insert into MongoDB.
     """
-    if isinstance(keyword, (list, tuple, set)):
+    if keyword is None:
+        data = fetch_trends_multi(DEFAULT_TREND_KEYWORDS)
+    elif isinstance(keyword, (list, tuple, set)):
         data = fetch_trends_multi(list(keyword))
     else:
         data = fetch_trends(str(keyword))
@@ -146,4 +167,4 @@ def collect_trends(keyword="earthquake"):
 
 
 if __name__ == "__main__":
-    collect_trends("earthquake")
+    collect_trends(DEFAULT_TREND_KEYWORDS)

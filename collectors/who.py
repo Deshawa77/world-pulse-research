@@ -7,6 +7,10 @@ from bson import ObjectId  # Handle MongoDB ObjectId
 
 WHO_BASE_URL = "https://ghoapi.azureedge.net/api"
 
+DEFAULT_WHO_INDICATORS = [
+    "WHOSIS_000001",
+]
+
 def fetch_who_indicator(indicator_code, max_results=5):
     """
     Fetch WHO indicator data and return standardized records.
@@ -50,6 +54,23 @@ def fetch_who_indicator(indicator_code, max_results=5):
         return []
 
 
+
+
+def fetch_who_indicators(indicator_codes=None, max_results_per_indicator=20):
+    """
+    Fetch multiple WHO indicators and merge results for better dashboard diversity.
+    """
+    if indicator_codes is None:
+        indicator_codes = DEFAULT_WHO_INDICATORS
+
+    merged = []
+    for code in indicator_codes:
+        code_str = str(code or "").strip()
+        if not code_str:
+            continue
+        merged.extend(fetch_who_indicator(code_str, max_results=max_results_per_indicator))
+    return merged
+
 def convert_for_json(obj):
     """Recursively convert datetime and ObjectId for JSON serialization"""
     if isinstance(obj, dict):
@@ -68,7 +89,7 @@ if __name__ == "__main__":
     print("Starting WHO collector...")
 
     # Fetch and insert raw data into MongoDB
-    data = fetch_who_indicator("WHOSIS_000001", max_results=5)
+    data = fetch_who_indicators(DEFAULT_WHO_INDICATORS, max_results_per_indicator=5)
     if data:
         insert("health", data)
 

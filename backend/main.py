@@ -2,6 +2,7 @@ import sys
 import os
 import logging
 from datetime import datetime, timezone
+import re
 import asyncio
 import time
 import threading
@@ -10,8 +11,10 @@ import uuid
 import hmac
 import csv
 import io
+import json
+from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from dotenv import load_dotenv
-from typing import Literal
+from typing import Literal, Any, Optional
 
 # ----------------------------
 # Ensure project root is importable
@@ -57,6 +60,10 @@ from processing.global_mood import compute_global_operational_features
 from processing.country_daily_risk import country_daily_refresh_if_due
 from collectors.country_news import get_country_catalog
 from processing.sentinel_analysis import compute_sentinel_analysis, get_sentinel_history
+from processing.causal_risk_navigator import build_causal_explanation
+from processing.counterfactual_engine import run_counterfactual
+from processing.action_recommender import build_action_plan
+from processing.policy_replay import run_policy_replay
 from processing.country_risk_validation import (
     latest_country_risk_validation,
     run_country_risk_validation,
@@ -287,6 +294,10 @@ economics_collection = db["economics"]
 health_collection = db["health"]
 trends_collection = db["trends"]
 security_events_collection = db["security_events"]
+causal_explanations_collection = db["causal_explanations"]
+counterfactual_runs_collection = db["counterfactual_runs"]
+policy_replays_collection = db["policy_replays"]
+action_recommendations_collection = db["action_recommendations"]
 # Create indexes for scalable queries (run once)
 prediction_collection.create_index([("timestamp", DESCENDING)])
 prediction_collection.create_index([("model_version", ASCENDING)])
@@ -311,6 +322,10 @@ trends_collection.create_index([("collected_at", DESCENDING)])
 security_events_collection.create_index([("timestamp", DESCENDING)])
 security_events_collection.create_index([("event_type", ASCENDING), ("status", ASCENDING), ("timestamp", DESCENDING)])
 security_events_collection.create_index([("email", ASCENDING), ("timestamp", DESCENDING)])
+causal_explanations_collection.create_index([("country", ASCENDING), ("timestamp", DESCENDING)])
+counterfactual_runs_collection.create_index([("country", ASCENDING), ("timestamp", DESCENDING)])
+policy_replays_collection.create_index([("country", ASCENDING), ("timestamp", DESCENDING)])
+action_recommendations_collection.create_index([("country", ASCENDING), ("timestamp", DESCENDING)])
 security_events_collection.create_index([("client_ip", ASCENDING), ("timestamp", DESCENDING)])
 # =====================================================
 # Model Cache
@@ -935,6 +950,22 @@ class SentinelFeedbackRequest(BaseModel):
     riskScore: float
     timestamp: str
     notes: str | None = None
+
+class CounterfactualRequest(BaseModel):
+    country: str | None = None
+    scenario: dict[str, float]
+    mode: str = "online"
+
+class ActionPlanRequest(BaseModel):
+    country: str | None = None
+    mode: str = "online"
+    max_actions: int = 4
+
+class PolicyReplayRequest(BaseModel):
+    country: str | None = None
+    interventions: list[str] | None = None
+    horizon_days: int = 30
+    mode: str = "online"
 # =====================================================
 # WebSocket Connection Manager
 # =====================================================
@@ -1598,6 +1629,107 @@ Further updates are expected as more information becomes available and officials
 
 
 
+WEATHER_CACHE_TTL_SECONDS = 600
+_weather_cache: dict[str, dict[str, Any]] = {}
+
+
+def _safe_float(value: Any, fallback: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed == parsed else fallback
+
+
+def _weather_condition_label(code: int) -> str:
+    labels = {
+        0: "Clear sky",
+        1: "Mainly clear",
+        2: "Partly cloudy",
+        3: "Overcast",
+        45: "Fog",
+        48: "Rime fog",
+        51: "Light drizzle",
+        53: "Moderate drizzle",
+        55: "Dense drizzle",
+        61: "Slight rain",
+        63: "Moderate rain",
+        65: "Heavy rain",
+        80: "Rain showers",
+        81: "Moderate showers",
+        82: "Violent showers",
+        95: "Thunderstorm",
+    }
+    return labels.get(int(code), "Unknown conditions")
+
+
+def _fetch_json(url: str, timeout: int = 12, headers: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    req = urllib_request.Request(url, headers=headers or {})
+    with urllib_request.urlopen(req, timeout=timeout) as resp:
+        payload = resp.read().decode("utf-8", errors="replace")
+    return json.loads(payload)
+
+
+def _fetch_open_meteo_weather(lat: float, lon: float) -> dict[str, Any]:
+    endpoint = "https://api.open-meteo.com/v1/forecast?" + urllib_parse.urlencode({
+        "latitude": lat,
+        "longitude": lon,
+        "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,rain,wind_speed_10m,wind_gusts_10m,wind_direction_10m,weather_code",
+        "timezone": "auto",
+        "forecast_days": 1,
+    })
+    payload = _fetch_json(endpoint)
+    current = payload.get("current") or {}
+    code = int(round(_safe_float(current.get("weather_code"), 0.0)))
+    return {
+        "latitude": lat,
+        "longitude": lon,
+        "observedAt": str(current.get("time") or datetime.utcnow().isoformat()),
+        "conditionCode": code,
+        "conditionLabel": _weather_condition_label(code),
+        "temperatureC": _safe_float(current.get("temperature_2m")),
+        "feelsLikeC": _safe_float(current.get("apparent_temperature"), _safe_float(current.get("temperature_2m"))),
+        "humidityPct": _safe_float(current.get("relative_humidity_2m")),
+        "precipitationMm": _safe_float(current.get("precipitation")),
+        "rainMm": _safe_float(current.get("rain")),
+        "windSpeedKmh": _safe_float(current.get("wind_speed_10m")),
+        "windGustKmh": _safe_float(current.get("wind_gusts_10m"), _safe_float(current.get("wind_speed_10m"))),
+        "windDirectionDeg": _safe_float(current.get("wind_direction_10m")),
+        "provider": "open-meteo",
+    }
+
+
+def _fetch_met_no_weather(lat: float, lon: float) -> dict[str, Any]:
+    endpoint = "https://api.met.no/weatherapi/locationforecast/2.0/compact?" + urllib_parse.urlencode({"lat": lat, "lon": lon})
+    payload = _fetch_json(endpoint, headers={"User-Agent": "world-pulse-research/1.0"})
+    ts = ((payload.get("properties") or {}).get("timeseries") or [{}])[0]
+    details = (((ts.get("data") or {}).get("instant") or {}).get("details") or {})
+    next_hour = ((ts.get("data") or {}).get("next_1_hours") or {})
+    symbol = (((next_hour.get("summary") or {}).get("symbol_code") or "") + "").replace("_", " ").strip().title() or "Unknown conditions"
+    precipitation = _safe_float(((next_hour.get("details") or {}).get("precipitation_amount")), 0.0)
+    wind_speed_kmh = _safe_float(details.get("wind_speed"), 0.0) * 3.6
+    temp = _safe_float(details.get("air_temperature"))
+    return {
+        "latitude": lat,
+        "longitude": lon,
+        "observedAt": str(ts.get("time") or datetime.utcnow().isoformat()),
+        "conditionCode": -1,
+        "conditionLabel": symbol,
+        "temperatureC": temp,
+        "feelsLikeC": temp,
+        "humidityPct": _safe_float(details.get("relative_humidity")),
+        "precipitationMm": precipitation,
+        "rainMm": precipitation,
+        "windSpeedKmh": wind_speed_kmh,
+        "windGustKmh": wind_speed_kmh,
+        "windDirectionDeg": _safe_float(details.get("wind_from_direction")),
+        "provider": "met-no",
+    }
+
+
+def _weather_cache_key(country: Optional[str], lat: float, lon: float) -> str:
+    country_key = (country or "").upper().strip()
+    return f"{country_key}:{round(lat, 3)}:{round(lon, 3)}"
 # ISO 3166-1 alpha-3 to alpha-2 reverse mapping (for drilldown lookups)
 ISO3_TO_ISO2 = {v: k for k, v in ISO2_TO_ISO3.items()}
 
@@ -1611,6 +1743,57 @@ def normalize_country_lookup(country: str) -> list:
         codes.append(ISO3_TO_ISO2[country])  # Add 2-letter version
     return codes
 
+
+@app.get("/dashboard/weather/current")
+@limiter.limit("60/minute")
+def dashboard_weather_current(
+    request: Request,
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    country: Optional[str] = Query(default=None),
+    force_refresh: bool = Query(default=False),
+    role: str = Depends(check_role),
+):
+    cache_key = _weather_cache_key(country, lat, lon)
+    now_ts = time.time()
+    cached_entry = _weather_cache.get(cache_key)
+
+    if cached_entry and not force_refresh and now_ts - float(cached_entry.get("timestamp", 0.0)) <= WEATHER_CACHE_TTL_SECONDS:
+        payload = dict(cached_entry.get("payload") or {})
+        payload["cached"] = True
+        payload["cacheAgeSec"] = int(now_ts - float(cached_entry.get("timestamp", now_ts)))
+        return payload
+
+    last_error: str | None = None
+    for attempt in range(3):
+        try:
+            payload = _fetch_open_meteo_weather(lat, lon)
+            payload["cached"] = False
+            payload["cacheAgeSec"] = 0
+            _weather_cache[cache_key] = {"payload": payload, "timestamp": now_ts}
+            return payload
+        except Exception as exc:
+            last_error = f"open-meteo: {exc}"
+            try:
+                payload = _fetch_met_no_weather(lat, lon)
+                payload["cached"] = False
+                payload["cacheAgeSec"] = 0
+                _weather_cache[cache_key] = {"payload": payload, "timestamp": now_ts}
+                return payload
+            except Exception as fallback_exc:
+                last_error = f"met-no: {fallback_exc}"
+                if attempt < 2:
+                    time.sleep(0.25 * (attempt + 1))
+
+    if cached_entry:
+        payload = dict(cached_entry.get("payload") or {})
+        payload["cached"] = True
+        payload["stale"] = True
+        payload["cacheAgeSec"] = int(now_ts - float(cached_entry.get("timestamp", now_ts)))
+        payload["warning"] = "Live weather temporarily unavailable. Returning last cached snapshot."
+        return payload
+
+    raise HTTPException(status_code=503, detail={"message": "Live weather temporarily unavailable", "provider_error": last_error})
 
 @app.get("/dashboard/country/{country}")
 @limiter.limit("20/minute")
@@ -1667,6 +1850,93 @@ def dashboard_country(request: Request, country: str, role: str = Depends(check_
         "events": events,
         "confidenceInterval": {"lower": max(0, risk - 5), "upper": min(100, risk + 5)},
     }
+
+
+@app.get("/dashboard/causal-explanations")
+@limiter.limit("40/minute")
+def dashboard_causal_explanations(
+    request: Request,
+    role: str = Depends(check_role),
+    country: str | None = Query(default=None),
+    mode: str = Query("online"),
+):
+    normalized_country = country.upper().strip() if country else None
+    explanation = build_causal_explanation(country=normalized_country, mode=mode)
+
+    causal_explanations_collection.insert_one({
+        "timestamp": datetime.utcnow(),
+        "country": normalized_country,
+        "mode": mode,
+        "payload": explanation,
+    })
+    return explanation
+
+
+@app.post("/dashboard/counterfactual")
+@limiter.limit("30/minute")
+def dashboard_counterfactual(
+    request: Request,
+    payload: CounterfactualRequest,
+    role: str = Depends(check_role),
+):
+    normalized_country = payload.country.upper().strip() if payload.country else None
+    result = run_counterfactual(scenario=payload.scenario, country=normalized_country, mode=payload.mode)
+
+    counterfactual_runs_collection.insert_one({
+        "timestamp": datetime.utcnow(),
+        "country": normalized_country,
+        "mode": payload.mode,
+        "scenario": payload.scenario,
+        "payload": result,
+    })
+    return result
+
+
+@app.post("/dashboard/action-plan")
+@limiter.limit("30/minute")
+def dashboard_action_plan(
+    request: Request,
+    payload: ActionPlanRequest,
+    role: str = Depends(check_role),
+):
+    normalized_country = payload.country.upper().strip() if payload.country else None
+    result = build_action_plan(country=normalized_country, mode=payload.mode, max_actions=max(1, min(payload.max_actions, 8)))
+
+    action_recommendations_collection.insert_one({
+        "timestamp": datetime.utcnow(),
+        "country": normalized_country,
+        "mode": payload.mode,
+        "max_actions": payload.max_actions,
+        "payload": result,
+    })
+    return result
+
+
+@app.post("/dashboard/policy-replay")
+@limiter.limit("30/minute")
+def dashboard_policy_replay(
+    request: Request,
+    payload: PolicyReplayRequest,
+    role: str = Depends(check_role),
+):
+    normalized_country = payload.country.upper().strip() if payload.country else None
+    interventions = payload.interventions or []
+    result = run_policy_replay(
+        country=normalized_country,
+        interventions=interventions,
+        horizon_days=max(7, min(payload.horizon_days, 180)),
+        mode=payload.mode,
+    )
+
+    policy_replays_collection.insert_one({
+        "timestamp": datetime.utcnow(),
+        "country": normalized_country,
+        "mode": payload.mode,
+        "horizon_days": payload.horizon_days,
+        "interventions": interventions,
+        "payload": result,
+    })
+    return result
 
 
 @app.get("/dashboard/governance")
@@ -1805,6 +2075,24 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
+def _extract_first_number(value: Any, default: float | None = None) -> float | None:
+    """
+    Parse first numeric token from strings like '47.2 [45.3-49.1]'.
+    """
+    if value in (None, ""):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value)
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not match:
+        return default
+    try:
+        return float(match.group(0))
+    except (TypeError, ValueError):
+        return default
+
+
 def _safe_timestamp(doc: dict, *paths: str) -> str:
     return str(_pick_nested(doc, *paths, default=datetime.utcnow().isoformat()))
 
@@ -1929,19 +2217,32 @@ def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role)
     half_limit = max(1, limit // 2)
     weather_quota = max(1, limit - half_limit)
 
-    # Read enough rows from both collections, then backfill from the side that has data.
+    # Read enough rows from both collections.
     earthquake_pool = list(db.earthquakes.find().sort("collected_at", -1).limit(limit * 3))
     weather_pool = list(db.weather.find().sort("collected_at", -1).limit(limit * 3))
 
-    selected_earthquakes = earthquake_pool[:half_limit]
-    selected_weather = weather_pool[:weather_quota]
+    # Prevent stale feeds from polluting live monitor cards.
+    now_utc = datetime.now(timezone.utc)
+    eq_cutoff = now_utc - timedelta(hours=48)
+    weather_cutoff = now_utc - timedelta(hours=24)
+    recent_earthquakes = [
+        doc for doc in earthquake_pool
+        if _parse_timestamp(_safe_timestamp(doc, "timestamp", "data.time", "collected_at")) >= eq_cutoff
+    ]
+    recent_weather = [
+        doc for doc in weather_pool
+        if _parse_timestamp(_safe_timestamp(doc, "timestamp", "data_timestamp", "data.date", "collected_at")) >= weather_cutoff
+    ]
+
+    selected_earthquakes = recent_earthquakes[:half_limit]
+    selected_weather = recent_weather[:weather_quota]
 
     remaining = limit - (len(selected_earthquakes) + len(selected_weather))
     if remaining > 0:
-        selected_earthquakes.extend(earthquake_pool[len(selected_earthquakes): len(selected_earthquakes) + remaining])
+        selected_earthquakes.extend(recent_earthquakes[len(selected_earthquakes): len(selected_earthquakes) + remaining])
         remaining = limit - (len(selected_earthquakes) + len(selected_weather))
     if remaining > 0:
-        selected_weather.extend(weather_pool[len(selected_weather): len(selected_weather) + remaining])
+        selected_weather.extend(recent_weather[len(selected_weather): len(selected_weather) + remaining])
 
     disaster_items = []
 
@@ -2004,9 +2305,10 @@ def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role)
 
     return {
         "items": disaster_items[:limit],
-        "last_updated": _latest_timestamp(*earthquake_pool, *weather_pool),
+        "last_updated": _latest_timestamp(*recent_earthquakes, *recent_weather),
         "total_count": len(disaster_items)
     }
+
 @app.get("/dashboard/economic-indicators")
 @limiter.limit("30/minute")
 def dashboard_economic_indicators(request: Request, role: str = Depends(check_role)):
@@ -2113,9 +2415,25 @@ def dashboard_health_alerts(request: Request, role: str = Depends(check_role), l
     health_items = []
     for idx, doc in enumerate(health_docs):
         indicator = str(_pick_nested(doc, "data.indicator", "indicator", default="WHO Indicator"))
-        cases = _safe_int(_pick_nested(doc, "cases", "data.cases", "data.value", "value", default=0), default=0)
-        deaths = _safe_int(_pick_nested(doc, "deaths", "data.deaths", default=max(0, int(cases * 0.02))), default=max(0, int(cases * 0.02)))
-        severity = "critical" if cases >= 100000 else "elevated" if cases >= 10000 else "guarded"
+        cases_raw = _pick_nested(doc, "cases", "data.cases", default=None)
+        deaths_raw = _pick_nested(doc, "deaths", "data.deaths", default=None)
+        indicator_value_raw = _pick_nested(doc, "data.value", "value", default=None)
+
+        cases = _safe_int(cases_raw, default=-1) if cases_raw not in (None, "") else -1
+        deaths = _safe_int(deaths_raw, default=-1) if deaths_raw not in (None, "") else -1
+        parsed_indicator_value = _extract_first_number(indicator_value_raw, default=None)
+        has_outbreak_counts = cases >= 0 or deaths >= 0
+
+        if has_outbreak_counts:
+            safe_cases = max(cases, 0)
+            severity = "critical" if safe_cases >= 100000 else "elevated" if safe_cases >= 10000 else "guarded"
+            status = "active" if severity in {"critical", "elevated"} else "monitoring"
+        else:
+            safe_cases = None
+            severity = "guarded"
+            status = "monitoring"
+
+        safe_deaths = None if deaths < 0 else max(deaths, 0)
         location = str(_pick_nested(doc, "country", "data.country", "data.SpatialDim", default="Global"))
 
         health_items.append({
@@ -2124,9 +2442,11 @@ def dashboard_health_alerts(request: Request, role: str = Depends(check_role), l
             "type": "indicator",
             "severity": severity,
             "location": location,
-            "cases": cases,
-            "deaths": deaths,
-            "status": "active" if severity in {"critical", "elevated"} else "monitoring",
+            "cases": safe_cases,
+            "deaths": safe_deaths,
+            "indicator_value": parsed_indicator_value,
+            "indicator_value_raw": str(indicator_value_raw) if indicator_value_raw not in (None, "") else None,
+            "status": status,
             "timestamp": _safe_timestamp(doc, "timestamp", "data.timestamp", "collected_at"),
             "source": str(doc.get("source", "WHO")).upper(),
             "description": f"Latest WHO indicator update for {indicator.replace('_', ' ')} in {location}."
@@ -2136,7 +2456,10 @@ def dashboard_health_alerts(request: Request, role: str = Depends(check_role), l
         doc for doc in health_docs
         if "vacc" in str(_pick_nested(doc, "data.indicator", "indicator", default="")).lower()
     ]
-    vaccination_values = [_safe_float(_pick_nested(doc, "data.value", "value", default=0.0)) for doc in vaccination_docs]
+    vaccination_values = [
+        _extract_first_number(_pick_nested(doc, "data.value", "value", default=None), default=0.0) or 0.0
+        for doc in vaccination_docs
+    ]
     vaccination_data = {
         "global_coverage": round(max(vaccination_values), 1) if vaccination_values else 0.0,
         "target_coverage": 70.0,
@@ -2150,17 +2473,18 @@ def dashboard_health_alerts(request: Request, role: str = Depends(check_role), l
         "last_updated": _latest_timestamp(*health_docs),
         "total_active": len([h for h in health_items if h["status"] == "active"])
     }
+
 @app.get("/dashboard/trends-radar")
 @limiter.limit("30/minute")
 def dashboard_trends_radar(request: Request, role: str = Depends(check_role), limit: int = Query(20, ge=1, le=100)):
     """
     Returns Google Trends data showing trending search terms and topics.
     """
-    trends_docs = list(db.trends.find().sort("collected_at", -1).limit(limit * 8))
+    trends_docs = list(db.trends.find().sort("collected_at", -1).limit(min(5000, limit * 320)))
     trend_items = []
     grouped_topics: dict[str, list[dict]] = defaultdict(list)
     for doc in trends_docs:
-        topic = str(_pick_nested(doc, "topic", "data.topic", "data.query", "data.keyword", default=""))
+        topic = str(_pick_nested(doc, "topic", "data.topic", "data.query", "data.keyword", default="")).strip()
         if topic:
             grouped_topics[topic].append(doc)
 
@@ -2195,6 +2519,7 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
         })
     if len(trend_items) < limit:
         seen_ids = {str(item.get("id", "")) for item in trend_items}
+        seen_topics = {str(item.get("topic", "")).strip().lower() for item in trend_items}
         for idx, doc in enumerate(trends_docs):
             if len(trend_items) >= limit:
                 break
@@ -2202,8 +2527,11 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
             if fallback_id in seen_ids:
                 continue
 
-            topic = str(_pick_nested(doc, "topic", "data.topic", "data.query", "data.keyword", default=""))
+            topic = str(_pick_nested(doc, "topic", "data.topic", "data.query", "data.keyword", default="")).strip()
             if not topic:
+                continue
+            topic_key = topic.lower()
+            if topic_key in seen_topics:
                 continue
 
             interest_score = _safe_int(
@@ -2227,6 +2555,7 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
                 ]
             })
             seen_ids.add(fallback_id)
+            seen_topics.add(topic_key)
     trend_items.sort(key=lambda x: (x["interest_score"], _parse_timestamp(x["timestamp"])), reverse=True)
     trend_items = trend_items[:limit]
 
@@ -2249,6 +2578,7 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
         },
         "last_updated": _latest_timestamp(*trends_docs)
     }
+
 
 
 # =====================================================
@@ -4170,6 +4500,11 @@ def bootstrap_and_migrate_users():
             "user_profiles_migrated",
             extra={"event": {"count": migrated}},
         )
+
+
+
+
+
 
 
 

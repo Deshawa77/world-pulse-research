@@ -245,14 +245,26 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # Collector Tasks
 # -------------------------------
 TREND_KEYWORDS = [
-    "earthquake",
-    "flood",
-    "wildfire",
-    "hurricane",
-    "outbreak",
+    "election",
+    "ai",
+    "stock market",
+    "bitcoin",
     "inflation",
-    "recession",
+    "job market",
+    "climate change",
+    "travel",
+    "football",
+    "olympics",
+    "movie releases",
+    "celebrity",
+    "earthquake",
+    "outbreak",
     "cyberattack",
+    "geopolitics",
+]
+
+WHO_INDICATOR_CODES = [
+    "WHOSIS_000001",
 ]
 
 COLLECTOR_TASKS = {
@@ -265,7 +277,7 @@ COLLECTOR_TASKS = {
     "crypto": (lambda: coingecko.fetch_crypto(coingecko.get_configured_coin_ids(), "usd", 5), "crypto_topic"),
     "fred": (lambda: fred.fetch_indicator("GDP","2025-01-01","2026-01-01"), "fred_topic"),
     "exchange_rates": (lambda: frankfurter.fetch_exchange_rates("USD"), "exchange_rates_topic"),
-    "who": (lambda: who.fetch_who_indicator("WHOSIS_000001", max_results=50), "who_topic"),
+    "who": (lambda: who.fetch_who_indicators(WHO_INDICATOR_CODES, max_results_per_indicator=20), "who_topic"),
     "stocks": (lambda: twelvedata.fetch_stock("AAPL","1day",5), "stocks_topic"),
     "worldbank": (lambda: worldbank.fetch_worldbank_data(date="2020:2025", per_page=5), "worldbank_topic"),
     "reddit": (lambda: reddit.fetch_reddit_posts("worldnews", limit=5), "reddit_topic")

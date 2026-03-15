@@ -1,4 +1,4 @@
-﻿.dashboard-layout {
+.dashboard-layout {
     display: flex;
     gap: 16px;
     padding: 16px;
@@ -220,6 +220,78 @@
   height: 100%;
 }
 
+.map-weather-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.map-rain-layer,
+.map-wind-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.map-rain-layer span {
+  position: absolute;
+  top: -12%;
+  width: 1px;
+  height: 42px;
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0), rgba(56, 189, 248, 0.8));
+  animation-name: map-rain-fall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  opacity: 0.75;
+}
+
+.map-wind-layer span {
+  position: absolute;
+  left: -30%;
+  width: 140px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0), rgba(147, 197, 253, 0.75), rgba(56, 189, 248, 0));
+  animation-name: map-wind-flow;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  opacity: 0.65;
+}
+
+.map-weather-live-chip {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(2, 18, 38, 0.78);
+  color: #dbeafe;
+  font-size: 11px;
+  backdrop-filter: blur(4px);
+}
+
+.map-weather-live-chip strong {
+  color: #67e8f9;
+  letter-spacing: 0.02em;
+}
+
+@keyframes map-rain-fall {
+  0% { transform: translate3d(0, 0, 0) rotate(12deg); }
+  100% { transform: translate3d(24px, 130%, 0) rotate(12deg); }
+}
+
+@keyframes map-wind-flow {
+  0% { transform: translate3d(0, 0, 0); opacity: 0; }
+  15% { opacity: 0.7; }
+  80% { opacity: 0.7; }
+  100% { transform: translate3d(160%, 0, 0); opacity: 0; }
+}
 .proposal-map-meta {
   margin-top: 8px;
   position: relative;
@@ -297,11 +369,12 @@
 
 
 .realtime-domain-card {
-  height: 500px;
+  height: 620px;
 }
 
 .realtime-domain-card-wide {
   grid-column: span 2;
+  height: 700px;
 }
 
 .operator-panel-card {
@@ -310,6 +383,7 @@
 
 .panel-content-scrollless {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -453,7 +527,7 @@
   .realtime-domain-card,
   .operator-panel-card {
     height: auto;
-    min-height: 340px;
+    min-height: 380px;
   }
 
   .sentinel-toggle {
@@ -889,7 +963,7 @@
   font-size: 12px;
   color: #d2f5ff;
   background: radial-gradient(circle at center, rgba(13, 38, 69, 0.3), rgba(2, 7, 16, 0.92));
-  z-index: 2;
+  z-index: 30;
 }
 
 @media (max-width: 768px) {
@@ -898,7 +972,7 @@
   }
 
   .dashboard-brain-model {
-    min-height: 340px;
+    min-height: 380px;
   }
 }
 
@@ -1270,6 +1344,10 @@
   border-color: rgba(103, 232, 249, 0.42);
   background: rgba(14, 45, 78, 0.84);
 }
+
+
+
+
 
 
 

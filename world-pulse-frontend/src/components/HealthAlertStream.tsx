@@ -65,7 +65,8 @@ export default function HealthAlertStream({
     }
   };
 
-  const formatNumber = (num: number) => {
+  const formatNumber = (num?: number | null) => {
+    if (num === null || num === undefined || Number.isNaN(num)) return "N/A";
     if (num >= 1e6) return `${(num / 1e6).toFixed(1)}M`;
     if (num >= 1e3) return `${(num / 1e3).toFixed(1)}K`;
     return num.toString();
@@ -193,12 +194,14 @@ export default function HealthAlertStream({
               {/* Stats */}
               <div style={statsRowStyle}>
                 <div style={statBoxStyle}>
-                  <span style={statNumberStyle}>{formatNumber(outbreak.cases)}</span>
-                  <span style={statLabelStyle}>Cases</span>
+                  <span style={statNumberStyle}>
+                    {outbreak.indicator_value_raw ?? formatNumber(outbreak.indicator_value)}
+                  </span>
+                  <span style={statLabelStyle}>{outbreak.type === "indicator" ? "Indicator" : "Cases"}</span>
                 </div>
                 <div style={statBoxStyle}>
                   <span style={statNumberStyleRed}>{formatNumber(outbreak.deaths)}</span>
-                  <span style={statLabelStyle}>Deaths</span>
+                  <span style={statLabelStyle}>{outbreak.type === "indicator" ? "Deaths (N/A)" : "Deaths"}</span>
                 </div>
               </div>
 
