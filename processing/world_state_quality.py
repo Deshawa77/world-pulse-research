@@ -17,6 +17,24 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _derive_gate_status(*, coverage_low: bool, freshness_low: bool, critical_down: bool) -> tuple[str, str]:
+    if coverage_low and freshness_low and critical_down:
+        return ("global_reliability_degraded", "Global reliability degraded")
+    if coverage_low and freshness_low:
+        return ("coverage_and_freshness_degraded", "Coverage and freshness degraded")
+    if coverage_low and critical_down:
+        return ("coverage_and_sources_degraded", "Coverage and source reliability degraded")
+    if freshness_low and critical_down:
+        return ("freshness_and_sources_degraded", "Freshness and source reliability degraded")
+    if coverage_low:
+        return ("insufficient_global_coverage", "Insufficient global coverage")
+    if freshness_low:
+        return ("stale_global_data", "Global data freshness degraded")
+    if critical_down:
+        return ("critical_source_outage", "Critical source reliability degraded")
+    return ("sufficient", "Coverage healthy")
+
+
 def compute_quality_gate(
     *,
     verified_countries: int,
@@ -33,20 +51,28 @@ def compute_quality_gate(
     fresh_ratio = max(0.0, min(1.0, _as_float(freshness_ratio, 0.0)))
     critical_down = max(_as_int(critical_sources_down, 0), 0)
 
+    coverage_low = verified < threshold_coverage
+    freshness_low = fresh_ratio < threshold_freshness
+    critical_down_active = critical_down >= threshold_critical_down
+
     reasons: list[str] = []
-    if verified < threshold_coverage:
+    if coverage_low:
         reasons.append(f"coverage {verified}/{total} below threshold {threshold_coverage}")
-    if fresh_ratio < threshold_freshness:
+    if freshness_low:
         reasons.append(f"freshness {fresh_ratio:.2%} below threshold {threshold_freshness:.0%}")
-    if critical_down >= threshold_critical_down:
+    if critical_down_active:
         reasons.append(f"critical sources down {critical_down} >= threshold {threshold_critical_down}")
 
     active = len(reasons) > 0
-    status = "insufficient_global_coverage" if active else "sufficient"
+    status, message = _derive_gate_status(
+        coverage_low=coverage_low,
+        freshness_low=freshness_low,
+        critical_down=critical_down_active,
+    )
     return {
         "active": active,
         "status": status,
-        "message": "Insufficient Global Coverage" if active else "Coverage healthy",
+        "message": message,
         "reasons": reasons,
         "metrics": {
             "verified_countries": verified,
@@ -61,8 +87,8 @@ def compute_quality_gate(
             "critical_sources_down": threshold_critical_down,
         },
         "rollout": {
-            "phase": "A",
-            "shadow_mode": True,
+            "phase": "live",
+            "shadow_mode": False,
             "rollback_toggle_enabled": True,
         },
     }

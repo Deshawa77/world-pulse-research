@@ -507,6 +507,7 @@
 .proposal-auth-card {
   display: grid;
   gap: 18px;
+  align-content: start;
 }
 
 .proposal-auth-card h2 {
@@ -805,3 +806,6 @@ button {
     justify-content: flex-start;
   }
 }
+
+
+

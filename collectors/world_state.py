@@ -4,13 +4,19 @@ import uuid
 import csv
 import io
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import requests
+from dotenv import load_dotenv
+from requests import Response
 
 from database.mongo import db
 
-RELIEFWEB_APPNAME = (os.getenv("RELIEFWEB_APPNAME") or "world-pulse-research").strip()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env", override=True)
+
+RELIEFWEB_APPNAME = (os.getenv("RELIEFWEB_APPNAME") or "").strip()
 OPENAQ_API_KEY = (os.getenv("OPENAQ_API_KEY") or "").strip()
 FIRMS_MAP_KEY = (os.getenv("FIRMS_MAP_KEY") or "").strip()
 NOAA_CDO_TOKEN = (os.getenv("NOAA_CDO_TOKEN") or "").strip()
@@ -18,6 +24,7 @@ EIA_API_KEY = (os.getenv("EIA_API_KEY") or "").strip()
 FRED_API_KEY = (os.getenv("FRED_API_KEY") or "").strip()
 ACLED_API_KEY = (os.getenv("ACLED_API_KEY") or "").strip()
 ACLED_EMAIL = (os.getenv("ACLED_EMAIL") or "").strip()
+ACLED_ACCESS_TOKEN = (os.getenv("ACLED_ACCESS_TOKEN") or "").strip()
 
 CRITICAL_SOURCES = {
     "reliefweb",
@@ -107,13 +114,36 @@ def _fetch_json(url: str, *, params: dict[str, Any] | None = None, headers: dict
         return None, latency_ms, str(exc), None
 
 
+def _fetch_response(url: str, *, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None, timeout: int = 20) -> tuple[Response | None, float, str | None, int | None]:
+    started = time.perf_counter()
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=timeout)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        if response.status_code >= 400:
+            return None, latency_ms, f"HTTP {response.status_code}", response.status_code
+        return response, latency_ms, None, response.status_code
+    except Exception as exc:
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        return None, latency_ms, str(exc), None
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
 def _reliefweb() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not RELIEFWEB_APPNAME:
+        return [], _health_row("reliefweb", "down", 0.0, error="missing RELIEFWEB_APPNAME", auth_failed=True)
     data, latency_ms, error, status_code = _fetch_json(
-        "https://api.reliefweb.int/v1/reports",
+        "https://api.reliefweb.int/v2/reports",
         params={
             "appname": RELIEFWEB_APPNAME,
             "limit": 30,
             "profile": "full",
+            "preset": "latest",
             "sort[]": "date:desc",
         },
         timeout=25,
@@ -175,23 +205,40 @@ def _eonet() -> tuple[list[dict[str, Any]], dict[str, Any]]:
 def _openaq() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not OPENAQ_API_KEY:
         return [], _health_row("openaq", "down", 0.0, error="missing OPENAQ_API_KEY", auth_failed=True)
+    headers = {"X-API-Key": OPENAQ_API_KEY}
     data, latency_ms, error, status_code = _fetch_json(
         "https://api.openaq.org/v3/parameters/2/latest",
-        params={"limit": 100},
-        headers={"X-API-Key": OPENAQ_API_KEY},
+        params={"limit": 1000},
+        headers=headers,
         timeout=25,
     )
+    if (error or not isinstance(data, dict)) and status_code == 404:
+        data, latency_ms, error, status_code = _fetch_json(
+            "https://api.openaq.org/v3/sensors",
+            params={"parameters_id": 2, "limit": 200},
+            headers=headers,
+            timeout=25,
+        )
+
     if error or not isinstance(data, dict):
         return [], _health_row("openaq", "down", latency_ms, error=error, auth_failed=status_code in (401, 403), rate_limited=status_code == 429)
 
     rows = []
-    for item in (data.get("results") or [])[:100]:
-        country = str(item.get("country", {}).get("code") or "GLB").upper()
-        value = _safe_float(item.get("value"), 0.0)
+    for item in (data.get("results") or [])[:200]:
+        latest = item.get("latest") or {}
+        coords = _first_non_empty(item.get("coordinates"), latest.get("coordinates")) or {}
+        value = _safe_float(_first_non_empty(item.get("value"), latest.get("value")), 0.0)
         if value <= 0.0:
             continue
+        country = str(
+            _first_non_empty(
+                ((item.get("country") or {}).get("code") if isinstance(item.get("country"), dict) else None),
+                item.get("countryCode"),
+                item.get("country"),
+                "GLB",
+            )
+        ).upper()
         pollution_index = min(max(value / 75.0, 0.0), 1.0)
-        coords = item.get("coordinates") or {}
         rows.append(_signal("openaq", "air_quality_stress", pollution_index, 0.76, country=country, lat=coords.get("latitude"), lon=coords.get("longitude")))
     return rows, _health_row("openaq", "up", latency_ms, records=len(rows))
 
@@ -210,32 +257,33 @@ def _cisa_kev() -> tuple[list[dict[str, Any]], dict[str, Any]]:
 def _firms() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not FIRMS_MAP_KEY:
         return [], _health_row("firms", "down", 0.0, error="missing FIRMS_MAP_KEY", auth_failed=True)
-    started = time.perf_counter()
-    try:
-        response = requests.get(
-            f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{FIRMS_MAP_KEY}/VIIRS_SNPP_NRT/world/1",
-            timeout=25,
-        )
-        latency_ms = (time.perf_counter() - started) * 1000.0
-        if response.status_code >= 400:
-            return [], _health_row("firms", "down", latency_ms, error=f"HTTP {response.status_code}", auth_failed=response.status_code in (401, 403), rate_limited=response.status_code == 429)
-        text = response.text or ""
-        reader = csv.DictReader(io.StringIO(text))
-        rows = []
-        for item in reader:
-            if len(rows) >= 200:
-                break
-            lat = _safe_float(item.get("latitude"), 0.0)
-            lon = _safe_float(item.get("longitude"), 0.0)
-            frp = _safe_float(item.get("frp"), 0.0)
-            intensity = min(max(frp / 50.0, 0.15), 1.0)
-            rows.append(_signal("firms", "disaster_intensity", intensity, 0.8, country="GLB", lat=lat, lon=lon))
-        if not rows and text.strip():
-            return [], _health_row("firms", "down", latency_ms, error="no parseable FIRMS rows")
-        return rows, _health_row("firms", "up", latency_ms, records=len(rows))
-    except Exception as exc:
-        latency_ms = (time.perf_counter() - started) * 1000.0
-        return [], _health_row("firms", "down", latency_ms, error=str(exc))
+    response, latency_ms, error, status_code = _fetch_response(
+        f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{FIRMS_MAP_KEY}/VIIRS_SNPP_NRT/world/1",
+        headers={"Accept": "text/csv"},
+        timeout=25,
+    )
+    if error or response is None:
+        return [], _health_row("firms", "down", latency_ms, error=error, auth_failed=status_code in (401, 403), rate_limited=status_code == 429)
+
+    body = response.content.decode("utf-8-sig", errors="replace") if response.content else (response.text or "")
+    stripped = body.lstrip()
+    if stripped.startswith("{") or stripped.startswith("[") or stripped.startswith("<"):
+        preview = stripped.splitlines()[0][:180] if stripped else "unexpected FIRMS response"
+        return [], _health_row("firms", "down", latency_ms, error=preview)
+
+    reader = csv.DictReader(io.StringIO(body))
+    rows = []
+    for item in reader:
+        if len(rows) >= 200:
+            break
+        lat = _safe_float(item.get("latitude"), 0.0)
+        lon = _safe_float(item.get("longitude"), 0.0)
+        frp = _safe_float(item.get("frp"), 0.0)
+        intensity = min(max(frp / 50.0, 0.15), 1.0)
+        rows.append(_signal("firms", "disaster_intensity", intensity, 0.8, country="GLB", lat=lat, lon=lon))
+    if not rows and body.strip():
+        return [], _health_row("firms", "down", latency_ms, error="no parseable FIRMS rows")
+    return rows, _health_row("firms", "up", latency_ms, records=len(rows))
 
 
 def _noaa_cdo() -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -261,9 +309,22 @@ def _eia() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         params={"api_key": EIA_API_KEY},
         timeout=20,
     )
-    if error or not isinstance(data, dict):
-        return [], _health_row("eia", "down", latency_ms, error=error, auth_failed=status_code in (401, 403), rate_limited=status_code == 429)
-    observations = (((data.get("response") or {}).get("data")) or [])
+    observations = (((data.get("response") or {}).get("data")) or []) if isinstance(data, dict) else []
+    if (error or not observations) and status_code == 404:
+        data, latency_ms, error, status_code = _fetch_json(
+            "https://api.eia.gov/series/",
+            params={"api_key": EIA_API_KEY, "series_id": "PET.RWTC.D"},
+            timeout=20,
+        )
+        if isinstance(data, dict):
+            legacy_series = (data.get("series") or [])
+            legacy_points = legacy_series[0].get("data") if legacy_series else []
+            latest = legacy_points[0] if legacy_points else []
+            period = latest[0] if isinstance(latest, list) and len(latest) > 0 else None
+            value = latest[1] if isinstance(latest, list) and len(latest) > 1 else None
+            observations = [{"period": period, "value": value}] if value is not None else []
+    if error or not observations:
+        return [], _health_row("eia", "down", latency_ms, error=error or "no EIA observations", auth_failed=status_code in (401, 403), rate_limited=status_code == 429)
     latest = observations[0] if observations else {}
     price = _safe_float(latest.get("value"), 0.0)
     stress = min(max(price / 120.0, 0.0), 1.0) if price > 0 else 0.5
@@ -286,13 +347,22 @@ def _fred() -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 
 def _acled() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if not (ACLED_API_KEY and ACLED_EMAIL):
-        return [], _health_row("acled", "down", 0.0, error="missing ACLED_EMAIL/API_KEY", auth_failed=True)
+    if not (ACLED_ACCESS_TOKEN or (ACLED_API_KEY and ACLED_EMAIL)):
+        return [], _health_row("acled", "down", 0.0, error="missing ACLED_ACCESS_TOKEN or ACLED_EMAIL/API_KEY", auth_failed=True)
+
+    headers = {"Authorization": f"Bearer {ACLED_ACCESS_TOKEN}"} if ACLED_ACCESS_TOKEN else None
+    params = {"limit": 100, "event_date": _now_iso()[:10]}
+    if not ACLED_ACCESS_TOKEN:
+        params.update({"key": ACLED_API_KEY, "email": ACLED_EMAIL})
+
     data, latency_ms, error, status_code = _fetch_json(
-        "https://api.acleddata.com/acled/read",
-        params={"key": ACLED_API_KEY, "email": ACLED_EMAIL, "limit": 100, "event_date": _now_iso()[:10]},
+        "https://acleddata.com/api/acled/read",
+        params=params,
+        headers=headers,
         timeout=25,
     )
+    if (status_code in (401, 403)) and not ACLED_ACCESS_TOKEN:
+        return [], _health_row("acled", "down", latency_ms, error="missing ACLED_ACCESS_TOKEN", auth_failed=True)
     if error or not isinstance(data, dict):
         return [], _health_row("acled", "down", latency_ms, error=error, auth_failed=status_code in (401, 403), rate_limited=status_code == 429)
     rows = []

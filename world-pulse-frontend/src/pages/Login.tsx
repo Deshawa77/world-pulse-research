@@ -32,25 +32,31 @@ export default function Login() {
 
   return (
     <ProposalAuthLayout
-      eyebrow="Secure access"
-      title="Enter the operations console."
-      subtitle="Sign in to the platform that monitors global human behavior across social, news, financial, and environmental signals."
+      eyebrow="Secure Access"
+      title="Sign in to your intelligence workspace."
+      subtitle="Access live dashboards, forecasting modules, and operational monitoring from one secure console."
       bullets={[
-        "Role-based access supports researchers, policymakers, students, and administrators.",
-        "The dashboard is designed for live monitoring, historical evidence, and predictive interpretation.",
-        "Authentication protects operational analytics, alert workflows, and system governance views.",
+        "Role-based authentication controls access to sensitive analytics and administration workflows.",
+        "Session-based access keeps monitoring, prediction, and alerting tools within trusted user boundaries.",
+        "Designed for fast entry into live operational views without compromising security.",
       ]}
-      metrics={[{ label: "Latency target", value: "5-10s" }, { label: "Sources", value: "Cross-domain" }, { label: "Mode", value: "Live intelligence" }]}
+      metrics={[
+        { label: "Access Model", value: "Role-based" },
+        { label: "Data Mode", value: "Live + Historical" },
+        { label: "Workspace", value: "Operational" },
+      ]}
     >
       <h2>Sign in</h2>
-      <p>Use your registered account to access live dashboards, predictive intelligence, and scenario tools.</p>
+      <p>Use your registered credentials to enter the platform.</p>
       {error ? <div className="proposal-auth-error">{error}</div> : null}
       <form className="proposal-contact-form" onSubmit={handleSubmit}>
         <label>Email address<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Enter your email" required /></label>
         <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" required /></label>
-        <div className="proposal-form-actions"><button type="submit" className="proposal-button proposal-button-primary" disabled={loading}>{loading ? "Authenticating" : "Enter dashboard"}</button></div>
+        <div className="proposal-form-actions"><button type="submit" className="proposal-button proposal-button-primary" disabled={loading}>{loading ? "Authenticating" : "Sign in"}</button></div>
       </form>
       <div className="proposal-auth-links"><Link to="/register">Create account</Link><Link to="/forgot-password">Forgot password?</Link></div>
     </ProposalAuthLayout>
   );
 }
+
+

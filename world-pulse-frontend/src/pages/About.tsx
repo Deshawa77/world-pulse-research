@@ -1,110 +1,136 @@
 import { BookOpen, BriefcaseBusiness, Shield, Sparkles, Target } from "lucide-react";
-import ConsoleNavigation from "../components/ConsoleNavigation";
 import { ProposalPublicLayout, ProposalStatBoard } from "../components/ProposalShell";
 
-const teamMembers = [
-  ["E D Ethugala", "10965366", "Project lead / integration"],
-  ["K D Attanayake", "10965100", "Backend engineering"],
-  ["C T Weckasinghe", "10965637", "Data engineering"],
-  ["R D Rajapaksha", "10965292", "Machine learning"],
-  ["L V Randeniya", "10965520", "Frontend development"],
-  ["P G N Theekshana", "10965309", "NLP and sentiment analysis"],
-  ["M H C Mudunkothge", "10965120", "Security engineering"],
-  ["Y M V Gimhani", "10965223", "UI and UX design"],
-  ["R D A A Ranathunga", "10965512", "DevOps and deployment"],
+const creators = [
+  ["E D Ethugala", "Co-creator", "Platform architecture, system integration, and delivery leadership"],
+  ["Y M V Gimhani", "Co-creator", "Product design, UX strategy, and interface direction"],
 ] as const;
 
 const scope = [
-  { title: "Included", points: ["Live public data ingestion from social, news, financial, and weather sources", "NLP-based sentiment and trend analysis", "Interactive visual dashboard for global behavior patterns", "Predictive analytics for possible reaction and market shifts", "Secure and scalable data handling"] },
-  { title: "Excluded", points: ["Manual paperwork or manual data entry workflows", "Private medical or personal user data processing", "Narrow geopolitical consultancy systems", "High-frequency trading systems outside the proposal scope"] },
+  {
+    title: "Included",
+    points: [
+      "Live public data ingestion from social, news, financial, and weather sources",
+      "NLP-driven sentiment and trend analysis",
+      "Interactive dashboards for global behavioral and risk intelligence",
+      "Predictive analytics for short-term scenario forecasting",
+      "Role-based access and secure system operations",
+    ],
+  },
+  {
+    title: "Excluded",
+    points: [
+      "Private personal data processing",
+      "Manual data-entry workflows",
+      "Domain-specific advisory platforms outside global intelligence scope",
+      "Unregulated high-frequency trading automation",
+    ],
+  },
 ];
 
-const gaps = [
-  ["Knowledge gap", "Most current work stays inside one stream such as sentiment, markets, or environmental monitoring instead of examining combined human behavior."],
-  ["Technology gap", "There is no accessible cross-domain system in this project context that ingests live APIs, forecasts trends, and visualizes them for operational use."],
-  ["Methodological gap", "Static datasets miss fast-changing emotional and behavioral shifts around live world events."],
-  ["Contextual gap", "The project explicitly aims to make advanced real-time analytics more accessible to Sri Lankan students, analysts, and institutions."],
+const differentiators = [
+  [
+    "Cross-domain fusion",
+    "Most tools specialize in one stream. The World's Pulse combines behavioral, informational, market, and environmental signals in one model.",
+  ],
+  [
+    "Operational latency",
+    "The platform is optimized for timely interpretation with live ingestion and fast visualization loops.",
+  ],
+  [
+    "Decision-centered design",
+    "Outputs focus on actionable insights, not only charts, so teams can move from signal detection to response quickly.",
+  ],
+  [
+    "Secure collaboration",
+    "Built-in role segmentation helps technical and non-technical users work from one trusted intelligence layer.",
+  ],
 ] as const;
 
 export default function About() {
   return (
-    <>
-      <ConsoleNavigation
-        title={<>PROJECT <span>ABOUT</span></>}
-        subtitle="Project rationale, scope, and academic framing for The World's Pulse."
-      />
-      <ProposalPublicLayout
-        eyebrow="Module and rationale"
-        title="Why this project exists and what it promises to deliver."
-        subtitle="This proposal is framed as PUSL2021 coursework: The World's Pulse - Real-Time Global Human Behavior Intelligence. It combines data engineering, machine learning, visualization, and cybersecurity into one operational system."
-        aside={<ProposalStatBoard />}
-      >
-        <section className="proposal-section">
+    <ProposalPublicLayout
+      eyebrow="About The Platform"
+      title="A focused intelligence system for real-time global awareness."
+      subtitle="The World's Pulse is designed as a production-style platform that unifies live data, analytics, and forecasting for operational teams."
+      aside={<ProposalStatBoard />}
+    >
+      <section className="proposal-section">
         <div className="proposal-section-head">
           <div>
-            <span className="proposal-eyebrow">Coursework context</span>
-            <h2>Academic brief translated into a usable platform concept.</h2>
+            <span className="proposal-eyebrow">Platform profile</span>
+            <h2>From fragmented feeds to one operating picture.</h2>
           </div>
-          <p>The proposal centers on a real-time system that can observe the global reaction to major events, reduce data fragmentation, and provide actionable intelligence through live dashboards and forecasts.</p>
+          <p>
+            The system turns scattered public signals into a coherent intelligence workflow that supports monitoring, forecasting,
+            and evidence-based response planning.
+          </p>
         </div>
         <div className="proposal-grid-2">
-          <article className="proposal-card"><span className="proposal-card-kicker"><BookOpen size={14} /> Module</span><h3>PUSL2021 Computing Group Project</h3><p>Coursework title: The World's Pulse: Real-Time Global Human Behavior Intelligence.</p></article>
-          <article className="proposal-card"><span className="proposal-card-kicker"><BriefcaseBusiness size={14} /> Intended outcomes</span><h3>Decision support for public-good use cases</h3><p>The system is aimed at researchers, analysts, policymakers, NGOs, students, and administrators who need timely, evidence-backed visibility into global sentiment and reaction patterns.</p></article>
+          <article className="proposal-card">
+            <span className="proposal-card-kicker"><BookOpen size={14} /> Product focus</span>
+            <h3>Live global intelligence workflow</h3>
+            <p>Continuously track sentiment, topic movement, volatility, and environmental pressure through a unified analytics surface.</p>
+          </article>
+          <article className="proposal-card">
+            <span className="proposal-card-kicker"><BriefcaseBusiness size={14} /> Business value</span>
+            <h3>Faster decisions with stronger context</h3>
+            <p>Support analysts, planners, and operations teams with timely, explainable insights across multiple signal domains.</p>
+          </article>
         </div>
-        </section>
+      </section>
 
-        <section className="proposal-section">
+      <section className="proposal-section">
         <div className="proposal-section-head">
-          <div><span className="proposal-eyebrow">Project objectives</span><h2>Five commitments that shape the platform.</h2></div>
-          <p>These objectives anchor the product direction: integrated ingestion, live processing, visualization, predictive insights, and secure scale.</p>
+          <div><span className="proposal-eyebrow">Core commitments</span><h2>What the platform is built to deliver.</h2></div>
+          <p>These design commitments define product quality, reliability, and operational usefulness.</p>
         </div>
         <div className="proposal-grid-3">
-          <article className="proposal-card"><span className="proposal-card-kicker"><Target size={14} /> Objective 01</span><h3>Combine multi-source data</h3><p>Bring social media, news, finance, and environmental APIs into one coherent analytics pipeline.</p></article>
-          <article className="proposal-card"><span className="proposal-card-kicker"><Sparkles size={14} /> Objective 02</span><h3>Run real-time processing</h3><p>Filter noise, analyze sentiment, detect trends, and update dashboards fast enough to matter operationally.</p></article>
-          <article className="proposal-card"><span className="proposal-card-kicker"><Shield size={14} /> Objective 03</span><h3>Forecast and secure</h3><p>Use predictive models, secure data paths, and scalable storage without drifting outside public-data scope.</p></article>
+          <article className="proposal-card"><span className="proposal-card-kicker"><Target size={14} /> Commitment 01</span><h3>Integrate critical data streams</h3><p>Bring social, news, market, and weather signals into one consistent intelligence model.</p></article>
+          <article className="proposal-card"><span className="proposal-card-kicker"><Sparkles size={14} /> Commitment 02</span><h3>Deliver low-latency analytics</h3><p>Provide near real-time processing and interpretation for fast-changing events.</p></article>
+          <article className="proposal-card"><span className="proposal-card-kicker"><Shield size={14} /> Commitment 03</span><h3>Secure and scale responsibly</h3><p>Protect operational usage with role controls, governance visibility, and scalable architecture.</p></article>
         </div>
-        </section>
+      </section>
 
-        <section className="proposal-section">
+      <section className="proposal-section">
         <div className="proposal-section-head">
-          <div><span className="proposal-eyebrow">Research gap</span><h2>The proposal is justified by what current systems fail to integrate.</h2></div>
-          <p>The platform concept is strongest when it is explicit about its gap: current tools fragment behavior, context, and predictive understanding.</p>
+          <div><span className="proposal-eyebrow">Differentiation</span><h2>Why this platform is different.</h2></div>
+          <p>The value comes from integration, speed, and practical decision support rather than isolated visual analytics.</p>
         </div>
         <div className="proposal-gap-grid">
-          {gaps.map(([title, text]) => (
-            <article key={title} className="proposal-card"><span className="proposal-card-kicker">Gap</span><h3>{title}</h3><p>{text}</p></article>
+          {differentiators.map(([title, text]) => (
+            <article key={title} className="proposal-card"><span className="proposal-card-kicker">Advantage</span><h3>{title}</h3><p>{text}</p></article>
           ))}
         </div>
-        </section>
+      </section>
 
-        <section className="proposal-section">
+      <section className="proposal-section">
         <div className="proposal-section-head">
-          <div><span className="proposal-eyebrow">Scope</span><h2>Clear boundaries keep the project academically coherent.</h2></div>
-          <p>The proposal is broad, but it is not unlimited. Included and excluded scope need to stay visible throughout design and implementation.</p>
+          <div><span className="proposal-eyebrow">Scope</span><h2>Clear boundaries for disciplined delivery.</h2></div>
+          <p>Scope clarity keeps the platform useful, maintainable, and aligned with real operational outcomes.</p>
         </div>
         <div className="proposal-scope-grid">
           {scope.map((area) => (
             <article key={area.title} className="proposal-card">
               <span className="proposal-card-kicker">{area.title}</span>
-              <h3>{area.title === "Included" ? "Within delivery scope" : "Outside delivery scope"}</h3>
+              <h3>{area.title === "Included" ? "Within product scope" : "Outside product scope"}</h3>
               <ul className="proposal-list">{area.points.map((point) => <li key={point}>{point}</li>)}</ul>
             </article>
           ))}
         </div>
-        </section>
+      </section>
 
-        <section className="proposal-section">
+      <section className="proposal-section">
         <div className="proposal-section-head">
-          <div><span className="proposal-eyebrow">Team</span><h2>Nine members, one interdisciplinary build.</h2></div>
-          <p>The group structure reflects the proposal itself: software engineering, data engineering, machine learning, frontend delivery, security, and operations all have visible ownership.</p>
+          <div><span className="proposal-eyebrow">Creators</span><h2>Built by a focused founding team.</h2></div>
+          <p>The platform was created by two contributors with complementary technical and product strengths.</p>
         </div>
         <div className="proposal-people-grid">
-          {teamMembers.map(([name, id, role]) => (
-            <article key={id} className="proposal-card proposal-team-card"><span className="proposal-card-kicker">Student {id}</span><h3>{name}</h3><p>{role}</p></article>
+          {creators.map(([name, title, role]) => (
+            <article key={name} className="proposal-card proposal-team-card"><span className="proposal-card-kicker">{title}</span><h3>{name}</h3><p>{role}</p></article>
           ))}
         </div>
-        </section>
-      </ProposalPublicLayout>
-    </>
+      </section>
+    </ProposalPublicLayout>
   );
 }

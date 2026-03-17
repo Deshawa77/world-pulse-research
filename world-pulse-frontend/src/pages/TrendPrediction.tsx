@@ -232,6 +232,13 @@ function filterLogsForTimeframe(logs: PredictionLog[], timeframe: Timeframe): Pr
       return aTs - bTs;
     });
 }
+function toPredictionUnit(prediction: unknown, probability: unknown, fallback = 0.5): number {
+  const pred = safeN(prediction, fallback);
+  const probUnit = normalizeUnitValue(probability, fallback);
+  // Many logs store class labels (0/1) as prediction; use probability for trajectory in that case.
+  if (pred === 0 || pred === 1) return probUnit;
+  return normalizeUnitValue(pred, probUnit);
+}
 function computePearsonCorrelation(a: number[], b: number[]): number | null {
   const n = Math.min(a.length, b.length);
   if (n < 2) return null;
@@ -364,6 +371,8 @@ export default function TrendPrediction() {
     models: [],
     disagreement: [],
     calibrationTrend: [],
+    calibrationTrendByModel: {},
+    selectedCalibrationModel: undefined,
   });
   const [riskMap, setRiskMap] = useState<RiskMapPoint[]>([]);
   const [historicalData, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
@@ -614,7 +623,7 @@ export default function TrendPrediction() {
         );
       } else {
         console.error("Governance load failed:", governanceResult.reason);
-        setGovernanceData({ models: [], disagreement: [], calibrationTrend: [] });
+        setGovernanceData({ models: [], disagreement: [], calibrationTrend: [], calibrationTrendByModel: {}, selectedCalibrationModel: undefined });
         setModelEnsemble([]);
       }
 
@@ -755,7 +764,7 @@ export default function TrendPrediction() {
         const ts = parseTimestampMs(log.timestamp);
         return {
           label: ts !== null ? new Date(ts).toLocaleString() : `Point ${idx + 1}`,
-          prediction: normalizeUnitValue(log.prediction),
+          prediction: toPredictionUnit(log.prediction, log.probability, 0.5),
           probabilityPct: normalizeUnitValue(log.probability, 0.5) * 100,
         };
       });
@@ -777,7 +786,7 @@ export default function TrendPrediction() {
       const ts = parseTimestampMs(activePredictionData.timestamp);
       return [{
         label: ts !== null ? new Date(ts).toLocaleString() : "Current",
-        prediction: normalizeUnitValue(activePredictionData.prediction),
+        prediction: toPredictionUnit(activePredictionData.prediction, activePredictionData.probability, 0.5),
         probabilityPct: normalizeUnitValue(activePredictionData.probability, 0.5) * 100,
       }];
     }
@@ -787,9 +796,7 @@ export default function TrendPrediction() {
       prediction: 0.5,
       probabilityPct: 50,
     }];
-  }, [visiblePredictionLogs, visibleHistoricalData, activePredictionData]);
-
-  // Render ML Prediction Chart
+  }, [visiblePredictionLogs, visibleHistoricalData, activePredictionData]);  // Render ML Prediction Chart
   useEffect(() => {
     if (!mlChartRef.current || !plotlyRef.current || !plotlyReady) return;
     if (!mlSeries.length) return;
@@ -858,6 +865,7 @@ export default function TrendPrediction() {
     });
   }, [mlSeries, plotlyReady]);
 
+
   // Render Sentiment Forecast Chart
   useEffect(() => {
     if (!sentimentChartRef.current || !activeSentimentForecast || !plotlyRef.current || !plotlyReady) return;
@@ -871,16 +879,9 @@ export default function TrendPrediction() {
     const forecastData = [
       {
         x: ["Current", "1h Forecast", "6h Forecast", "24h Forecast"],
-        y: [
-          currentSentiment,
-          forecast1h,
-          forecast6h,
-          forecast24h,
-        ],
+        y: [currentSentiment, forecast1h, forecast6h, forecast24h],
         type: "bar",
-        marker: {
-          color: ["#22d3ee", "#60a5fa", "#818cf8", "#a78bfa"],
-        },
+        marker: { color: ["#22d3ee", "#60a5fa", "#818cf8", "#a78bfa"] },
         text: [
           currentSentiment.toFixed(1),
           forecast1h.toFixed(1),
@@ -918,8 +919,7 @@ export default function TrendPrediction() {
       responsive: true,
     });
   }, [activeSentimentForecast, plotlyReady]);
-
-    // Render Market Reaction Chart
+  // Render Market Reaction Chart
   useEffect(() => {
     if (!marketChartRef.current || !activeMarketReactions.length || !plotlyRef.current || !plotlyReady) return;
 
@@ -944,21 +944,19 @@ export default function TrendPrediction() {
         x: labels,
         y: cryptoReactions,
         type: "scatter",
-        mode: "lines+markers",
+        mode: "markers",
         name: "Crypto Reaction %",
         marker: { color: "#f472b6", size: 7 },
-        line: { color: "#f472b6", width: 2 },
         yaxis: "y2",
       },
       {
         x: labels,
         y: stockReactions,
         type: "scatter",
-        mode: "lines+markers",
+        mode: "markers",
         name: "Stock Reaction %",
         marker: { color: "#a3e635", size: 7 },
-        line: { color: "#a3e635", width: 2 },
-        yaxis: "y2",
+        yaxis: "y3",
       },
     ];
 
@@ -980,20 +978,34 @@ export default function TrendPrediction() {
         title: "Sentiment Impact",
         gridcolor: "rgba(146,170,210,0.2)",
         tickfont: { color: "#9fb0cf" },
+        zeroline: false,
       },
       yaxis2: {
-        title: "Crypto/Stock Reaction %",
+        title: "Crypto Reaction %",
         overlaying: "y",
         side: "right",
+        anchor: "free",
+        position: 0.92,
         showgrid: false,
-        tickfont: { color: "#9fb0cf" },
+        zeroline: false,
+        tickfont: { color: "#f472b6" },
+      },
+      yaxis3: {
+        title: "Stock Reaction %",
+        overlaying: "y",
+        side: "right",
+        anchor: "free",
+        position: 1.0,
+        showgrid: false,
+        zeroline: false,
+        tickfont: { color: "#a3e635" },
       },
       legend: {
         font: { color: "#9fb0cf" },
         x: 0.02,
         y: 0.98,
       },
-      margin: { t: 50, r: 56, b: 90, l: 60 },
+      margin: { t: 50, r: 100, b: 90, l: 60 },
     };
 
     plotlyRef.current.react(marketChartRef.current, data, layout, {
@@ -1180,6 +1192,8 @@ export default function TrendPrediction() {
     const avgFallback = activeMarketReactions.reduce((acc, row) => acc + safeN(row.correlation_strength), 0) / activeMarketReactions.length;
     return Number.isFinite(avgFallback) ? avgFallback : null;
   }, [activeMarketReactions]);
+  const featureMaxAbs = useMemo(() => Math.max(0.001, ...activeFeatureVector.map((v) => Math.abs(safeN(v)))), [activeFeatureVector]);
+
   const hasMlData = mlSeries.length > 0;
   const hasFeatureData = playbackActive ? activeFeatureVector.length >= 7 : latestFeaturesLoaded;
   const hasSentimentData = Boolean(activeSentimentForecast);
@@ -1432,26 +1446,29 @@ export default function TrendPrediction() {
           />
           {hasFeatureData ? (
             <div className="feature-importance">
-              {activeFeatureVector.map((value, idx) => (
-                <div key={idx} className="feature-bar">
-                  <div className="wp-mini-meta">
-                    <span>{FEATURE_NAMES[idx]}</span>
-                    <span>{value.toFixed(3)}</span>
+              {activeFeatureVector.map((value, idx) => {
+                const safeValue = safeN(value);
+                return (
+                  <div key={idx} className="feature-bar">
+                    <div className="wp-mini-meta">
+                      <span>{FEATURE_NAMES[idx] || `Feature ${idx + 1}`}</span>
+                      <span>{safeValue.toFixed(3)}</span>
+                    </div>
+                    <div className="importance-track">
+                      <div
+                        className="importance-fill"
+                        style={{
+                          width: `${Math.max(6, Math.min(100, (Math.abs(safeValue) / featureMaxAbs) * 100))}%`,
+                          background:
+                            safeValue > 0
+                              ? "linear-gradient(90deg, #22d3ee, #60a5fa)"
+                              : "linear-gradient(90deg, #ef4444, #f87171)",
+                        }}
+                      />
+                    </div>
                   </div>
-                  <div className="importance-track">
-                    <div
-                      className="importance-fill"
-                      style={{
-                        width: `${Math.min(100, Math.abs(value) * 50)}%`,
-                        background:
-                          value > 0
-                            ? "linear-gradient(90deg, #22d3ee, #60a5fa)"
-                            : "linear-gradient(90deg, #ef4444, #f87171)",
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="prediction-empty">
@@ -1669,3 +1686,21 @@ export default function TrendPrediction() {
     </main>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

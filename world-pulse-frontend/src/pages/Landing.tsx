@@ -2,68 +2,92 @@ import { Link } from "react-router-dom";
 import { ArrowRight, BrainCircuit, Globe2, ShieldCheck, TimerReset, Users } from "lucide-react";
 import { ProposalPublicLayout, ProposalStatBoard } from "../components/ProposalShell";
 
-const objectives = [
-  { title: "Combine multi-source data", text: "Fuse social, news, financial, and environmental streams into one operational picture instead of isolated dashboards.", icon: Globe2 },
-  { title: "Process live behavior signals", text: "Apply NLP, sentiment analysis, filtering, and trend extraction on incoming data within a practical monitoring window.", icon: TimerReset },
-  { title: "Deliver predictive intelligence", text: "Turn raw behavior signals into forecasts, alerts, and decision support for crisis response and long-range monitoring.", icon: BrainCircuit },
-  { title: "Keep it secure and usable", text: "Support researchers, policy teams, students, and administrators with scalable, secure, role-aware access.", icon: ShieldCheck },
+const capabilities = [
+  {
+    title: "Unified signal intelligence",
+    text: "Correlate social sentiment, news velocity, market movement, and weather pressure in one operating view.",
+    icon: Globe2,
+  },
+  {
+    title: "Live monitoring pipeline",
+    text: "Process incoming streams with low-latency enrichment and trend detection for faster situational awareness.",
+    icon: TimerReset,
+  },
+  {
+    title: "Predictive risk analytics",
+    text: "Use model-backed projections to anticipate short-term shifts and prepare response scenarios.",
+    icon: BrainCircuit,
+  },
+  {
+    title: "Secure access control",
+    text: "Enable trusted usage with role-based permissions, governance visibility, and controlled administration.",
+    icon: ShieldCheck,
+  },
 ];
 
-const stakeholders = ["Researchers / Analysts", "Policy Makers / NGO", "Students / Educators", "Developers / Admin"];
-const timeline = [
-  { phase: "January", focus: "Requirements, literature review, architecture, dashboard planning" },
-  { phase: "February", focus: "Backend pipelines, preprocessing, NLP, predictive models, security, dashboard integration" },
-  { phase: "March", focus: "Testing, feedback, documentation, presentation, and final submission" },
+const audiences = [
+  "Research & Intelligence Teams",
+  "Operations & Risk Units",
+  "Policy & Humanitarian Organizations",
+  "Academic and Technical Users",
+];
+
+const valuePillars = [
+  {
+    title: "Detect",
+    text: "Spot emerging disruptions and narrative shifts as they happen.",
+  },
+  {
+    title: "Understand",
+    text: "Analyze cross-domain signals with context-rich visual intelligence.",
+  },
+  {
+    title: "Act",
+    text: "Convert insights into rapid, evidence-backed operational decisions.",
+  },
 ];
 
 export default function Landing() {
   return (
     <ProposalPublicLayout
-      eyebrow="Proposal concept"
-      title="Real-time global human behavior intelligence."
-      subtitle="The World's Pulse is a cross-domain analytics platform designed to capture how societies, markets, media, and environmental systems react to major global events in one live operating picture."
+      eyebrow="Enterprise Intelligence"
+      title="Professional-grade global signal intelligence."
+      subtitle="The World's Pulse provides a real-time command surface for monitoring sentiment, risk, and macro behavior across critical public data streams."
       aside={<ProposalStatBoard />}
       cta={
         <>
-          <Link to="/register" className="proposal-button proposal-button-primary">Open the platform <ArrowRight size={16} /></Link>
-          <Link to="/about" className="proposal-button proposal-button-ghost">Read the proposal</Link>
+          <Link to="/register" className="proposal-button proposal-button-primary">
+            Get Started <ArrowRight size={16} />
+          </Link>
+          <Link to="/about" className="proposal-button proposal-button-ghost">Learn More</Link>
         </>
       }
     >
       <section className="proposal-section">
         <div className="proposal-section-head">
           <div>
-            <span className="proposal-eyebrow">Problem statement</span>
-            <h2>Fragmented signals hide the real human response.</h2>
+            <span className="proposal-eyebrow">Strategic challenge</span>
+            <h2>Critical signals are fragmented when speed matters most.</h2>
           </div>
-          <p>Existing tools usually monitor one domain at a time. Social sentiment, market reactions, search behavior, headlines, and weather alerts stay disconnected even when the same event drives them all.</p>
-        </div>
-        <div className="proposal-grid-2">
-          <article className="proposal-card">
-            <span className="proposal-card-kicker">Current gap</span>
-            <h3>No unified behavioral intelligence layer</h3>
-            <p>When disasters, pandemics, political instability, or economic shocks occur, organizations often need to piece together multiple dashboards manually before they can understand the global mood and likely consequences.</p>
-          </article>
-          <article className="proposal-card">
-            <span className="proposal-card-kicker">World's Pulse answer</span>
-            <h3>One dashboard, many streams, faster interpretation</h3>
-            <p>The platform turns fragmented public signals into live dashboards, predictive models, and historical evidence that can support researchers, humanitarian actors, and policy teams.</p>
-          </article>
+          <p>
+            Teams often jump between disconnected tools to understand fast-moving events. The World's Pulse centralizes those signals
+            into one clear, operationally usable intelligence workspace.
+          </p>
         </div>
       </section>
 
       <section className="proposal-section">
         <div className="proposal-section-head">
           <div>
-            <span className="proposal-eyebrow">Core objectives</span>
-            <h2>Built directly from the proposal requirements.</h2>
+            <span className="proposal-eyebrow">Core capabilities</span>
+            <h2>Built for continuous monitoring and decision support.</h2>
           </div>
-          <p>The design is not generic product marketing. Each area maps to the project scope, expected outcomes, and non-functional targets described in the coursework proposal.</p>
+          <p>Each capability is designed to improve response quality, reduce blind spots, and accelerate analysis-to-action workflows.</p>
         </div>
         <div className="proposal-grid-2">
-          {objectives.map(({ title, text, icon: Icon }) => (
+          {capabilities.map(({ title, text, icon: Icon }) => (
             <article key={title} className="proposal-card">
-              <span className="proposal-card-kicker"><Icon size={14} /> Objective</span>
+              <span className="proposal-card-kicker"><Icon size={14} /> Capability</span>
               <h3>{title}</h3>
               <p>{text}</p>
             </article>
@@ -74,14 +98,14 @@ export default function Landing() {
       <section className="proposal-section">
         <div className="proposal-section-head">
           <div>
-            <span className="proposal-eyebrow">Primary users</span>
-            <h2>Made for evidence-based action, not passive charts.</h2>
+            <span className="proposal-eyebrow">Designed for</span>
+            <h2>Multi-disciplinary teams that need clarity under pressure.</h2>
           </div>
-          <p>The interface has to support both technical and non-technical users who need clarity, not just visual spectacle.</p>
+          <p>From analysts to operators, the platform aligns technical depth with clear decision-ready outputs.</p>
         </div>
         <div className="proposal-audience-row">
-          {stakeholders.map((stakeholder) => (
-            <span key={stakeholder} className="proposal-audience-pill"><Users size={14} /> {stakeholder}</span>
+          {audiences.map((audience) => (
+            <span key={audience} className="proposal-audience-pill"><Users size={14} /> {audience}</span>
           ))}
         </div>
       </section>
@@ -89,16 +113,16 @@ export default function Landing() {
       <section className="proposal-section">
         <div className="proposal-section-head">
           <div>
-            <span className="proposal-eyebrow">Delivery rhythm</span>
-            <h2>Requirements in January, systems in February, validation in March.</h2>
+            <span className="proposal-eyebrow">Value delivery</span>
+            <h2>Detect. Understand. Act.</h2>
           </div>
-          <p>The page structure reflects the proposal timeline: analysis first, then architecture and implementation, then testing, documentation, and submission.</p>
+          <p>A practical intelligence cycle that supports both live operations and long-horizon planning.</p>
         </div>
         <div className="proposal-grid-3">
-          {timeline.map((item) => (
-            <article key={item.phase} className="proposal-card">
-              <span className="proposal-card-kicker">{item.phase}</span>
-              <h3>{item.focus}</h3>
+          {valuePillars.map((pillar) => (
+            <article key={pillar.title} className="proposal-card">
+              <span className="proposal-card-kicker">{pillar.title}</span>
+              <h3>{pillar.text}</h3>
             </article>
           ))}
         </div>

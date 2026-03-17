@@ -302,6 +302,8 @@ export type GovernanceData = {
   models: Array<{ name: string; latencyMs: number; calibration: number; driftHint: string; vote?: number; confidence?: number }>;
   disagreement: Array<{ left: string; right: string; value: number }>;
   calibrationTrend: Array<{ timestamp: string; value: number }>;
+  calibrationTrendByModel: Record<string, Array<{ timestamp: string; value: number }>>;
+  selectedCalibrationModel?: string;
 };
 
 export type AlertActionPayload = {
@@ -485,7 +487,7 @@ const normalizeCountryDrilldown = (value: unknown, fallbackCountry: string): Cou
 
 const normalizeGovernanceData = (value: unknown): GovernanceData => {
   if (!isRecord(value)) {
-    return { models: [], disagreement: [], calibrationTrend: [] };
+    return { models: [], disagreement: [], calibrationTrend: [], calibrationTrendByModel: {}, selectedCalibrationModel: undefined };
   }
 
   const models = Array.isArray(value.models)
@@ -520,10 +522,34 @@ const normalizeGovernanceData = (value: unknown): GovernanceData => {
         }))
     : [];
 
+  const calibrationTrendByModel = isRecord(value.calibrationTrendByModel)
+    ? Object.fromEntries(
+        Object.entries(value.calibrationTrendByModel)
+          .filter((entry): entry is [string, unknown] => typeof entry[0] === "string")
+          .map(([modelName, trend]) => [
+            modelName,
+            Array.isArray(trend)
+              ? trend
+                  .filter(isRecord)
+                  .map((entry) => ({
+                    timestamp: toValidTimestamp(entry.timestamp, new Date().toISOString()),
+                    value: toFiniteNumber(entry.value),
+                  }))
+              : [],
+          ]),
+      )
+    : {};
+
+  const selectedCalibrationModel = typeof value.selectedCalibrationModel === "string"
+    ? value.selectedCalibrationModel
+    : undefined;
+
   return {
     models,
     disagreement,
     calibrationTrend,
+    calibrationTrendByModel,
+    selectedCalibrationModel,
   };
 };
 
@@ -1568,6 +1594,7 @@ export async function runPolicyReplay(
   );
   return res.data as PolicyReplayResponse;
 }
+
 
 
 

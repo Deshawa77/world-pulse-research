@@ -85,29 +85,29 @@ export default function Register() {
 
   return (
     <ProposalAuthLayout
-      eyebrow="Onboarding"
-      title="Register for the intelligence workspace."
-      subtitle="Sign up as a user by default, or register as admin using a valid invite code configured by the team."
+      eyebrow="Workspace Onboarding"
+      title="Create your World's Pulse account."
+      subtitle="Set up secure access to the intelligence platform with the role and profile that fits your responsibilities."
       bullets={[
-        "Researchers and analysts need filtering, evidence, and historical visibility.",
-        "Policy and NGO users need rapid clarity after major events and crises.",
-        "Students and educators need a simplified but credible global behavior view.",
+        "Choose a profile aligned to your primary workflow, from research to operational monitoring.",
+        "Use admin registration only with an authorized invite code.",
+        "All accounts are provisioned for secure, role-aware access across platform features.",
       ]}
       metrics={[
-        { label: "Access tiers", value: "Admin + User" },
-        { label: "User profiles", value: "4" },
-        { label: "Architecture", value: "Secure + scalable" },
+        { label: "Access Tiers", value: "User + Admin" },
+        { label: "Profile Types", value: "4" },
+        { label: "Security", value: "Invite-controlled" },
       ]}
     >
       <h2>Create account</h2>
-      <p>Provision access for the live dashboard, prediction workspace, historical analysis, and scenario simulation.</p>
+      <p>Complete the form below to activate your workspace access.</p>
       {error ? <div className="proposal-auth-error">{error}</div> : null}
       {success ? <div className="proposal-auth-success">{success}</div> : null}
       <form className="proposal-contact-form" onSubmit={handleSubmit}>
         <label>Full name<input name="name" value={formData.name} onChange={handleChange} placeholder="Enter your full name" required /></label>
         <div className="proposal-field-grid">
           <label>Email address<input name="email" type="email" value={formData.email} onChange={handleChange} placeholder="Enter your email" required /></label>
-          <label>Organization<input name="organization" value={formData.organization} onChange={handleChange} placeholder="University, NGO, agency..." /></label>
+          <label>Organization<input name="organization" value={formData.organization} onChange={handleChange} placeholder="Company, university, NGO..." /></label>
         </div>
         <div className="proposal-field-grid">
           <label>Password<input name="password" type="password" value={formData.password} onChange={handleChange} placeholder="Create a password" required /></label>

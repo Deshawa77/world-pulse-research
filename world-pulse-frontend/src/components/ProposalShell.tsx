@@ -29,7 +29,7 @@ type AuthLayoutProps = {
 
 const publicLinks = [
   { to: "/", label: "Home" },
-  { to: "/about", label: "Proposal" },
+  { to: "/about", label: "About" },
   { to: "/contact", label: "Contact" },
 ];
 
@@ -40,7 +40,7 @@ function ProposalBrand() {
         <Activity className="proposal-brand-icon" />
       </div>
       <div>
-        <span className="proposal-brand-kicker">PUSL2021 Computing Group Project</span>
+        <span className="proposal-brand-kicker">AI-Powered Global Intelligence Platform</span>
         <strong>The World's Pulse</strong>
       </div>
     </Link>
@@ -88,10 +88,10 @@ export function ProposalFooter() {
           <h2>One operating picture for social, news, finance, weather, and predictive signals.</h2>
         </div>
         <div className="proposal-footer-meta">
-          <span>Researchers</span>
-          <span>Policy / NGO</span>
-          <span>Students</span>
-          <span>Developers / Admin</span>
+          <span>Created by E D Ethugala</span>
+          <span>and Y M V Gimhani</span>
+          <span>Role-based Access</span>
+          <span>Live Decision Support</span>
         </div>
       </div>
     </footer>
@@ -150,7 +150,7 @@ export function ProposalAuthLayout({
               </div>
               <div className="proposal-auth-signal">
                 <BrainCircuit size={18} />
-                <span>Predictive intelligence for public-good decisions</span>
+                <span>Predictive intelligence for operational decisions</span>
               </div>
               <div className="proposal-auth-signal">
                 <ShieldCheck size={18} />
@@ -168,7 +168,7 @@ export function ProposalAuthLayout({
               </div>
             ) : null}
             <div className="proposal-auth-list-card">
-              <h2>Why this platform exists</h2>
+              <h2>Platform value</h2>
               <ul>
                 {bullets.map((bullet) => (
                   <li key={bullet}>{bullet}</li>
@@ -188,7 +188,7 @@ export function ProposalStatBoard() {
     <div className="proposal-stat-board">
       <div className="proposal-stat-board-head">
         <span className="proposal-eyebrow">System framing</span>
-        <h2>Proposal operating model</h2>
+        <h2>Platform operating model</h2>
       </div>
       <div className="proposal-stat-grid">
         <div className="proposal-stat-card">

@@ -18,6 +18,21 @@ export default function ModelGovernance({ data }: Props) {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    if (selectedModel && data.models.some((m) => m.name === selectedModel)) {
+      return;
+    }
+
+    const preferred = data.selectedCalibrationModel;
+    const hasPreferred = preferred ? data.models.some((m) => m.name === preferred) : false;
+    if (hasPreferred) {
+      setSelectedModel(preferred as string);
+      return;
+    }
+
+    setSelectedModel(data.models[0]?.name ?? null);
+  }, [data.models, data.selectedCalibrationModel, selectedModel]);
+
   // Radar chart for model performance
   useEffect(() => {
     let closed = false;
@@ -110,6 +125,24 @@ export default function ModelGovernance({ data }: Props) {
     if (drift < 0.3) return "MONITOR";
     return "ALERT";
   };
+
+  const trendModelName = selectedModel && data.models.some((m) => m.name === selectedModel)
+    ? selectedModel
+    : data.selectedCalibrationModel && data.models.some((m) => m.name === data.selectedCalibrationModel)
+      ? data.selectedCalibrationModel
+      : data.models[0]?.name;
+
+  const trendSeries = trendModelName
+    ? data.calibrationTrendByModel[trendModelName] ?? data.calibrationTrend
+    : data.calibrationTrend;
+
+  const trendCurrent = trendSeries[trendSeries.length - 1]?.value ?? 0;
+  const trendAverage = trendSeries.length > 0
+    ? trendSeries.reduce((sum, point) => sum + point.value, 0) / trendSeries.length
+    : 0;
+  const trendIsUp = trendSeries.length > 1
+    ? trendCurrent >= (trendSeries[0]?.value ?? trendCurrent)
+    : true;
 
   return (
     <div className="futuristic-governance">
@@ -230,7 +263,8 @@ export default function ModelGovernance({ data }: Props) {
           <div className="section-label">Model Disagreement Matrix</div>
           <div className="disagreement-heatmap">
             {data.disagreement.map((d) => {
-              const intensity = Math.min(1, d.value);
+              const maxDisagreement = Math.max(...data.disagreement.map((entry) => entry.value), 0.0001);
+              const intensity = Math.min(1, d.value / maxDisagreement);
               const heatColor = intensity > 0.7 ? "#ff0040" : intensity > 0.4 ? "#ff9500" : "#00f5ff";
 
               return (
@@ -243,7 +277,7 @@ export default function ModelGovernance({ data }: Props) {
                   }}
                 >
                   <div className="cell-models">
-                    {d.left} <span style={{ color: heatColor }}>↔</span> {d.right}
+                    {d.left} <span style={{ color: heatColor }}>&lt;-&gt;</span> {d.right}
                   </div>
                   <div className="cell-value" style={{ color: heatColor }}>
                     {(d.value * 100).toFixed(1)}%
@@ -263,20 +297,40 @@ export default function ModelGovernance({ data }: Props) {
       )}
 
       {/* Calibration Trend */}
-      {data.calibrationTrend.length > 0 && (
+      {trendSeries.length > 0 && (
         <div className="governance-trend">
           <div className="section-label">Calibration Trend</div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "#9bb7d9", fontSize: 12 }}>
+              Model
+              <select
+                value={trendModelName ?? ""}
+                onChange={(e) => setSelectedModel(e.target.value || null)}
+                style={{
+                  background: "rgba(0, 20, 50, 0.8)",
+                  border: "1px solid rgba(0, 245, 255, 0.35)",
+                  color: "#d4f1ff",
+                  padding: "4px 8px",
+                  borderRadius: 6,
+                }}
+              >
+                {data.models.map((m) => (
+                  <option key={m.name} value={m.name}>{m.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="trend-stats">
             <div className="trend-stat">
               <div className="stat-label">Current</div>
               <div className="stat-value" style={{ color: "#00ff88" }}>
-                {(data.calibrationTrend[data.calibrationTrend.length - 1]?.value * 100).toFixed(1)}%
+                {(trendCurrent * 100).toFixed(1)}%
               </div>
             </div>
             <div className="trend-stat">
               <div className="stat-label">Average</div>
               <div className="stat-value" style={{ color: "#00f5ff" }}>
-                {((data.calibrationTrend.reduce((a, b) => a + b.value, 0) / data.calibrationTrend.length) * 100).toFixed(1)}%
+                {(trendAverage * 100).toFixed(1)}%
               </div>
             </div>
             <div className="trend-stat">
@@ -284,15 +338,15 @@ export default function ModelGovernance({ data }: Props) {
               <div
                 className="stat-value"
                 style={{
-                  color: data.calibrationTrend[data.calibrationTrend.length - 1]?.value > data.calibrationTrend[0]?.value ? "#00ff88" : "#ff0040",
+                  color: trendIsUp ? "#00ff88" : "#ff0040",
                 }}
               >
-                {data.calibrationTrend[data.calibrationTrend.length - 1]?.value > data.calibrationTrend[0]?.value ? "↗" : "↘"}
+                {trendIsUp ? "UP" : "DOWN"}
               </div>
             </div>
           </div>
           <div className="trend-sparkline">
-            {data.calibrationTrend.slice(-20).map((point, i) => {
+            {trendSeries.slice(-20).map((point, i) => {
               const height = Math.max(4, point.value * 40);
               const isHigh = point.value > 0.85;
               return (
@@ -314,3 +368,10 @@ export default function ModelGovernance({ data }: Props) {
     </div>
   );
 }
+
+
+
+
+
+
+

@@ -559,9 +559,16 @@ export default function Dashboard() {
   const qualityGateRollout = (qualityGate?.rollout ?? {}) as Record<string, unknown>;
   const qualityGateShadowMode = Boolean(qualityGateRollout.shadow_mode);
   const qualityGateDisplayActive = qualityGateActive && !qualityGateShadowMode;
-  const qualityGateMessage = typeof qualityGate?.message === "string" ? qualityGate.message : "Reliability advisory";
+  const qualityGateMessage = typeof qualityGate?.message === "string"
+    ? qualityGate.message
+    : (qualityGateActive ? "Reliability advisory" : "Coverage healthy");
   const qualityGateReasons = Array.isArray(qualityGate?.reasons) ? qualityGate.reasons.filter((x): x is string => typeof x === "string") : [];
   const qualityGateFreshnessPct = (safeN(qualityGateMetrics.freshness_ratio, 0) * 100).toFixed(0);
+  const qualityGateDetail = qualityGateActive
+    ? (qualityGateShadowMode
+      ? "Shadow mode active: monitoring reliability; headline scores remain visible."
+      : (qualityGateReasons.join(" | ") || "Global metrics downweighted due to insufficient reliability."))
+    : "All quality thresholds are currently passing.";
   const countryBacktest = (trustValidation.country_backtest ?? {}) as Record<string, unknown>;
   const globalBacktest = (trustValidation.global_backtest ?? {}) as Record<string, unknown>;
   const staleSources = safeN(trustFreshness.stale_count, 0);
@@ -1211,26 +1218,26 @@ export default function Dashboard() {
         </div>
       </section>
 
-      {qualityGateActive ? (
-        <section
-          className="wp-intelligence-bar"
-          style={
-            qualityGateDisplayActive
-              ? { borderColor: "rgba(248, 113, 113, 0.45)", background: "rgba(127, 29, 29, 0.14)" }
-              : { borderColor: "rgba(251, 191, 36, 0.38)", background: "rgba(120, 53, 15, 0.14)" }
-          }
-        >
-          <div className="wp-intelligence-primary">
-            <span className="wp-intelligence-kicker">Data Quality Gate</span>
-            <span className="wp-intelligence-topic">{qualityGateMessage}</span>
-            <span className="wp-intelligence-sep" />
-            <span>Verified countries {verifiedCoverageLabel} | Fresh data {qualityGateFreshnessPct}%</span>
-          </div>
-          <div className="wp-intelligence-secondary">
-            <span>{qualityGateShadowMode ? "Shadow mode active: monitoring reliability; headline scores remain visible." : (qualityGateReasons.join(" | ") || "Global metrics downweighted due to insufficient reliability.")}</span>
-          </div>
-        </section>
-      ) : null}
+      <section
+        className="wp-intelligence-bar"
+        style={
+          qualityGateDisplayActive
+            ? { borderColor: "rgba(248, 113, 113, 0.45)", background: "rgba(127, 29, 29, 0.14)" }
+            : (qualityGateActive
+              ? { borderColor: "rgba(251, 191, 36, 0.38)", background: "rgba(120, 53, 15, 0.14)" }
+              : { borderColor: "rgba(52, 211, 153, 0.34)", background: "rgba(6, 78, 59, 0.14)" })
+        }
+      >
+        <div className="wp-intelligence-primary">
+          <span className="wp-intelligence-kicker">Data Quality Gate</span>
+          <span className="wp-intelligence-topic">{qualityGateMessage}</span>
+          <span className="wp-intelligence-sep" />
+          <span>Verified countries {verifiedCoverageLabel} | Fresh data {qualityGateFreshnessPct}%</span>
+        </div>
+        <div className="wp-intelligence-secondary">
+          <span>{qualityGateDetail}</span>
+        </div>
+      </section>
       <section className="wp-exec-grid">
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Global Mood</div>
