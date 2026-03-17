@@ -17,7 +17,7 @@ export default function GlobalDisasterMonitor({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("");
-  const [selectedType, setSelectedType] = useState<"all" | "earthquake" | "weather">("all");
+  const [selectedType, setSelectedType] = useState<string>("all");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchDisasterData = useCallback(async () => {
@@ -45,9 +45,22 @@ export default function GlobalDisasterMonitor({
     };
   }, [fetchDisasterData, refreshInterval]);
 
-  const filteredItems = selectedType === "all" 
-    ? disasterItems 
-    : disasterItems.filter(item => item.type === selectedType);
+  const typeOrder: DisasterItem["type"][] = ["earthquake", "wildfire", "flood", "storm", "volcano", "conflict", "humanitarian", "weather"];
+  const typeLabels: Record<string, string> = {
+    earthquake: "Earthquakes",
+    wildfire: "Wildfires",
+    flood: "Floods",
+    storm: "Storms",
+    volcano: "Volcano",
+    conflict: "Conflict",
+    humanitarian: "Humanitarian",
+    weather: "Weather",
+  };
+  const availableTypes = typeOrder.filter((type) => disasterItems.some((item) => item.type === type));
+  const selectedTypeSafe = selectedType === "all" || availableTypes.includes(selectedType as DisasterItem["type"]) ? selectedType : "all";
+  const filteredItems = selectedTypeSafe === "all"
+    ? disasterItems
+    : disasterItems.filter((item) => item.type === selectedTypeSafe);
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -60,10 +73,10 @@ export default function GlobalDisasterMonitor({
 
   const getSeverityIcon = (severity: string) => {
     switch (severity) {
-      case "critical": return "🔴";
-      case "elevated": return "🟡";
-      case "guarded": return "🟢";
-      default: return "⚪";
+      case "critical": return "CRIT";
+      case "elevated": return "ELEV";
+      case "guarded": return "GRD";
+      default: return "NA";
     }
   };
 
@@ -71,12 +84,21 @@ export default function GlobalDisasterMonitor({
     switch (type) {
       case "earthquake": return <Activity className="w-4 h-4" />;
       case "weather": return <Wind className="w-4 h-4" />;
+      case "wildfire": return <AlertTriangle className="w-4 h-4" />;
+      case "flood": return <Waves className="w-4 h-4" />;
+      case "storm": return <Wind className="w-4 h-4" />;
+      case "volcano": return <AlertTriangle className="w-4 h-4" />;
+      case "conflict": return <AlertTriangle className="w-4 h-4" />;
+      case "humanitarian": return <AlertTriangle className="w-4 h-4" />;
       default: return <AlertTriangle className="w-4 h-4" />;
     }
   };
 
   const criticalCount = disasterItems.filter(i => i.severity === "critical").length;
   const elevatedCount = disasterItems.filter(i => i.severity === "elevated").length;
+  const severeCount = criticalCount + elevatedCount;
+  const fallbackObservationCount = disasterItems.filter(i => i.type === "weather" && Boolean((i as DisasterItem & { is_fallback_observation?: boolean }).is_fallback_observation)).length;
+  const broadenedContextCount = disasterItems.filter(i => Boolean(i.is_broadened_context) || i.context_tag === "older_7d").length;
 
   if (loading) {
     return (
@@ -135,16 +157,35 @@ export default function GlobalDisasterMonitor({
 
       {/* Filter Tabs */}
       <div style={filterContainerStyle}>
-        {(["all", "earthquake", "weather"] as const).map((type) => (
+        <button
+          key="all"
+          onClick={() => setSelectedType("all")}
+          style={filterButtonStyle(selectedTypeSafe === "all")}
+        >
+          All
+        </button>
+        {availableTypes.map((type) => (
           <button
             key={type}
             onClick={() => setSelectedType(type)}
-            style={filterButtonStyle(selectedType === type)}
+            style={filterButtonStyle(selectedTypeSafe === type)}
           >
-            {type === "all" ? "All" : type === "earthquake" ? "🌍 Earthquakes" : "🌪️ Weather"}
+            {typeLabels[type] ?? type}
           </button>
         ))}
       </div>
+
+      {severeCount === 0 && disasterItems.length > 0 ? (
+        <div style={advisoryStyle}>
+          No elevated disasters in the live window. Showing {fallbackObservationCount} recent weather observations as fallback context.
+        </div>
+      ) : null}
+
+      {broadenedContextCount > 0 ? (
+        <div style={contextModeStyle}>
+          Broadened context mode active: showing {broadenedContextCount} older incidents (last 7 days) to improve category coverage.
+        </div>
+      ) : null}
 
       {/* Disaster Items */}
       <div style={itemsContainerStyle}>
@@ -177,6 +218,9 @@ export default function GlobalDisasterMonitor({
                   <span style={itemTitleStyle}>{item.title}</span>
                   <span style={timestampStyle}>
                     {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {item.context_tag === "older_7d" || item.is_broadened_context ? (
+                      <span style={olderBadgeStyle}>Older 7d</span>
+                    ) : null}
                   </span>
                 </div>
 
@@ -204,7 +248,7 @@ export default function GlobalDisasterMonitor({
                     {item.temperature !== undefined && (
                       <span style={detailBadgeStyle}>
                         <Thermometer className="w-3 h-3" />
-                        {item.temperature}°C
+                        {item.temperature}C
                       </span>
                     )}
                     {item.wind_speed !== undefined && (
@@ -213,6 +257,14 @@ export default function GlobalDisasterMonitor({
                         {item.wind_speed} km/h
                       </span>
                     )}
+                  </div>
+                )}
+
+                {item.type !== "earthquake" && item.type !== "weather" && (
+                  <div style={detailsRowStyle}>
+                    <span style={detailBadgeStyle}>{typeLabels[item.type] ?? item.type}</span>
+                    {item.category ? <span style={detailBadgeStyle}>{item.category}</span> : null}
+                    {typeof item.confidence === "number" ? <span style={detailBadgeStyle}>Conf {(item.confidence * 100).toFixed(0)}%</span> : null}
                   </div>
                 )}
 
@@ -228,7 +280,7 @@ export default function GlobalDisasterMonitor({
       {/* Footer */}
       <div style={footerStyle}>
         <span style={footerTextStyle}>
-          {filteredItems.length} alerts • Updated {new Date(lastUpdated).toLocaleTimeString()}
+          {filteredItems.length} items � Updated {new Date(lastUpdated).toLocaleTimeString()}
         </span>
       </div>
 
@@ -405,7 +457,10 @@ const typeIconStyle = (type: string): React.CSSProperties => ({
 });
 
 const severityBadgeStyle = (): React.CSSProperties => ({
-  fontSize: "12px",
+  fontSize: "9px",
+  fontWeight: 700,
+  letterSpacing: "0.04em",
+  color: "rgba(180, 230, 255, 0.9)",
 });
 
 const contentStyle: React.CSSProperties = {
@@ -477,6 +532,41 @@ const descriptionStyle: React.CSSProperties = {
   margin: 0,
 };
 
+const advisoryStyle: React.CSSProperties = {
+  marginBottom: "10px",
+  padding: "8px 10px",
+  borderRadius: "8px",
+  border: "1px solid rgba(245, 158, 11, 0.35)",
+  background: "rgba(120, 53, 15, 0.2)",
+  color: "rgba(254, 243, 199, 0.92)",
+  fontSize: "11px",
+  lineHeight: 1.35,
+};
+
+const contextModeStyle: React.CSSProperties = {
+  marginBottom: "10px",
+  padding: "8px 10px",
+  borderRadius: "8px",
+  border: "1px solid rgba(56, 189, 248, 0.35)",
+  background: "rgba(3, 37, 65, 0.35)",
+  color: "rgba(186, 230, 253, 0.95)",
+  fontSize: "11px",
+  lineHeight: 1.35,
+};
+
+const olderBadgeStyle: React.CSSProperties = {
+  marginLeft: "8px",
+  padding: "2px 6px",
+  borderRadius: "999px",
+  border: "1px solid rgba(56, 189, 248, 0.45)",
+  background: "rgba(2, 132, 199, 0.22)",
+  color: "#bae6fd",
+  fontSize: "9px",
+  fontWeight: 700,
+  letterSpacing: "0.04em",
+  textTransform: "uppercase",
+};
+
 const footerStyle: React.CSSProperties = {
   marginTop: "12px",
   paddingTop: "12px",
@@ -532,3 +622,5 @@ const errorStyle: React.CSSProperties = {
   fontSize: "12px",
   flex: 1,
 };
+
+

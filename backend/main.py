@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import os
 import logging
 from datetime import datetime, timezone
@@ -34,6 +34,8 @@ from passlib.context import CryptContext
 import jwt
 from datetime import timedelta
 from collections import defaultdict
+from bisect import bisect_right
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 
 # =====================================================
@@ -57,8 +59,10 @@ def hash_password(password: str):
 
 from processing.global_risk import compute_global_risk
 from processing.global_mood import compute_global_operational_features
+from processing.world_state_quality import compute_quality_gate
 from processing.country_daily_risk import country_daily_refresh_if_due
 from collectors.country_news import get_country_catalog
+from processing.country_catalog import COUNTRY_NAMES
 from processing.sentinel_analysis import compute_sentinel_analysis, get_sentinel_history
 from processing.causal_risk_navigator import build_causal_explanation
 from processing.counterfactual_engine import run_counterfactual
@@ -293,6 +297,7 @@ weather_collection = db["weather"]
 economics_collection = db["economics"]
 health_collection = db["health"]
 trends_collection = db["trends"]
+source_health_collection = db["source_health"]
 security_events_collection = db["security_events"]
 causal_explanations_collection = db["causal_explanations"]
 counterfactual_runs_collection = db["counterfactual_runs"]
@@ -319,6 +324,8 @@ weather_collection.create_index([("data_timestamp", DESCENDING)])
 economics_collection.create_index([("collected_at", DESCENDING)])
 health_collection.create_index([("collected_at", DESCENDING)])
 trends_collection.create_index([("collected_at", DESCENDING)])
+source_health_collection.create_index([("source", ASCENDING)], unique=True)
+source_health_collection.create_index([("updated_at", DESCENDING)])
 security_events_collection.create_index([("timestamp", DESCENDING)])
 security_events_collection.create_index([("event_type", ASCENDING), ("status", ASCENDING), ("timestamp", DESCENDING)])
 security_events_collection.create_index([("email", ASCENDING), ("timestamp", DESCENDING)])
@@ -794,11 +801,6 @@ def load_production_model():
 
 
 def compute_feature_drift(payload_features: list[float]) -> float | None:
-    baseline_doc = db.global_features.find_one({"mode": "online"}, sort=[("_id", DESCENDING)])
-    if not baseline_doc:
-        return None
-
-    baseline_features = baseline_doc.get("features", {})
     expected_order = [
         "news_sentiment",
         "gdelt_sentiment",
@@ -809,9 +811,26 @@ def compute_feature_drift(payload_features: list[float]) -> float | None:
         "weather_anomaly",
     ]
 
-    baseline_vec = [float(baseline_features.get(name, 0.0)) for name in expected_order]
-    if len(payload_features) != len(baseline_vec):
+    if len(payload_features) != len(expected_order):
         return None
+
+    history = get_global_history(mode="online", limit=24)
+    if not history:
+        return None
+
+    # Compare against a short rolling baseline (excluding the newest point when possible)
+    # so drift can capture changes instead of collapsing to zero against the current row.
+    baseline_rows = history[:-1] if len(history) > 1 else history
+    baseline_vec: list[float] = []
+    for field in expected_order:
+        samples: list[float] = []
+        for row in baseline_rows:
+            features = (row or {}).get("features") or {}
+            try:
+                samples.append(float(features.get(field, 0.0) or 0.0))
+            except (TypeError, ValueError):
+                continue
+        baseline_vec.append(sum(samples) / len(samples) if samples else 0.0)
 
     drift_components = []
     for observed, expected in zip(payload_features, baseline_vec):
@@ -820,6 +839,161 @@ def compute_feature_drift(payload_features: list[float]) -> float | None:
 
     return round(sum(drift_components) / len(drift_components), 6)
 
+
+def _aggregate_latest_global_from_country_features(mode: str = "online") -> dict | None:
+    pipeline = [
+        {"$match": {"mode": mode}},
+        {"$sort": {"timestamp": -1}},
+        {"$group": {"_id": "$country", "doc": {"$first": "$$ROOT"}}},
+        {"$replaceRoot": {"newRoot": "$doc"}},
+        {"$limit": 500},
+    ]
+    docs = list(country_features_collection.aggregate(pipeline))
+    if not docs:
+        return None
+
+    fields = [
+        "news_sentiment",
+        "gdelt_sentiment",
+        "crypto_return",
+        "crypto_volatility",
+        "stock_return",
+        "stock_volatility",
+        "weather_anomaly",
+        "global_risk_score",
+    ]
+    sums = {field: 0.0 for field in fields}
+    counts = {field: 0 for field in fields}
+    topic_counts: dict[str, int] = defaultdict(int)
+    latest_ts: datetime | None = None
+
+    for doc in docs:
+        features = doc.get("features") if isinstance(doc.get("features"), dict) else {}
+        ts = _coerce_utc_datetime(features.get("timestamp") or doc.get("timestamp"))
+        if ts and (latest_ts is None or ts > latest_ts):
+            latest_ts = ts
+
+        for field in fields:
+            try:
+                value = float(features.get(field, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            sums[field] += value
+            counts[field] += 1
+
+        topics = features.get("top_topics")
+        if isinstance(topics, list):
+            for item in topics[:3]:
+                if isinstance(item, str) and item.strip():
+                    topic_counts[item.strip().lower()] += 1
+
+    aggregated_features = {
+        field: round((sums[field] / counts[field]) if counts[field] else 0.0, 6)
+        for field in fields
+    }
+    aggregated_features["timestamp"] = (latest_ts or datetime.utcnow()).isoformat()
+    aggregated_features["source_count"] = len(docs)
+    aggregated_features["top_topics"] = [topic for topic, _ in sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)[:5]] or ["country aggregate"]
+
+    return {
+        "mode": mode,
+        "version": -1,
+        "timestamp": aggregated_features["timestamp"],
+        "features": aggregated_features,
+    }
+
+
+def _aggregate_global_history_from_country_features(
+    mode: str = "online",
+    limit: int = 1000,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+) -> list[dict]:
+    query: dict[str, Any] = {"mode": mode}
+    if start_date or end_date:
+        ts_filter: dict[str, datetime] = {}
+        if start_date:
+            ts_filter["$gte"] = start_date
+        if end_date:
+            ts_filter["$lte"] = end_date
+        query["timestamp"] = ts_filter
+
+    max_docs = min(max(limit * 80, 500), 30000)
+    docs = list(
+        country_features_collection
+        .find(query, {"timestamp": 1, "features": 1, "country": 1})
+        .sort("timestamp", DESCENDING)
+        .limit(max_docs)
+    )
+    if not docs:
+        return []
+
+    signal_fields = [
+        "news_sentiment",
+        "gdelt_sentiment",
+        "crypto_return",
+        "crypto_volatility",
+        "stock_return",
+        "stock_volatility",
+        "weather_anomaly",
+        "global_risk_score",
+    ]
+    buckets: dict[str, dict[str, Any]] = {}
+
+    for doc in docs:
+        features = doc.get("features") if isinstance(doc.get("features"), dict) else {}
+        ts = _coerce_utc_datetime(features.get("timestamp") or doc.get("timestamp"))
+        if ts is None:
+            continue
+        if start_date and ts < start_date:
+            continue
+        if end_date and ts > end_date:
+            continue
+
+        bucket_ts = ts.replace(minute=0, second=0, microsecond=0)
+        bucket_key = bucket_ts.isoformat()
+        if bucket_key not in buckets:
+            buckets[bucket_key] = {
+                "timestamp": bucket_ts,
+                "sums": {field: 0.0 for field in signal_fields},
+                "counts": {field: 0 for field in signal_fields},
+                "countries": set(),
+            }
+
+        bucket = buckets[bucket_key]
+        country_code = str(doc.get("country") or "").upper().strip()
+        if country_code:
+            bucket["countries"].add(country_code)
+
+        for field in signal_fields:
+            try:
+                value = float(features.get(field, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            bucket["sums"][field] += value
+            bucket["counts"][field] += 1
+
+    ordered = sorted(buckets.values(), key=lambda row: row["timestamp"])
+    if len(ordered) > limit:
+        ordered = ordered[-limit:]
+
+    history_rows: list[dict] = []
+    for row in ordered:
+        features = {}
+        for field in signal_fields:
+            count = row["counts"][field]
+            features[field] = round((row["sums"][field] / count) if count else 0.0, 6)
+        features["timestamp"] = row["timestamp"].isoformat()
+        features["source_count"] = len(row["countries"])
+        history_rows.append({
+            "mode": mode,
+            "timestamp": row["timestamp"].isoformat(),
+            "features": features,
+        })
+
+    return history_rows
+
+
 def get_latest_global_doc(mode: str = "online") -> dict:
     # Primary source: feature store collection.
     doc = db.global_features.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
@@ -827,6 +1001,10 @@ def get_latest_global_doc(mode: str = "online") -> dict:
     # Fallback source used by orchestrator dashboard sync.
     if not doc:
         doc = db.dashboard_features.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
+
+    # Real-data fallback: derive global snapshot from latest country-level features.
+    if not doc:
+        doc = _aggregate_latest_global_from_country_features(mode=mode)
 
     # Final safety fallback keeps frontend booting even before data arrives.
     if not doc:
@@ -863,6 +1041,7 @@ def get_latest_global_doc(mode: str = "online") -> dict:
     )
     doc["features"] = features
     return doc
+
 
 
 def parse_iso_dt(value: str | None) -> datetime | None:
@@ -903,7 +1082,15 @@ def get_global_history(mode: str = "online", limit: int = 1000, start_date: date
     cursor = list(db.global_features.find(query).sort("timestamp", DESCENDING).limit(limit))
     if not cursor:
         cursor = list(db.dashboard_features.find(query).sort("timestamp", DESCENDING).limit(limit))
+    if not cursor:
+        return _aggregate_global_history_from_country_features(
+            mode=mode,
+            limit=limit,
+            start_date=start_date,
+            end_date=end_date,
+        )
     return [serialize_doc(d) for d in reversed(cursor)]
+
 
 
 # =====================================================
@@ -2210,47 +2397,165 @@ def dashboard_crypto_pulse(request: Request, role: str = Depends(check_role), li
 
 @app.get("/dashboard/disaster-monitor")
 @limiter.limit("30/minute")
-def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role), limit: int = Query(20, ge=1, le=100)):
+def dashboard_disaster_monitor(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(20, ge=1, le=100),
+    broaden_context: bool = Query(True),
+):
     """
-    Returns real-time disaster alerts including earthquakes and severe weather.
+    Returns multi-source real-time disaster alerts including earthquakes, weather, wildfires,
+    flood/storm/volcano events, humanitarian reports, and conflict incidents.
+
+    When live signals are sparse, broadened context mode adds clearly tagged older incidents
+    (last 7 days) for non-wildfire categories.
     """
-    half_limit = max(1, limit // 2)
-    weather_quota = max(1, limit - half_limit)
-
-    # Read enough rows from both collections.
-    earthquake_pool = list(db.earthquakes.find().sort("collected_at", -1).limit(limit * 3))
-    weather_pool = list(db.weather.find().sort("collected_at", -1).limit(limit * 3))
-
-    # Prevent stale feeds from polluting live monitor cards.
     now_utc = datetime.now(timezone.utc)
     eq_cutoff = now_utc - timedelta(hours=48)
     weather_cutoff = now_utc - timedelta(hours=24)
+    world_state_cutoff = now_utc - timedelta(hours=72)
+    context_cutoff = now_utc - timedelta(days=7)
+
+    def _severity_from_value(value: float) -> str:
+        score = _safe_float(value, 0.0)
+        if score >= 0.85:
+            return "critical"
+        if score >= 0.65:
+            return "elevated"
+        return "guarded"
+
+    def _severity_rank(severity: str) -> int:
+        return {"critical": 3, "elevated": 2, "guarded": 1}.get(str(severity).lower(), 0)
+
+    def _context_rank(item: dict[str, Any]) -> int:
+        return 0 if str(item.get("context_tag") or "live") == "older_7d" else 1
+
+    def _is_severe_weather(doc: dict) -> bool:
+        weather_text = str(_pick_nested(doc, "event", "data_weather", "data.weather", "data.description", default="")).lower()
+        wind_speed = _safe_float(_pick_nested(doc, "wind_speed", "data_wind_speed", "data.wind_speed", default=0.0))
+        severe_tokens = (
+            "storm", "thunder", "flood", "hurricane", "cyclone", "tornado", "blizzard",
+            "wildfire", "heatwave", "extreme", "warning", "alert"
+        )
+        return wind_speed >= 60 or any(token in weather_text for token in severe_tokens)
+
+    def _map_world_state_item(doc: dict, *, context_tag: str = "live", is_broadened_context: bool = False) -> dict | None:
+        source = str(doc.get("source") or "").lower().strip()
+        signal_type = str(doc.get("signal_type") or "").lower().strip()
+        meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
+        category = str(meta.get("category") or "").lower()
+        title = str(meta.get("title") or meta.get("place") or "").strip()
+        country = str(doc.get("country") or "GLB").upper()
+        lat = doc.get("lat")
+        lon = doc.get("lon")
+        value = _safe_float(doc.get("value"), 0.0)
+        confidence = _safe_float(doc.get("confidence"), 0.5)
+        timestamp = str(doc.get("timestamp_utc") or doc.get("timestamp") or now_utc.isoformat())
+
+        event_type = ""
+        if source == "firms":
+            event_type = "wildfire"
+        elif source == "acled":
+            event_type = "conflict"
+        elif source == "reliefweb":
+            event_type = "humanitarian"
+        elif source == "eonet":
+            if "wildfire" in category:
+                event_type = "wildfire"
+            elif "volcano" in category:
+                event_type = "volcano"
+            elif "flood" in category:
+                event_type = "flood"
+            elif any(token in category for token in ("storm", "cyclone", "hurricane", "severe", "drought", "blizzard")):
+                event_type = "storm"
+            else:
+                event_type = "weather"
+        elif source == "usgs":
+            event_type = "earthquake"
+        elif signal_type == "humanitarian_pressure":
+            event_type = "humanitarian"
+        elif signal_type == "disaster_intensity":
+            event_type = "weather"
+        else:
+            return None
+
+        if not title:
+            title = {
+                "wildfire": "Active Wildfire Signals",
+                "conflict": "Conflict Incident Signals",
+                "humanitarian": "Humanitarian Situation Reports",
+                "volcano": "Volcanic Activity",
+                "flood": "Flood Event",
+                "storm": "Storm Event",
+                "weather": "Environmental Hazard",
+            }.get(event_type, "Global Incident")
+
+        location = country if country and country != "" else "GLB"
+        if location == "GLB":
+            title_parts = [part.strip() for part in title.split(",") if part and part.strip()]
+            if len(title_parts) >= 2:
+                location = ", ".join(title_parts[-2:])
+            elif title_parts:
+                location = title_parts[-1]
+
+        severity = _severity_from_value(value)
+        if event_type in {"conflict", "humanitarian"} and severity == "guarded":
+            severity = "elevated"
+
+        extra_fields: dict[str, Any] = {}
+        if event_type == "earthquake":
+            mag = _safe_float(meta.get("mag"), _safe_float(value * 8.0, 0.0))
+            extra_fields["magnitude"] = round(mag, 2)
+            if not title:
+                title = f"Magnitude {round(mag, 1)} Earthquake"
+            place = str(meta.get("place") or "").strip()
+            if place:
+                location = place
+
+        return {
+            "id": str(doc.get("id") or f"world-state-{source}-{event_type}-{title[:24]}-{timestamp}"),
+            "type": event_type,
+            "title": title,
+            "location": location,
+            "coordinates": {
+                "lat": _safe_float(lat, 0.0),
+                "lon": _safe_float(lon, 0.0),
+            } if lat is not None and lon is not None else None,
+            "severity": severity,
+            "description": f"{source.upper()} signal: {signal_type or event_type}" + (f" | category: {category}" if category else ""),
+            "timestamp": timestamp,
+            "source": source.upper(),
+            "confidence": round(max(0.0, min(1.0, confidence)), 3),
+            "signal_value": round(value, 3),
+            "category": category or None,
+            **extra_fields,
+            "context_tag": context_tag,
+            "is_broadened_context": bool(is_broadened_context),
+        }
+
+    earthquake_pool = list(db.earthquakes.find().sort("collected_at", -1).limit(max(limit * 30, 400)))
+    weather_pool = list(db.weather.find().sort("collected_at", -1).limit(max(limit * 25, 300)))
+    world_state_pool = list(db.world_state_signals.find().sort("timestamp_utc", -1).limit(max(limit * 50, 1200)))
+
     recent_earthquakes = [
         doc for doc in earthquake_pool
         if _parse_timestamp(_safe_timestamp(doc, "timestamp", "data.time", "collected_at")) >= eq_cutoff
     ]
-    recent_weather = [
+    weather_recent_all = [
         doc for doc in weather_pool
         if _parse_timestamp(_safe_timestamp(doc, "timestamp", "data_timestamp", "data.date", "collected_at")) >= weather_cutoff
     ]
+    severe_weather = [doc for doc in weather_recent_all if _is_severe_weather(doc)]
+    recent_world_state = [
+        doc for doc in world_state_pool
+        if _parse_timestamp(str(doc.get("timestamp_utc") or doc.get("timestamp") or "")) >= world_state_cutoff
+    ]
 
-    selected_earthquakes = recent_earthquakes[:half_limit]
-    selected_weather = recent_weather[:weather_quota]
+    disaster_items: list[dict[str, Any]] = []
 
-    remaining = limit - (len(selected_earthquakes) + len(selected_weather))
-    if remaining > 0:
-        selected_earthquakes.extend(recent_earthquakes[len(selected_earthquakes): len(selected_earthquakes) + remaining])
-        remaining = limit - (len(selected_earthquakes) + len(selected_weather))
-    if remaining > 0:
-        selected_weather.extend(recent_weather[len(selected_weather): len(selected_weather) + remaining])
-
-    disaster_items = []
-
-    # Process earthquakes
-    for doc in selected_earthquakes:
+    for doc in recent_earthquakes:
         magnitude = _safe_float(_pick_nested(doc, "magnitude", "data.magnitude", "data.mag", default=0.0))
         severity = "critical" if magnitude >= 7.0 else "elevated" if magnitude >= 5.0 else "guarded"
-
         disaster_items.append({
             "id": str(doc.get("_id", "")),
             "type": "earthquake",
@@ -2265,11 +2570,12 @@ def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role)
             "depth_km": _safe_float(_pick_nested(doc, "depth", "data.depth", default=0.0)),
             "tsunami_risk": magnitude >= 7.0 and bool(_pick_nested(doc, "tsunami", "data.tsunami", default=False)),
             "timestamp": _safe_timestamp(doc, "timestamp", "data.time", "collected_at"),
-            "source": "USGS"
+            "source": "USGS",
+            "context_tag": "live",
+            "is_broadened_context": False,
         })
 
-    # Process weather alerts
-    for doc in selected_weather:
+    for doc in severe_weather:
         weather_text = str(_pick_nested(doc, "event", "data_weather", "data.weather", "data.description", default=""))
         temperature = _safe_float(_pick_nested(doc, "temperature", "data_temperature", "data.temperature", "data.temp", default=0.0))
         wind_speed = _safe_float(_pick_nested(doc, "wind_speed", "data_wind_speed", "data.wind_speed", default=0.0))
@@ -2297,16 +2603,155 @@ def dashboard_disaster_monitor(request: Request, role: str = Depends(check_role)
             "temperature": temperature,
             "wind_speed": wind_speed,
             "timestamp": _safe_timestamp(doc, "timestamp", "data_timestamp", "data.date", "collected_at"),
-            "source": str(doc.get("source", "Weather API"))
+            "source": str(doc.get("source", "Weather API")),
+            "is_fallback_observation": False,
+            "context_tag": "live",
+            "is_broadened_context": False,
         })
 
-    # Sort by timestamp (most recent first)
-    disaster_items.sort(key=lambda x: _parse_timestamp(x["timestamp"]), reverse=True)
+    for doc in recent_world_state:
+        mapped = _map_world_state_item(doc, context_tag="live", is_broadened_context=False)
+        if mapped is not None:
+            disaster_items.append(mapped)
+
+    # If no severe incidents exist at all, show a small live weather fallback slice.
+    severe_exists = any(item.get("severity") in {"critical", "elevated"} for item in disaster_items)
+    if not severe_exists and weather_recent_all:
+        for doc in weather_recent_all[: min(max(2, limit // 3), 8)]:
+            weather_text = str(_pick_nested(doc, "event", "data_weather", "data.weather", "data.description", default=""))
+            city = str(_pick_nested(doc, "location", "data_city", "data.city", default="Unknown Location"))
+            country = str(_pick_nested(doc, "country", "data_country", "data.country", default="")).strip()
+            location = f"{city}, {country}" if country and country.lower() not in city.lower() else city
+            disaster_items.append({
+                "id": str(doc.get("_id", "")) + "-fallback",
+                "type": "weather",
+                "title": f"Weather Observation: {weather_text.title()}" if weather_text else "Weather Observation",
+                "location": location,
+                "severity": "guarded",
+                "description": str(_pick_nested(doc, "description", "data_weather", "data.description", default=weather_text)),
+                "temperature": _safe_float(_pick_nested(doc, "temperature", "data_temperature", "data.temperature", "data.temp", default=0.0)),
+                "wind_speed": _safe_float(_pick_nested(doc, "wind_speed", "data_wind_speed", "data.wind_speed", default=0.0)),
+                "timestamp": _safe_timestamp(doc, "timestamp", "data_timestamp", "data.date", "collected_at"),
+                "source": str(doc.get("source", "Weather API")),
+                "is_fallback_observation": True,
+                "context_tag": "live",
+                "is_broadened_context": False,
+            })
+
+    broadened_added = 0
+    if broaden_context:
+        live_non_fallback = [item for item in disaster_items if not bool(item.get("is_fallback_observation"))]
+        live_types = {str(item.get("type") or "") for item in live_non_fallback}
+        live_non_wildfire_count = sum(1 for item in live_non_fallback if str(item.get("type") or "") != "wildfire")
+        sparse_live_mix = len(live_types) <= 2 or live_non_wildfire_count < 2
+
+        if sparse_live_mix:
+            older_quota = max(4, limit // 2)
+
+            older_earthquakes = [
+                doc for doc in earthquake_pool
+                if context_cutoff <= _parse_timestamp(_safe_timestamp(doc, "timestamp", "data.time", "collected_at")) < eq_cutoff
+            ]
+            for doc in older_earthquakes:
+                if broadened_added >= older_quota:
+                    break
+                magnitude = _safe_float(_pick_nested(doc, "magnitude", "data.magnitude", "data.mag", default=0.0))
+                severity = "critical" if magnitude >= 7.0 else "elevated" if magnitude >= 5.0 else "guarded"
+                disaster_items.append({
+                    "id": str(doc.get("_id", "")) + "-older7d",
+                    "type": "earthquake",
+                    "title": f"Magnitude {magnitude} Earthquake",
+                    "location": _pick_nested(doc, "place", "data.place", default="Unknown Location"),
+                    "coordinates": {
+                        "lat": _safe_float(_pick_nested(doc, "latitude", "data.latitude", default=0.0)),
+                        "lon": _safe_float(_pick_nested(doc, "longitude", "data.longitude", default=0.0)),
+                    },
+                    "magnitude": magnitude,
+                    "severity": severity,
+                    "depth_km": _safe_float(_pick_nested(doc, "depth", "data.depth", default=0.0)),
+                    "tsunami_risk": magnitude >= 7.0 and bool(_pick_nested(doc, "tsunami", "data.tsunami", default=False)),
+                    "timestamp": _safe_timestamp(doc, "timestamp", "data.time", "collected_at"),
+                    "source": "USGS",
+                    "context_tag": "older_7d",
+                    "is_broadened_context": True,
+                })
+                broadened_added += 1
+
+            older_world_state = [
+                doc for doc in world_state_pool
+                if context_cutoff <= _parse_timestamp(str(doc.get("timestamp_utc") or doc.get("timestamp") or "")) < world_state_cutoff
+            ]
+            for doc in older_world_state:
+                if broadened_added >= older_quota * 2:
+                    break
+                mapped = _map_world_state_item(doc, context_tag="older_7d", is_broadened_context=True)
+                if mapped is None:
+                    continue
+                if str(mapped.get("type") or "") == "wildfire":
+                    continue
+                disaster_items.append(mapped)
+                broadened_added += 1
+
+    # De-duplicate near-identical entries.
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in disaster_items:
+        ts = _parse_timestamp(str(item.get("timestamp") or "")).replace(second=0, microsecond=0).isoformat()
+        key = f"{item.get('type')}|{item.get('location')}|{str(item.get('title') or '')[:64]}|{ts}|{item.get('context_tag') or 'live'}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+
+    deduped.sort(
+        key=lambda x: (
+            _context_rank(x),
+            _severity_rank(str(x.get("severity") or "")),
+            _parse_timestamp(str(x.get("timestamp") or "")),
+        ),
+        reverse=True,
+    )
+
+    # Keep output diverse: include at least one item per available type before filling remaining slots.
+    selected: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in deduped:
+        by_type[str(item.get("type") or "unknown")].append(item)
+
+    for event_type in sorted(by_type.keys()):
+        if len(selected) >= limit:
+            break
+        first = by_type[event_type][0]
+        item_id = str(first.get("id") or "")
+        selected.append(first)
+        if item_id:
+            used_ids.add(item_id)
+
+    for item in deduped:
+        if len(selected) >= limit:
+            break
+        item_id = str(item.get("id") or "")
+        if item_id and item_id in used_ids:
+            continue
+        selected.append(item)
+        if item_id:
+            used_ids.add(item_id)
+
+    if selected:
+        last_updated = max(_parse_timestamp(str(item.get("timestamp") or "")) for item in selected).isoformat()
+    else:
+        last_updated = now_utc.isoformat()
+
+    broadened_in_selected = sum(1 for item in selected if bool(item.get("is_broadened_context")))
 
     return {
-        "items": disaster_items[:limit],
-        "last_updated": _latest_timestamp(*recent_earthquakes, *recent_weather),
-        "total_count": len(disaster_items)
+        "items": selected,
+        "last_updated": last_updated,
+        "total_count": len(deduped),
+        "context_mode": "broadened" if broadened_in_selected > 0 else "live_only",
+        "broadened_context_added": broadened_in_selected,
+        "broaden_context_enabled": bool(broaden_context),
     }
 
 @app.get("/dashboard/economic-indicators")
@@ -2380,43 +2825,35 @@ def dashboard_economic_indicators(request: Request, role: str = Depends(check_ro
 
 @app.get("/dashboard/health-alerts")
 @limiter.limit("30/minute")
-def dashboard_health_alerts(request: Request, role: str = Depends(check_role), limit: int = Query(10, ge=1, le=50)):
+def dashboard_health_alerts(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(10, ge=1, le=50),
+    broaden_context: bool = Query(True),
+):
     """
-    Returns WHO health alerts and disease outbreak information.
+    Returns WHO/health alerts with broadened context support.
+
+    If live alerts are sparse, include clearly tagged older (last 30 days) indicator incidents.
     """
-    health_docs = list(db.health.find().sort("collected_at", -1).limit(limit))
-    legacy_docs = list(db.who.find().sort("collected_at", -1).limit(limit * 3))
+    now_utc = datetime.now(timezone.utc)
+    live_cutoff = now_utc - timedelta(hours=72)
+    context_cutoff = now_utc - timedelta(days=30)
 
-    primary_latest = (
-        _parse_timestamp(_safe_timestamp(health_docs[0], "timestamp", "data.timestamp", "collected_at"))
-        if health_docs
-        else datetime.min.replace(tzinfo=timezone.utc)
-    )
-    legacy_latest = (
-        _parse_timestamp(_safe_timestamp(legacy_docs[0], "timestamp", "data.timestamp", "collected_at"))
-        if legacy_docs
-        else datetime.min.replace(tzinfo=timezone.utc)
-    )
+    health_pool = list(db.health.find().sort("collected_at", -1).limit(max(limit * 40, 400)))
+    legacy_pool = list(db.who.find().sort("collected_at", -1).limit(max(limit * 40, 400)))
+    source_pool = health_pool if health_pool else legacy_pool
+    if len(source_pool) < max(limit * 8, 80):
+        source_pool = source_pool + [doc for doc in legacy_pool if doc not in source_pool]
 
-    # Prefer fresher WHO stream data if it is newer than the health collection.
-    if legacy_latest > primary_latest:
-        health_docs = legacy_docs[:limit]
-    elif len(health_docs) < limit and legacy_docs:
-        seen_ids = {str(doc.get("_id", "")) for doc in health_docs}
-        for doc in legacy_docs:
-            doc_id = str(doc.get("_id", ""))
-            if doc_id in seen_ids:
-                continue
-            health_docs.append(doc)
-            seen_ids.add(doc_id)
-            if len(health_docs) >= limit:
-                break
+    def _doc_ts(doc: dict) -> datetime:
+        return _parse_timestamp(_safe_timestamp(doc, "timestamp", "data.timestamp", "collected_at"))
 
-    health_items = []
-    for idx, doc in enumerate(health_docs):
+    def _build_health_item(doc: dict, idx: int, *, context_tag: str = "live", is_broadened_context: bool = False) -> dict[str, Any]:
         indicator = str(_pick_nested(doc, "data.indicator", "indicator", default="WHO Indicator"))
-        cases_raw = _pick_nested(doc, "cases", "data.cases", default=None)
-        deaths_raw = _pick_nested(doc, "deaths", "data.deaths", default=None)
+        disease_name = str(_pick_nested(doc, "data.disease", "disease", default="")).strip()
+        cases_raw = _pick_nested(doc, "cases", "data.cases", "data.data.cases", default=None)
+        deaths_raw = _pick_nested(doc, "deaths", "data.data.deaths", "data.deaths", default=None)
         indicator_value_raw = _pick_nested(doc, "data.value", "value", default=None)
 
         cases = _safe_int(cases_raw, default=-1) if cases_raw not in (None, "") else -1
@@ -2430,16 +2867,24 @@ def dashboard_health_alerts(request: Request, role: str = Depends(check_role), l
             status = "active" if severity in {"critical", "elevated"} else "monitoring"
         else:
             safe_cases = None
-            severity = "guarded"
-            status = "monitoring"
+            # Indicator-only fallback severity so panel is not always "guarded" when values are high.
+            if parsed_indicator_value is None:
+                severity = "guarded"
+            elif parsed_indicator_value >= 80:
+                severity = "critical"
+            elif parsed_indicator_value >= 40:
+                severity = "elevated"
+            else:
+                severity = "guarded"
+            status = "active" if severity in {"critical", "elevated"} else "monitoring"
 
         safe_deaths = None if deaths < 0 else max(deaths, 0)
         location = str(_pick_nested(doc, "country", "data.country", "data.SpatialDim", default="Global"))
 
-        health_items.append({
-            "id": str(doc.get("_id", f"health-{idx}")),
-            "disease": indicator.replace("_", " "),
-            "type": "indicator",
+        return {
+            "id": str(doc.get("_id", f"health-{idx}")) + ("-ctx30d" if context_tag == "older_30d" else ""),
+            "disease": (disease_name if disease_name else indicator.replace("_", " ")),
+            "type": "outbreak" if has_outbreak_counts else "indicator",
             "severity": severity,
             "location": location,
             "cases": safe_cases,
@@ -2449,29 +2894,100 @@ def dashboard_health_alerts(request: Request, role: str = Depends(check_role), l
             "status": status,
             "timestamp": _safe_timestamp(doc, "timestamp", "data.timestamp", "collected_at"),
             "source": str(doc.get("source", "WHO")).upper(),
-            "description": f"Latest WHO indicator update for {indicator.replace('_', ' ')} in {location}."
-        })
+            "description": f"Latest WHO indicator update for {indicator.replace('_', ' ')} in {location}.",
+            "context_tag": context_tag,
+            "is_broadened_context": bool(is_broadened_context),
+        }
+
+    def _is_vaccine_doc(doc: dict) -> bool:
+        indicator = str(_pick_nested(doc, "data.indicator", "indicator", default="")).lower()
+        source_name = str(doc.get("source") or "").lower()
+        return ("vacc" in indicator) or ("dose" in indicator) or ("immun" in indicator) or (source_name == "disease_sh_vaccine")
+
+    live_docs = [doc for doc in source_pool if _doc_ts(doc) >= live_cutoff and (not _is_vaccine_doc(doc))]
+    context_docs = [doc for doc in source_pool if context_cutoff <= _doc_ts(doc) < live_cutoff and (not _is_vaccine_doc(doc))]
+
+    health_items: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    for idx, doc in enumerate(live_docs):
+        item = _build_health_item(doc, idx, context_tag="live", is_broadened_context=False)
+        key = f"{item['disease']}|{item['location']}|{item['type']}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        health_items.append(item)
+        if len(health_items) >= limit * 3:
+            break
+
+    broadened_added = 0
+    live_active_count = sum(1 for item in health_items if item.get("status") == "active")
+    if broaden_context and (live_active_count < 2 or len(health_items) < limit):
+        for idx, doc in enumerate(context_docs):
+            item = _build_health_item(doc, idx, context_tag="older_30d", is_broadened_context=True)
+            if item.get("severity") == "guarded":
+                continue
+            key = f"{item['disease']}|{item['location']}|{item['type']}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            health_items.append(item)
+            broadened_added += 1
+            if broadened_added >= max(4, limit // 2):
+                break
+
+    health_items.sort(
+        key=lambda h: (
+            0 if str(h.get("context_tag") or "live") == "older_30d" else 1,
+            {"critical": 3, "elevated": 2, "guarded": 1}.get(str(h.get("severity") or "guarded"), 1),
+            _parse_timestamp(str(h.get("timestamp") or "")),
+        ),
+        reverse=True,
+    )
+    non_covid_items = [h for h in health_items if "covid" not in str(h.get("disease") or "").lower()]
+    covid_items = [h for h in health_items if "covid" in str(h.get("disease") or "").lower()]
+    if len(non_covid_items) >= limit:
+        health_items = non_covid_items[:limit]
+    else:
+        covid_cap = max(1, limit // 4)
+        health_items = (non_covid_items + covid_items[:covid_cap])[:limit]
 
     vaccination_docs = [
-        doc for doc in health_docs
-        if "vacc" in str(_pick_nested(doc, "data.indicator", "indicator", default="")).lower()
+        doc for doc in source_pool
+        if any(token in str(_pick_nested(doc, "data.indicator", "indicator", default="")).lower() for token in ["vacc", "dose", "immun"])
     ]
     vaccination_values = [
         _extract_first_number(_pick_nested(doc, "data.value", "value", default=None), default=0.0) or 0.0
         for doc in vaccination_docs
     ]
+
+    coverage_country_set = set()
+    for doc in source_pool:
+        c = str(_pick_nested(doc, "data.country", "country", "data.SpatialDim", default="")).strip().upper()
+        if c and len(c) == 3 and c.isalpha():
+            coverage_country_set.add(c)
+
+    coverage_countries = min(len(coverage_country_set), 233)
+
     vaccination_data = {
-        "global_coverage": round(max(vaccination_values), 1) if vaccination_values else 0.0,
+        "global_coverage": round((coverage_countries / 233.0) * 100.0, 1),
         "target_coverage": 70.0,
-        "doses_administered": int(sum(max(value, 0.0) for value in vaccination_values)),
-        "campaigns_active": len(vaccination_docs)
+        "doses_administered": int(sum(vaccination_values)) if vaccination_values else 0,
+        "campaigns_active": len(vaccination_docs),
     }
+
+    last_updated = _latest_timestamp(*source_pool[: max(1, min(len(source_pool), 25))]) if source_pool else now_utc.isoformat()
 
     return {
         "outbreaks": health_items,
         "vaccination": vaccination_data,
-        "last_updated": _latest_timestamp(*health_docs),
-        "total_active": len([h for h in health_items if h["status"] == "active"])
+        "last_updated": last_updated,
+        "total_active": len([h for h in health_items if h["status"] == "active"]),
+        "context_mode": "broadened" if broadened_added > 0 else "live_only",
+        "broadened_context_added": broadened_added,
+        "broaden_context_enabled": bool(broaden_context),
+        "coverage_countries": coverage_countries,
+        "coverage_total_countries": 233,
     }
 
 @app.get("/dashboard/trends-radar")
@@ -2484,7 +3000,7 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
     trend_items = []
     grouped_topics: dict[str, list[dict]] = defaultdict(list)
     for doc in trends_docs:
-        topic = str(_pick_nested(doc, "topic", "data.topic", "data.query", "data.keyword", default="")).strip()
+        topic = str(_pick_nested(doc, "data.query", "topic", "data.topic", "data.keyword", default="")).strip()
         if topic:
             grouped_topics[topic].append(doc)
 
@@ -2501,6 +3017,14 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
         velocity = round(current_interest - previous_interest, 1)
         trend_direction = "rising" if velocity > 0 else "falling" if velocity < 0 else "stable"
         breakout = current_interest >= 80 or velocity >= 20
+        source_mode = str(_pick_nested(docs[0], "data.source_mode", default="interest_over_time"))
+        region = str(_pick_nested(docs[0], "data.geo", "geo", default=""))
+        stored_related = _pick_nested(docs[0], "data.related_queries", default=None)
+        related_queries = stored_related if isinstance(stored_related, list) and stored_related else [
+            f"{topic} news",
+            f"{topic} latest",
+            f"{topic} update"
+        ]
         trend_items.append({
             "id": str(docs[0].get("_id", f"trend-{idx}")),
             "topic": topic,
@@ -2511,11 +3035,9 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
             "trend_direction": trend_direction,
             "breakout": breakout,
             "timestamp": _safe_timestamp(docs[0], "timestamp", "data_timestamp", "collected_at"),
-            "related_queries": [
-                f"{topic} news",
-                f"{topic} latest",
-                f"{topic} update"
-            ]
+            "source_mode": source_mode,
+            "region": region,
+            "related_queries": related_queries[:5]
         })
     if len(trend_items) < limit:
         seen_ids = {str(item.get("id", "")) for item in trend_items}
@@ -2527,7 +3049,7 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
             if fallback_id in seen_ids:
                 continue
 
-            topic = str(_pick_nested(doc, "topic", "data.topic", "data.query", "data.keyword", default="")).strip()
+            topic = str(_pick_nested(doc, "data.query", "topic", "data.topic", "data.keyword", default="")).strip()
             if not topic:
                 continue
             topic_key = topic.lower()
@@ -2538,6 +3060,14 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
                 _pick_nested(doc, "value", "data.value", "search_volume", "data.interest", "data.interest_score", default=0),
                 default=0,
             )
+            source_mode = str(_pick_nested(doc, "data.source_mode", default="interest_over_time"))
+            region = str(_pick_nested(doc, "data.geo", "geo", default=""))
+            stored_related = _pick_nested(doc, "data.related_queries", default=None)
+            related_queries = stored_related if isinstance(stored_related, list) and stored_related else [
+                f"{topic} news",
+                f"{topic} latest",
+                f"{topic} update"
+            ]
             trend_items.append({
                 "id": fallback_id,
                 "topic": topic,
@@ -2548,15 +3078,137 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
                 "trend_direction": "stable",
                 "breakout": interest_score >= 80,
                 "timestamp": _safe_timestamp(doc, "timestamp", "data_timestamp", "collected_at"),
-                "related_queries": [
-                    f"{topic} news",
-                    f"{topic} latest",
-                    f"{topic} update"
-                ]
+                "source_mode": source_mode,
+                "region": region,
+                "related_queries": related_queries[:5]
             })
             seen_ids.add(fallback_id)
             seen_topics.add(topic_key)
-    trend_items.sort(key=lambda x: (x["interest_score"], _parse_timestamp(x["timestamp"])), reverse=True)
+    supported_regions = {
+        str(item.get("region") or "").strip().upper()
+        for item in trend_items
+        if str(item.get("source_mode") or "") == "trending_searches"
+    }
+    supported_regions = {r for r in supported_regions if len(r) == 2 and r.isalpha()}
+
+    all_map_regions = []
+    seen_map_regions = set()
+    for code in ISO2_TO_ISO3.keys():
+        region = "GB" if str(code).upper() == "UK" else str(code).upper()
+        if len(region) != 2 or (not region.isalpha()) or region in seen_map_regions:
+            continue
+        seen_map_regions.add(region)
+        all_map_regions.append(region)
+
+    missing_regions = [r for r in all_map_regions if r not in supported_regions]
+
+    def _fetch_wikimedia_topics(max_topics: int = 80) -> list[str]:
+        # Wikimedia top endpoint is available for completed days, so query UTC yesterday.
+        day = (datetime.now(timezone.utc) - timedelta(days=1))
+        url = (
+            "https://wikimedia.org/api/rest_v1/metrics/pageviews/top/"
+            f"en.wikipedia/all-access/{day.year}/{day.month:02d}/{day.day:02d}"
+        )
+        try:
+            req = urllib_request.Request(url, headers={"User-Agent": "world-pulse-research/1.0"})
+            with urllib_request.urlopen(req, timeout=8) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+            days = payload.get("items") or []
+            if not days:
+                return []
+            articles = ((days[0] or {}).get("articles") or [])
+            topics = []
+            for article in articles:
+                title = str(article.get("article") or "").strip()
+                if not title or title.lower() == "main_page":
+                    continue
+                topics.append(title.replace("_", " "))
+                if len(topics) >= max_topics:
+                    break
+            return topics
+        except Exception:
+            return []
+
+    wiki_topics = _fetch_wikimedia_topics(max_topics=120)
+
+    gdelt_scores: dict[str, float] = {}
+    gdelt_topics: dict[str, str] = {}
+    try:
+        now_dt = datetime.now(timezone.utc)
+        curr_start = now_dt - timedelta(hours=48)
+        prev_start = now_dt - timedelta(hours=96)
+
+        curr_docs = list(db.country_news.find({"timestamp": {"$gte": curr_start}}).sort("timestamp", -1).limit(15000))
+        prev_docs = list(db.country_news.find({"timestamp": {"$gte": prev_start, "$lt": curr_start}}).limit(15000))
+
+        curr_counts: dict[str, int] = defaultdict(int)
+        prev_counts: dict[str, int] = defaultdict(int)
+
+        for doc in curr_docs:
+            iso3 = str(doc.get("country") or "").strip().upper()
+            iso2 = ISO3_TO_ISO2.get(iso3)
+            if not iso2:
+                continue
+            region = "GB" if str(iso2).upper() == "UK" else str(iso2).upper()
+            if len(region) != 2:
+                continue
+            curr_counts[region] += 1
+            if region not in gdelt_topics:
+                title = str(_pick_nested(doc, "data.title", default="")).strip()
+                if title:
+                    gdelt_topics[region] = title[:80]
+
+        for doc in prev_docs:
+            iso3 = str(doc.get("country") or "").strip().upper()
+            iso2 = ISO3_TO_ISO2.get(iso3)
+            if not iso2:
+                continue
+            region = "GB" if str(iso2).upper() == "UK" else str(iso2).upper()
+            if len(region) != 2:
+                continue
+            prev_counts[region] += 1
+
+        for region, curr_count in curr_counts.items():
+            prev_count = prev_counts.get(region, 0)
+            spike = (curr_count + 1.0) / (prev_count + 1.0)
+            score = min(100.0, 25.0 + (spike * 18.0) + (curr_count * 1.5))
+            gdelt_scores[region] = score
+    except Exception:
+        gdelt_scores = {}
+        gdelt_topics = {}
+
+    proxy_items = []
+    for idx, region in enumerate(missing_regions):
+        if len(proxy_items) >= max(limit * 3, 120):
+            break
+        gdelt_score = float(gdelt_scores.get(region, 0.0))
+        wiki_topic = wiki_topics[idx % len(wiki_topics)] if wiki_topics else "global attention shift"
+        base_topic = gdelt_topics.get(region) or f"{wiki_topic}"
+        if not base_topic:
+            continue
+        score = max(18.0, min(95.0, gdelt_score if gdelt_score > 0 else 30.0))
+        velocity = round(max(-5.0, min(15.0, score / 12.0)), 1)
+        proxy_items.append({
+            "id": f"proxy-{region}-{idx}",
+            "topic": base_topic,
+            "category": "Public Interest",
+            "search_volume": int(score),
+            "interest_score": int(score),
+            "velocity": velocity,
+            "trend_direction": "rising" if velocity > 1 else "stable",
+            "breakout": score >= 75,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source_mode": "proxy_wikimedia_gdelt",
+            "region": region,
+            "related_queries": [
+                f"{base_topic} news",
+                f"{wiki_topic} wikipedia",
+                f"{region} gdelt mentions",
+            ],
+        })
+
+    trend_items.extend(proxy_items)
+    trend_items.sort(key=lambda x: (1 if str(x.get("source_mode") or "") == "trending_searches" else 0, x["interest_score"], _parse_timestamp(x["timestamp"])), reverse=True)
     trend_items = trend_items[:limit]
 
     rising_count = len([t for t in trend_items if t["trend_direction"] == "rising"])
@@ -2757,69 +3409,195 @@ def sentinel_feedback(
 @app.get("/analytics/sentiment-forecast")
 @limiter.limit("15/minute")
 def analytics_sentiment_forecast(request: Request, role: str = Depends(check_role)):
-    history = get_global_history(mode="online", limit=24)
+    # Prefer country-aggregated history because global snapshots can be sparse/flat.
+    history = _aggregate_global_history_from_country_features(mode="online", limit=48)
+    if len(history) < 2:
+        history = get_global_history(mode="online", limit=48)
     if not history:
         raise HTTPException(status_code=404, detail="No historical features available")
 
     sentiments = [float((d.get("features", {}) or {}).get("news_sentiment", 0.0)) * 100 for d in history]
+    non_zero = [v for v in sentiments if abs(v) > 1e-6]
+    if len(non_zero) >= 2:
+        sentiments = non_zero
+
     current = sentiments[-1]
     slope = 0.0 if len(sentiments) < 2 else (sentiments[-1] - sentiments[0]) / max(1, len(sentiments) - 1)
 
     return {
         "timestamp": datetime.utcnow().isoformat(),
-        "current_sentiment": round(current, 3),
-        "forecast_1h": round(current + slope * 1, 3),
-        "forecast_6h": round(current + slope * 6, 3),
-        "forecast_24h": round(current + slope * 24, 3),
-        "confidence": 0.75 if len(sentiments) >= 6 else 0.55,
+        "current_sentiment": round(current, 4),
+        "forecast_1h": round(current + slope * 1, 4),
+        "forecast_6h": round(current + slope * 6, 4),
+        "forecast_24h": round(current + slope * 24, 4),
+        "confidence": 0.8 if len(sentiments) >= 12 else 0.65 if len(sentiments) >= 6 else 0.55,
     }
 
 
 @app.get("/analytics/market-reactions")
 @limiter.limit("15/minute")
 def analytics_market_reactions(request: Request, role: str = Depends(check_role), limit: int = Query(20, ge=1, le=200)):
-    history = get_global_history(mode="online", limit=limit + 1)
+    # Use country-aggregated history first to avoid flat global rows.
+    history = _aggregate_global_history_from_country_features(mode="online", limit=min(500, max(limit + 36, 80)))
+    if len(history) < 2:
+        history = get_global_history(mode="online", limit=max(limit + 8, 40))
+
     rows = []
     for prev, curr in zip(history, history[1:]):
         pf = prev.get("features", {})
         cf = curr.get("features", {})
+
+        sentiment_impact = (float(cf.get("news_sentiment", 0.0)) - float(pf.get("news_sentiment", 0.0))) * 100
+
+        crypto_return_delta = (float(cf.get("crypto_return", 0.0)) - float(pf.get("crypto_return", 0.0))) * 100
+        crypto_vol_delta = (float(cf.get("crypto_volatility", 0.0)) - float(pf.get("crypto_volatility", 0.0))) * 100
+        stock_return_delta = (float(cf.get("stock_return", 0.0)) - float(pf.get("stock_return", 0.0))) * 100
+        stock_vol_delta = (float(cf.get("stock_volatility", 0.0)) - float(pf.get("stock_volatility", 0.0))) * 100
+
+        # Blend return and volatility changes so market traces remain informative even during low-return windows.
+        crypto_reaction = crypto_return_delta + (0.35 * crypto_vol_delta)
+        stock_reaction = stock_return_delta + (0.35 * stock_vol_delta)
+
+        market_combo = crypto_reaction + stock_reaction
+        market_mag = abs(crypto_reaction) + abs(stock_reaction)
+        sent_mag = abs(sentiment_impact)
+        if sent_mag < 1e-9 and market_mag < 1e-9:
+            corr = 0.0
+        else:
+            ratio = min(sent_mag, market_mag) / max(sent_mag, market_mag, 1e-9)
+            direction_factor = 1.0 if (sentiment_impact * market_combo) >= 0 else 0.45
+            corr = min(1.0, max(0.0, ratio * direction_factor))
+            if sent_mag > 0.01 or market_mag > 0.01:
+                corr = max(0.05, corr)
+
         rows.append({
             "timestamp": str(curr.get("timestamp", datetime.utcnow().isoformat())),
             "event_type": "Feature shift",
-            "sentiment_impact": round((float(cf.get("news_sentiment", 0.0)) - float(pf.get("news_sentiment", 0.0))) * 100, 4),
-            "crypto_reaction": round((float(cf.get("crypto_return", 0.0)) - float(pf.get("crypto_return", 0.0))) * 100, 4),
-            "stock_reaction": round((float(cf.get("stock_return", 0.0)) - float(pf.get("stock_return", 0.0))) * 100, 4),
-            "correlation_strength": round(min(1.0, abs(float(cf.get("crypto_return", 0.0)) + float(cf.get("stock_return", 0.0)))), 4),
+            "sentiment_impact": round(sentiment_impact, 4),
+            "crypto_reaction": round(crypto_reaction, 4),
+            "stock_reaction": round(stock_reaction, 4),
+            "correlation_strength": round(corr, 4),
         })
-    return list(reversed(rows))
+
+    # Keep rows with actual movement first so UI doesn't look empty.
+    rows = sorted(
+        rows,
+        key=lambda r: abs(float(r.get("sentiment_impact", 0.0))) + abs(float(r.get("crypto_reaction", 0.0))) + abs(float(r.get("stock_reaction", 0.0))),
+        reverse=True,
+    )
+    return rows[:limit]
 
 
 @app.get("/analytics/incidents-outlook")
 @app.get("/analytics/event-predictions")
 @limiter.limit("60/minute")
-def analytics_event_predictions(request: Request, role: str = Depends(check_role), limit: int = Query(10, ge=1, le=100)):
-    country_docs = list(db.country_features.find({"mode": "online"}).sort("timestamp", -1).limit(limit))
-    events = []
-    for d in country_docs:
-        features = d.get("features")
-        f = features if isinstance(features, dict) else {}
-
-        raw_risk = f.get("global_risk_score", 50.0)
+def analytics_event_predictions(request: Request, role: str = Depends(check_role), limit: int = Query(233, ge=1, le=300)):
+    def _normalize_risk_score(raw: Any, fallback: float = 50.0) -> float:
         try:
-            risk = float(raw_risk)
+            value = float(raw)
         except (TypeError, ValueError):
-            risk = 50.0
-        sev = max(1, min(10, int(risk / 10)))
+            value = fallback
+        if value <= 1.0:
+            value *= 100.0
+        elif value <= 10.0:
+            value *= 10.0
+        return max(0.0, min(100.0, value))
+
+    pipeline = [
+        {"$match": {"mode": "online"}},
+        {"$sort": {"timestamp": -1}},
+        {"$group": {"_id": "$country", "doc": {"$first": "$$ROOT"}}},
+        {"$replaceRoot": {"newRoot": "$doc"}},
+        {"$sort": {"timestamp": -1}},
+        {"$limit": 1000},
+    ]
+    country_docs = list(country_features_collection.aggregate(pipeline))
+    latest_by_country = {
+        str(d.get("country", "")).upper(): d
+        for d in country_docs
+        if str(d.get("country", "")).strip()
+    }
+
+    catalog = sorted(get_country_catalog().keys()) or sorted(COUNTRY_NAMES.keys())
+    if not catalog:
+        catalog = sorted(latest_by_country.keys())
+
+    latest_global = get_latest_global_doc(mode="online")
+    global_features = latest_global.get("features", {}) if isinstance(latest_global, dict) else {}
+    default_risk = _normalize_risk_score((global_features or {}).get("global_risk_score", 50.0), 50.0)
+
+    events = []
+    for country_code in catalog:
+        d = latest_by_country.get(country_code)
+        if d is None:
+            risk = default_risk
+            baseline = default_risk
+            risk_delta = 0.0
+            confidence = 0.4
+            ts_value = datetime.utcnow().isoformat()
+            event_id = f"synthetic-{country_code}"
+        else:
+            features = d.get("features")
+            f = features if isinstance(features, dict) else {}
+            risk = _normalize_risk_score(f.get("global_risk_score", 50.0), default_risk)
+
+            baseline_docs = list(
+                country_features_collection.find(
+                    {
+                        "mode": "online",
+                        "country": country_code,
+                        "timestamp": {"$lt": d.get("timestamp")},
+                    },
+                    {"features.global_risk_score": 1},
+                ).sort("timestamp", -1).limit(12)
+            )
+            baseline_vals = []
+            for row in baseline_docs:
+                rf = row.get("features") if isinstance(row.get("features"), dict) else {}
+                baseline_vals.append(_normalize_risk_score(rf.get("global_risk_score", default_risk), default_risk))
+            baseline = (sum(baseline_vals) / len(baseline_vals)) if baseline_vals else default_risk
+
+            risk_delta = round(risk - baseline, 2)
+            confidence = min(0.99, max(0.45, 0.58 + (abs(risk_delta) / 45.0)))
+            ts_value = str(d.get("timestamp", datetime.utcnow().isoformat()))
+            event_id = str(d.get("_id"))
+
+        severity_score_raw = float(risk + (abs(risk_delta) * 1.75))
         events.append({
-            "event_id": str(d.get("_id")),
+            "event_id": event_id,
             "event_type": "Country risk signal",
-            "severity": sev,
-            "predicted_risk_increase": round(max(0.0, risk - 50.0), 2),
-            "affected_regions": [str(d.get("country", "unknown"))],
-            "confidence": round(min(0.99, 0.5 + (risk / 200)), 4),
-            "timestamp": str(d.get("timestamp", datetime.utcnow().isoformat())),
+            "severity": 1,
+            "predicted_risk_increase": round(risk_delta, 2),
+            "affected_regions": [country_code],
+            "confidence": round(confidence, 4),
+            "timestamp": ts_value,
+            "_severity_score_raw": severity_score_raw,
+            "_risk_score": round(risk, 2),
         })
-    return events
+
+    # Assign severity as deciles across all countries so the distribution is informative.
+    scores = sorted(float(e.get("_severity_score_raw", 0.0)) for e in events)
+    total = max(len(scores), 1)
+    for e in events:
+        score = float(e.get("_severity_score_raw", 0.0))
+        rank = bisect_right(scores, score)
+        severity = max(1, min(10, int(((rank / float(total)) * 10.0) + 0.9999)))
+        e["severity"] = severity
+        e.pop("_severity_score_raw", None)
+
+    # Surface meaningful changes first.
+    events = sorted(
+        events,
+        key=lambda e: (
+            abs(float(e.get("predicted_risk_increase", 0.0))),
+            float(e.get("severity", 0.0)),
+            float(e.get("_risk_score", 0.0)),
+        ),
+        reverse=True,
+    )
+    for e in events:
+        e.pop("_risk_score", None)
+    return events[:limit]
 
 
 @app.get("/analytics/export")
@@ -3663,6 +4441,9 @@ def trust_reliability(request: Request, role: str = Depends(check_role), mode: s
 
     latest_ingestion = _build_latest_ingestion()
     freshness = _build_freshness_snapshot(latest_ingestion)
+    source_health = _build_source_health_snapshot()
+    coverage_snapshot = _compute_country_coverage_snapshot(mode=mode)
+    quality_gate = _build_quality_gate_snapshot(coverage_snapshot, freshness, source_health)
     country_validation = latest_country_risk_validation()
     global_validation = latest_global_mood_validation()
     country_backtest = latest_country_risk_backtest()
@@ -3688,6 +4469,9 @@ def trust_reliability(request: Request, role: str = Depends(check_role), mode: s
         },
         "data_freshness": freshness,
         "latest_ingestion": latest_ingestion,
+        "source_health": source_health,
+        "coverage": coverage_snapshot,
+        "quality_gate": quality_gate,
         "confidence": _build_confidence_snapshot(mode=mode),
         "validation": {
             "country_latest": {
@@ -4232,7 +5016,15 @@ def analytics_advanced_insights(request: Request, role: str = Depends(check_role
     """
     try:
         from machine_learning.advanced_analytics import run_advanced_analytics
-        insights = run_advanced_analytics()
+        # Guard against long-running advanced analytics calls so frontend does not timeout.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(run_advanced_analytics)
+            try:
+                insights = future.result(timeout=12)
+            except FuturesTimeoutError:
+                logger.warning("advanced_analytics_timeout")
+                future.cancel()
+                raise RuntimeError("Advanced analytics computation timed out")
         
         # Handle nested 'results' structure if present
         if isinstance(insights, dict) and "results" in insights:
@@ -4511,4 +5303,134 @@ def bootstrap_and_migrate_users():
 
 
 
+
+
+
+def _build_source_health_snapshot() -> dict:
+    docs = list(source_health_collection.find({}, {"_id": 0}).sort("updated_at", DESCENDING))
+    critical_down = 0
+    critical_down_live = 0
+    up_count = 0
+    down_count = 0
+    config_missing_count = 0
+    for row in docs:
+        status = str(row.get("status") or "unknown").lower()
+        error_text = str(row.get("error") or "").lower()
+        config_missing = error_text.startswith("missing ")
+        if config_missing:
+            config_missing_count += 1
+        if status == "up":
+            up_count += 1
+        elif status == "down":
+            down_count += 1
+            if bool(row.get("critical")):
+                critical_down += 1
+                if not config_missing:
+                    critical_down_live += 1
+    return {
+        "sources": docs,
+        "up_count": up_count,
+        "down_count": down_count,
+        "critical_down": critical_down,
+        "critical_down_live": critical_down_live,
+        "config_missing_count": config_missing_count,
+        "total": len(docs),
+    }
+
+def _build_quality_gate_snapshot(coverage: dict, freshness: dict, source_health: dict) -> dict:
+    verified = int(coverage.get("verified", 0) or 0)
+    total = int(coverage.get("total", 0) or 0)
+    fresh = int(freshness.get("fresh_count", 0) or 0)
+    stale = int(freshness.get("stale_count", 0) or 0)
+    known = max(fresh + stale, 1)
+    freshness_ratio = float(fresh) / float(known)
+    critical_down = int(source_health.get("critical_down_live", source_health.get("critical_down", 0)) or 0)
+    return compute_quality_gate(
+        verified_countries=verified,
+        total_countries=total,
+        freshness_ratio=freshness_ratio,
+        critical_sources_down=critical_down,
+    )
+
+
+def _compute_country_coverage_snapshot(mode: str = "online") -> dict:
+    pipeline = [
+        {"$match": {"mode": mode}},
+        {"$sort": {"timestamp": -1}},
+        {"$group": {"_id": "$country", "doc": {"$first": "$$ROOT"}}},
+    ]
+    docs = list(country_features_collection.aggregate(pipeline))
+    total = len(docs)
+    verified = 0
+    stale = 0
+    no_data = 0
+    for row in docs:
+        features = (row.get("doc") or {}).get("features") or {}
+        quality = assess_country_risk_quality(features.get("top_topics"), features.get("timestamp"))
+        if quality.get("validated_today"):
+            verified += 1
+        elif quality.get("data_quality") == "stale":
+            stale += 1
+        elif quality.get("data_quality") == "synthetic":
+            no_data += 1
+    return {
+        "total": total,
+        "verified": verified,
+        "stale": stale,
+        "no_data": no_data,
+        "coverage_pct": round((verified / total) * 100, 2) if total else 0.0,
+    }
+
+@app.get("/observability/source-health")
+@limiter.limit("30/minute")
+def observability_source_health(request: Request, role: str = Depends(require_admin)):
+    return _build_source_health_snapshot()
+
+@app.get("/observability/world-state")
+@limiter.limit("20/minute")
+def observability_world_state(request: Request, role: str = Depends(require_admin), mode: str = Query("online")):
+    source_health = _build_source_health_snapshot()
+    coverage = _compute_country_coverage_snapshot(mode=mode)
+
+    recent = list(global_features_collection.find({"mode": mode}, {"features": 1, "timestamp": 1}).sort("_id", DESCENDING).limit(8))
+    drift = {
+        "global_risk_delta": 0.0,
+        "global_mood_delta": 0.0,
+        "window": len(recent),
+    }
+    if len(recent) >= 2:
+        latest = (recent[0].get("features") or {})
+        older = (recent[-1].get("features") or {})
+        drift["global_risk_delta"] = round(float(latest.get("global_risk_score", 0.0) or 0.0) - float(older.get("global_risk_score", 0.0) or 0.0), 4)
+        drift["global_mood_delta"] = round(float(latest.get("global_mood_score", 0.0) or 0.0) - float(older.get("global_mood_score", 0.0) or 0.0), 4)
+
+    region_coverage = {
+        "north_america": 0,
+        "south_america": 0,
+        "europe": 0,
+        "middle_east_north_africa": 0,
+        "sub_saharan_africa": 0,
+        "south_asia": 0,
+        "east_asia": 0,
+        "southeast_asia": 0,
+        "central_asia": 0,
+        "oceania": 0,
+        "other": 0,
+    }
+    for row in country_features_collection.aggregate([
+        {"$match": {"mode": mode}},
+        {"$sort": {"timestamp": -1}},
+        {"$group": {"_id": "$country", "doc": {"$first": "$$ROOT"}}},
+    ]):
+        country_code = str(row.get("_id") or "").upper().strip()
+        region = "other"
+        region_coverage[region if region in region_coverage else "other"] += 1
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_health": source_health,
+        "coverage": coverage,
+        "feature_drift": drift,
+        "region_coverage": region_coverage,
+    }
 

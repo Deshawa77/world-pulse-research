@@ -196,15 +196,26 @@ def build_country_mood_fields(country_code: str, feature_doc: dict[str, Any], mo
         "source_reliability_score",
     }
     if existing_keys.issubset(feature_doc.keys()):
-        return {
-            "country_mood_score": round(_clamp(feature_doc.get("country_mood_score"), 0.0, 100.0), 2),
-            "country_mood_baseline": round(_safe_float(feature_doc.get("country_mood_baseline"), 0.0), 5),
-            "country_mood_sentiment_delta": round(_safe_float(feature_doc.get("country_mood_sentiment_delta"), 0.0), 5),
-            "country_mood_sentiment_zscore": round(_safe_float(feature_doc.get("country_mood_sentiment_zscore"), 0.0), 4),
-            "source_diversity_score": round(_clamp(feature_doc.get("source_diversity_score"), 0.0, 1.0), 4),
-            "source_reliability_score": round(_clamp(feature_doc.get("source_reliability_score"), 0.3, 1.0), 4),
-        }
-
+        existing_score = _safe_float(feature_doc.get("country_mood_score"), 50.0)
+        existing_baseline = _safe_float(feature_doc.get("country_mood_baseline"), 0.0)
+        existing_delta = _safe_float(feature_doc.get("country_mood_sentiment_delta"), 0.0)
+        existing_zscore = _safe_float(feature_doc.get("country_mood_sentiment_zscore"), 0.0)
+        # Avoid preserving neutral default placeholders (all zeros) as real mood estimates.
+        has_computed_mood = not (
+            abs(existing_score) < 1e-9
+            and abs(existing_baseline) < 1e-9
+            and abs(existing_delta) < 1e-9
+            and abs(existing_zscore) < 1e-9
+        )
+        if has_computed_mood:
+            return {
+                "country_mood_score": round(_clamp(feature_doc.get("country_mood_score"), 0.0, 100.0), 2),
+                "country_mood_baseline": round(_safe_float(feature_doc.get("country_mood_baseline"), 0.0), 5),
+                "country_mood_sentiment_delta": round(_safe_float(feature_doc.get("country_mood_sentiment_delta"), 0.0), 5),
+                "country_mood_sentiment_zscore": round(_safe_float(feature_doc.get("country_mood_sentiment_zscore"), 0.0), 4),
+                "source_diversity_score": round(_clamp(feature_doc.get("source_diversity_score"), 0.0, 1.0), 4),
+                "source_reliability_score": round(_clamp(feature_doc.get("source_reliability_score"), 0.3, 1.0), 4),
+            }
     current_timestamp = _parse_timestamp(feature_doc.get("timestamp"))
     raw_sentiment = float(np.mean([
         _safe_float(feature_doc.get("news_sentiment"), 0.0),
@@ -232,8 +243,16 @@ def build_country_mood_fields(country_code: str, feature_doc: dict[str, Any], mo
         + weather_stress * 9.0
         + war_state_penalty
     )
-    country_mood_score = _clamp(50.0 + sentiment_component - pressure_penalty, 0.0, 100.0)
     source_diversity_score, source_reliability_score = _country_source_metrics(feature_doc)
+    source_count = max(_safe_float(feature_doc.get("source_count"), 0.0), 0.0)
+    source_count_weight = min(max(source_count / 4.0, 0.25), 1.0)
+    source_confidence_factor = _clamp(
+        (0.25 + (0.5 * source_diversity_score) + (0.25 * source_reliability_score)) * (0.7 + (0.3 * source_count_weight)),
+        0.35,
+        1.0,
+    )
+    effective_penalty = pressure_penalty * source_confidence_factor
+    country_mood_score = _clamp(50.0 + sentiment_component - effective_penalty, 0.0, 100.0)
 
     return {
         "country_mood_score": round(country_mood_score, 2),
@@ -608,3 +627,4 @@ def compute_global_operational_features(
             "value": dict(result),
         }
     return result
+

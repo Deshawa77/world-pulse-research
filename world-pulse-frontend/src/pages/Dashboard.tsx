@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+﻿import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
 import ConsoleNavigation from "../components/ConsoleNavigation";
@@ -549,10 +549,19 @@ export default function Dashboard() {
   })();
   const dockConnectionLabel = `${connectionState.charAt(0).toUpperCase()}${connectionState.slice(1)}`;
   const liveSignalCount = coverageState.verified || verifiedRiskMap.length || liveFeedState.incidents?.length || 0;
-  const telemetryStatusLine = `${dockConnectionLabel} • ${liveSignalCount} verified signals • Updated ${formatTelemetryTime(liveFeedState.lastUpdated)}`;
+  const telemetryStatusLine = `${dockConnectionLabel} - ${liveSignalCount} verified signals - Updated ${formatTelemetryTime(liveFeedState.lastUpdated)}`;
   const trustValidation = (trustSnapshot?.validation ?? {}) as Record<string, unknown>;
   const trustFreshness = (trustSnapshot?.data_freshness ?? {}) as Record<string, unknown>;
   const trustConfidence = (trustSnapshot?.confidence ?? {}) as Record<string, unknown>;
+  const qualityGate = (trustSnapshot as Record<string, unknown> | null)?.quality_gate as Record<string, unknown> | undefined;
+  const qualityGateMetrics = (qualityGate?.metrics ?? {}) as Record<string, unknown>;
+  const qualityGateActive = Boolean(qualityGate?.active);
+  const qualityGateRollout = (qualityGate?.rollout ?? {}) as Record<string, unknown>;
+  const qualityGateShadowMode = Boolean(qualityGateRollout.shadow_mode);
+  const qualityGateDisplayActive = qualityGateActive && !qualityGateShadowMode;
+  const qualityGateMessage = typeof qualityGate?.message === "string" ? qualityGate.message : "Reliability advisory";
+  const qualityGateReasons = Array.isArray(qualityGate?.reasons) ? qualityGate.reasons.filter((x): x is string => typeof x === "string") : [];
+  const qualityGateFreshnessPct = (safeN(qualityGateMetrics.freshness_ratio, 0) * 100).toFixed(0);
   const countryBacktest = (trustValidation.country_backtest ?? {}) as Record<string, unknown>;
   const globalBacktest = (trustValidation.global_backtest ?? {}) as Record<string, unknown>;
   const staleSources = safeN(trustFreshness.stale_count, 0);
@@ -1202,10 +1211,30 @@ export default function Dashboard() {
         </div>
       </section>
 
+      {qualityGateActive ? (
+        <section
+          className="wp-intelligence-bar"
+          style={
+            qualityGateDisplayActive
+              ? { borderColor: "rgba(248, 113, 113, 0.45)", background: "rgba(127, 29, 29, 0.14)" }
+              : { borderColor: "rgba(251, 191, 36, 0.38)", background: "rgba(120, 53, 15, 0.14)" }
+          }
+        >
+          <div className="wp-intelligence-primary">
+            <span className="wp-intelligence-kicker">Data Quality Gate</span>
+            <span className="wp-intelligence-topic">{qualityGateMessage}</span>
+            <span className="wp-intelligence-sep" />
+            <span>Verified countries {verifiedCoverageLabel} | Fresh data {qualityGateFreshnessPct}%</span>
+          </div>
+          <div className="wp-intelligence-secondary">
+            <span>{qualityGateShadowMode ? "Shadow mode active: monitoring reliability; headline scores remain visible." : (qualityGateReasons.join(" | ") || "Global metrics downweighted due to insufficient reliability.")}</span>
+          </div>
+        </section>
+      ) : null}
       <section className="wp-exec-grid">
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Global Mood</div>
-          <strong className="wp-highlight">{globalMoodScore.toFixed(1)} +/- {globalMoodUncertainty.toFixed(1)}</strong>
+          <strong className="wp-highlight">{`${globalMoodScore.toFixed(1)} +/- ${globalMoodUncertainty.toFixed(1)}`}</strong>
           <div className="wp-mini-meta"><span>Confidence</span><strong>{(globalMoodConfidence * 100).toFixed(0)}%</strong></div>
           <div className="wp-mini-meta wp-mini-meta--detail"><span>Countries</span><strong className="wp-mini-meta-detail">{globalMoodCountrySummary}</strong></div>
         </article>
@@ -1217,9 +1246,9 @@ export default function Dashboard() {
         </article>
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Global Risk</div>
-          <strong className="wp-highlight">{globalRiskScore.toFixed(1)} / 100</strong>
+          <strong className="wp-highlight">{`${globalRiskScore.toFixed(1)} / 100`}</strong>
           <div className="wp-mini-meta"><span>Threat</span><strong>{telemetryThreat.label}</strong></div>
-          <div className="wp-mini-meta"><span>Trend</span><strong>{telemetryTrend.label}</strong></div>
+          <div className="wp-mini-meta"><span>Trend</span><strong>{qualityGateDisplayActive ? `${telemetryTrend.label} (banded)` : telemetryTrend.label}</strong></div>
         </article>
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Forecast</div>
@@ -1355,7 +1384,7 @@ export default function Dashboard() {
               <div className="panel-head futuristic-panel-header">
                 <div className="header-glow cyan"></div>
                 <h3>
-                  <span className="header-icon">ðŸŒ</span>
+                  <span className="header-icon">GLB</span>
                   Global Intelligence Feed
                   <span className="header-badge">LIVE</span>
                 </h3>
@@ -1442,7 +1471,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-amber">
             <div className="header-glow domain-header-glow domain-header-glow-amber"></div>
             <h3>
-              <span className="header-icon">â‚¿</span>
+              <span className="header-icon">BTC</span>
               Crypto Market Pulse
               <span className="header-badge domain-badge domain-badge-amber">LIVE</span>
             </h3>
@@ -1464,7 +1493,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-red">
             <div className="header-glow domain-header-glow domain-header-glow-red"></div>
             <h3>
-              <span className="header-icon">ðŸŒ‹</span>
+              <span className="header-icon">DIS</span>
               Global Disaster Monitor
               <span className="header-badge domain-badge domain-badge-red">LIVE</span>
             </h3>
@@ -1486,7 +1515,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-green">
             <div className="header-glow domain-header-glow domain-header-glow-green"></div>
             <h3>
-              <span className="header-icon">ðŸ“Š</span>
+              <span className="header-icon">ECO</span>
               Economic Indicators
               <span className="header-badge domain-badge domain-badge-green">LIVE</span>
             </h3>
@@ -1508,7 +1537,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-pink">
             <div className="header-glow domain-header-glow domain-header-glow-pink"></div>
             <h3>
-              <span className="header-icon">ðŸ¥</span>
+              <span className="header-icon">HLT</span>
               Health Alert Stream
               <span className="header-badge domain-badge domain-badge-pink">LIVE</span>
             </h3>
@@ -1530,7 +1559,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-violet">
             <div className="header-glow domain-header-glow domain-header-glow-violet"></div>
             <h3>
-              <span className="header-icon">ðŸ“ˆ</span>
+              <span className="header-icon">TRD</span>
               Google Trends Radar
               <span className="header-badge domain-badge domain-badge-violet">LIVE</span>
             </h3>
@@ -1574,7 +1603,7 @@ export default function Dashboard() {
           <div className="panel-head futuristic-panel-header domain-header domain-header-orange">
             <div className="header-glow domain-header-glow domain-header-glow-orange"></div>
             <h3>
-              <span className="header-icon">âš¡</span>
+              <span className="header-icon">OPS</span>
               Operator Workflow And Reliability Log
               <span className="header-badge domain-badge domain-badge-orange">OPS</span>
             </h3>
@@ -1663,11 +1692,15 @@ export default function Dashboard() {
         onClick={() => setSentinelEnabled(!sentinelEnabled)}
         className={`sentinel-toggle ${sentinelEnabled ? "is-enabled" : "is-disabled"}`}
       >
-        {sentinelEnabled ? "ðŸ¤– Sentinel AI ON" : "ðŸ¤– Sentinel AI OFF"}
+        {sentinelEnabled ? "Sentinel AI ON" : "Sentinel AI OFF"}
       </button>
     </main>
   );
 }
+
+
+
+
 
 
 

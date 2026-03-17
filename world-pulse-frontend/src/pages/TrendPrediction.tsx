@@ -181,6 +181,36 @@ function normalizeUnitValue(value: unknown, fallback = 0): number {
   return n;
 }
 
+function formatInsightMetric(value: number, defaultText = "N/A"): string {
+  if (!Number.isFinite(value)) return defaultText;
+  const abs = Math.abs(value);
+  if (abs > 0 && abs < 0.01) return value.toFixed(4);
+  return value.toFixed(2);
+}
+
+function normalizeSeverityLevel(value: unknown): number {
+  const level = Math.round(safeN(value, 1));
+  return Math.max(1, Math.min(10, level));
+}
+
+function getSeverityLabel(level: number): string {
+  if (level >= 9) return "Critical";
+  if (level >= 7) return "High";
+  if (level >= 4) return "Moderate";
+  return "Low";
+}
+
+function normalizeEventTypeLabel(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "Risk Signal";
+  const normalized = raw.replace(/[_.-]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  if (normalized === "country risk signal") return "Country Risk Shift";
+  return normalized
+    .split(" ")
+    .map((token) => token ? token[0].toUpperCase() + token.slice(1) : "")
+    .join(" ");
+}
+
 function filterLogsForTimeframe(logs: PredictionLog[], timeframe: Timeframe): PredictionLog[] {
   const now = Date.now();
   const windowMsByTimeframe: Record<Timeframe, number> = {
@@ -202,7 +232,27 @@ function filterLogsForTimeframe(logs: PredictionLog[], timeframe: Timeframe): Pr
       return aTs - bTs;
     });
 }
-
+function computePearsonCorrelation(a: number[], b: number[]): number | null {
+  const n = Math.min(a.length, b.length);
+  if (n < 2) return null;
+  const x = a.slice(0, n);
+  const y = b.slice(0, n);
+  const meanX = x.reduce((sum, v) => sum + v, 0) / n;
+  const meanY = y.reduce((sum, v) => sum + v, 0) / n;
+  let num = 0;
+  let denX = 0;
+  let denY = 0;
+  for (let i = 0; i < n; i += 1) {
+    const dx = x[i] - meanX;
+    const dy = y[i] - meanY;
+    num += dx * dy;
+    denX += dx * dx;
+    denY += dy * dy;
+  }
+  const den = Math.sqrt(denX * denY);
+  if (!Number.isFinite(den) || den <= 1e-9) return null;
+  return Math.max(-1, Math.min(1, num / den));
+}
 function buildLogsFromHistory(rows: HistoricalDataPoint[]): PredictionLog[] {
   return rows.map((row, idx) => ({
     _id: `history-${idx}`,
@@ -497,7 +547,7 @@ export default function TrendPrediction() {
       if (!resolvedCurrentPrediction && effectiveLogs.length) {
         const latestLog = effectiveLogs[effectiveLogs.length - 1];
         const fallbackFeatures = Array.isArray(latestLog.features)
-          ? latestLog.features.slice(0, 7).map((v) => safeN(v))
+          ? latestLog.features.slice(0, 7).map((v: unknown) => safeN(v))
           : latestFeatures;
         const fallbackPrediction = {
           timestamp: latestLog.timestamp || new Date().toISOString(),
@@ -517,7 +567,7 @@ export default function TrendPrediction() {
       const [forecastResult, reactionsResult, eventsResult, governanceResult, mapResult, historyResult] = await Promise.allSettled([
         predictionService.getSentimentForecast(),
         predictionService.getMarketReactions(30),
-        predictionService.getEventPredictions(),
+        predictionService.getEventPredictions(233),
         getGovernanceData(),
         getRiskMap(),
         predictionService.getHistoricalData(start, end, selectedTimeframe === "7d" ? 1000 : 400),
@@ -604,7 +654,7 @@ export default function TrendPrediction() {
             prediction: safeN(latest.prediction),
             probability: safeN(latest.probability, 0.5),
             model_version: latest.model_version || "history-derived",
-            features: Array.isArray(latest.features) ? latest.features.slice(0, 7).map((v) => safeN(v)) : latestFeatures,
+            features: Array.isArray(latest.features) ? latest.features.slice(0, 7).map((v: unknown) => safeN(v)) : latestFeatures,
             drift_score: latest.drift_score ?? undefined,
           };
           setCurrentPrediction(fromHistoryPrediction);
@@ -671,7 +721,7 @@ export default function TrendPrediction() {
 
   const activeFeatureVector = useMemo<number[]>(() => {
     if (activePredictionData && Array.isArray(activePredictionData.features) && activePredictionData.features.length >= 7) {
-      return activePredictionData.features.slice(0, 7).map((v) => safeN(v));
+      return activePredictionData.features.slice(0, 7).map((v: unknown) => safeN(v));
     }
     return latestFeatures;
   }, [activePredictionData, latestFeatures]);
@@ -869,36 +919,46 @@ export default function TrendPrediction() {
     });
   }, [activeSentimentForecast, plotlyReady]);
 
-  // Render Market Reaction Chart
+    // Render Market Reaction Chart
   useEffect(() => {
     if (!marketChartRef.current || !activeMarketReactions.length || !plotlyRef.current || !plotlyReady) return;
 
-    const events = activeMarketReactions.map((r) => r.event_type || "Event");
+    const labels = activeMarketReactions.map((r, idx) => {
+      const ts = parseTimestampMs(r.timestamp);
+      return ts !== null ? new Date(ts).toLocaleTimeString() : `Shift ${idx + 1}`;
+    });
     const sentimentImpacts = activeMarketReactions.map((r) => safeN(r.sentiment_impact));
     const cryptoReactions = activeMarketReactions.map((r) => safeN(r.crypto_reaction));
     const stockReactions = activeMarketReactions.map((r) => safeN(r.stock_reaction));
 
     const data = [
       {
-        x: events,
+        x: labels,
         y: sentimentImpacts,
         type: "bar",
         name: "Sentiment Impact",
         marker: { color: "#22d3ee" },
+        yaxis: "y",
       },
       {
-        x: events,
+        x: labels,
         y: cryptoReactions,
-        type: "bar",
+        type: "scatter",
+        mode: "lines+markers",
         name: "Crypto Reaction %",
-        marker: { color: "#f472b6" },
+        marker: { color: "#f472b6", size: 7 },
+        line: { color: "#f472b6", width: 2 },
+        yaxis: "y2",
       },
       {
-        x: events,
+        x: labels,
         y: stockReactions,
-        type: "bar",
+        type: "scatter",
+        mode: "lines+markers",
         name: "Stock Reaction %",
-        marker: { color: "#a3e635" },
+        marker: { color: "#a3e635", size: 7 },
+        line: { color: "#a3e635", width: 2 },
+        yaxis: "y2",
       },
     ];
 
@@ -914,10 +974,18 @@ export default function TrendPrediction() {
       xaxis: {
         gridcolor: "rgba(146,170,210,0.2)",
         tickfont: { color: "#9fb0cf" },
+        tickangle: -30,
       },
       yaxis: {
-        title: "Impact %",
+        title: "Sentiment Impact",
         gridcolor: "rgba(146,170,210,0.2)",
+        tickfont: { color: "#9fb0cf" },
+      },
+      yaxis2: {
+        title: "Crypto/Stock Reaction %",
+        overlaying: "y",
+        side: "right",
+        showgrid: false,
         tickfont: { color: "#9fb0cf" },
       },
       legend: {
@@ -925,7 +993,7 @@ export default function TrendPrediction() {
         x: 0.02,
         y: 0.98,
       },
-      margin: { t: 50, r: 30, b: 80, l: 60 },
+      margin: { t: 50, r: 56, b: 90, l: 60 },
     };
 
     plotlyRef.current.react(marketChartRef.current, data, layout, {
@@ -1103,6 +1171,15 @@ export default function TrendPrediction() {
     return fallbackFromEvents;
   }, [deepHistoryForPanels, riskMap, activeEventPredictions]);
 
+  const marketCorrelation = useMemo(() => {
+    if (!activeMarketReactions.length) return null;
+    const sentiment = activeMarketReactions.map((row) => safeN(row.sentiment_impact));
+    const market = activeMarketReactions.map((row) => (safeN(row.crypto_reaction) + safeN(row.stock_reaction)) / 2);
+    const pearson = computePearsonCorrelation(sentiment, market);
+    if (pearson !== null) return pearson;
+    const avgFallback = activeMarketReactions.reduce((acc, row) => acc + safeN(row.correlation_strength), 0) / activeMarketReactions.length;
+    return Number.isFinite(avgFallback) ? avgFallback : null;
+  }, [activeMarketReactions]);
   const hasMlData = mlSeries.length > 0;
   const hasFeatureData = playbackActive ? activeFeatureVector.length >= 7 : latestFeaturesLoaded;
   const hasSentimentData = Boolean(activeSentimentForecast);
@@ -1442,41 +1519,54 @@ export default function TrendPrediction() {
         <article className="wp-card panel-animated prediction-card-medium">
           <PanelHeader
             title="Event-Based Predictions"
-            subtitle="Severity-ranked event risk deltas and impacted regions"
+            subtitle="Country-level risk outlook with readable severity bands and impacted regions"
             status={eventsStatus}
           />
           {hasEventData ? (
             <div className="event-predictions">
-              {activeEventPredictions.map((event) => (
-                <div key={event.event_id} className="event-card">
-                  <div className="event-header">
-                    <span className={`severity-badge severity-${event.severity}`}>
-                      S{event.severity}
-                    </span>
-                    <span className="event-type">{event.event_type}</span>
+              {activeEventPredictions.map((event) => {
+                const severityLevel = normalizeSeverityLevel(event.severity);
+                const severityLabel = getSeverityLabel(severityLevel);
+                const eventTypeLabel = normalizeEventTypeLabel(event.event_type);
+                const riskDelta = safeN(event.predicted_risk_increase);
+                const riskDeltaLabel = `${riskDelta >= 0 ? "+" : ""}${riskDelta.toFixed(2)}%`;
+                const eventTimestampMs = parseTimestampMs(event.timestamp);
+                const regions = Array.isArray(event.affected_regions)
+                  ? event.affected_regions.filter((region) => Boolean(String(region || "").trim()))
+                  : [];
+
+                return (
+                  <div key={event.event_id} className="event-card">
+                    <div className="event-header">
+                      <span className={`severity-badge severity-${severityLevel}`}>{severityLabel}</span>
+                      <span className="severity-score">{severityLevel}/10</span>
+                      <span className="event-type">{eventTypeLabel}</span>
+                    </div>
+                    <div className="event-details">
+                      <div className="event-metrics-grid">
+                        <div className="wp-mini-meta event-metric">
+                          <span>Projected Risk Delta</span>
+                          <strong className={`risk-increase ${riskDelta >= 0 ? "trend-up" : "trend-down"}`}>{riskDeltaLabel}</strong>
+                        </div>
+                        <div className="wp-mini-meta event-metric">
+                          <span>Confidence</span>
+                          <strong>{(safeN(event.confidence) * 100).toFixed(0)}%</strong>
+                        </div>
+                      </div>
+                      <div className="affected-regions">
+                        {(regions.length ? regions : ["Global"]).slice(0, 8).map((region) => (
+                          <span key={region} className={`region-tag${region === "Global" ? " region-tag-muted" : ""}`}>
+                            {region}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="event-time">
+                        Expected window: {eventTimestampMs !== null ? new Date(eventTimestampMs).toLocaleString() : "Unknown"}
+                      </div>
+                    </div>
                   </div>
-                  <div className="event-details">
-                    <div className="wp-mini-meta">
-                      <span>Risk Increase</span>
-                      <strong className="risk-increase">+{event.predicted_risk_increase}%</strong>
-                    </div>
-                    <div className="wp-mini-meta">
-                      <span>Confidence</span>
-                      <span>{(event.confidence * 100).toFixed(0)}%</span>
-                    </div>
-                    <div className="affected-regions">
-                      {event.affected_regions.map((region) => (
-                        <span key={region} className="region-tag">
-                          {region}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="event-time">
-                      Expected: {new Date(event.timestamp).toLocaleDateString()}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="prediction-empty">
@@ -1496,15 +1586,17 @@ export default function TrendPrediction() {
               <div className="insight-item">
                 <span className="insight-label">Top Risk Driver</span>
                 <strong className="insight-value">
-                  {activeFeatureVector[0] > activeFeatureVector[1] ? "News Sentiment" : "GDELT Sentiment"}
+                  {Math.abs(activeFeatureVector[0] - activeFeatureVector[1]) < 0.0001
+                    ? "Balanced Sentiment Signals"
+                    : activeFeatureVector[0] > activeFeatureVector[1]
+                    ? "News Sentiment"
+                    : "GDELT Sentiment"}
                 </strong>
               </div>
               <div className="insight-item">
                 <span className="insight-label">Market Correlation</span>
                 <strong className="insight-value">
-                  {activeMarketReactions.length
-                    ? (activeMarketReactions.reduce((acc, row) => acc + row.correlation_strength, 0) / activeMarketReactions.length).toFixed(2)
-                    : "0.00"}
+                  {marketCorrelation !== null ? formatInsightMetric(marketCorrelation) : "N/A"}
                 </strong>
               </div>
               <div className="insight-item">

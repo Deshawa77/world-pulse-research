@@ -207,6 +207,7 @@ import collectors.who as who
 import collectors.twelvedata as twelvedata
 import collectors.worldbank as worldbank
 import collectors.reddit as reddit
+import collectors.world_state as world_state
 
 # -------------------------------
 # Database & Processing
@@ -277,15 +278,17 @@ COLLECTOR_TASKS = {
     "crypto": (lambda: coingecko.fetch_crypto(coingecko.get_configured_coin_ids(), "usd", 5), "crypto_topic"),
     "fred": (lambda: fred.fetch_indicator("GDP","2025-01-01","2026-01-01"), "fred_topic"),
     "exchange_rates": (lambda: frankfurter.fetch_exchange_rates("USD"), "exchange_rates_topic"),
-    "who": (lambda: who.fetch_who_indicators(WHO_INDICATOR_CODES, max_results_per_indicator=20), "who_topic"),
+    "who": (lambda: who.fetch_who_indicators(WHO_INDICATOR_CODES, max_results_per_indicator=300, include_covid_deaths=True, max_covid_records=260), "who_topic"),
     "stocks": (lambda: twelvedata.fetch_stock("AAPL","1day",5), "stocks_topic"),
     "worldbank": (lambda: worldbank.fetch_worldbank_data(date="2020:2025", per_page=5), "worldbank_topic"),
-    "reddit": (lambda: reddit.fetch_reddit_posts("worldnews", limit=5), "reddit_topic")
+    "reddit": (lambda: reddit.fetch_reddit_posts("worldnews", limit=5), "reddit_topic"),
+    "world_state": (lambda: world_state.collect_world_state_signals(), "world_state_signals_topic")
 }
 
 TOPIC_COLLECTION_MAP = {
     "who_topic": "health",
     "exchange_rates_topic": "economics",
+    "world_state_signals_topic": "world_state_signals",
 }
 
 topic_feature_map = {topic: build_hourly_features for _, topic in COLLECTOR_TASKS.values()}
@@ -820,3 +823,4 @@ if __name__=="__main__":
 
     # Start ML engine thread so it runs periodically in background
     Thread(target=ml_engine_loop, daemon=True).start()
+

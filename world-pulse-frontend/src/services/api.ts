@@ -763,6 +763,9 @@ export type TrustReliabilitySnapshot = {
   uptime?: Record<string, unknown>;
   data_freshness?: Record<string, unknown>;
   latest_ingestion?: Record<string, unknown>;
+  source_health?: Record<string, unknown>;
+  coverage?: Record<string, unknown>;
+  quality_gate?: Record<string, unknown>;
   confidence?: Record<string, unknown>;
   validation?: Record<string, unknown>;
 };
@@ -809,6 +812,9 @@ export async function getTrustReliability(mode: string = "online"): Promise<Trus
     uptime: isRecord(payload.uptime) ? payload.uptime : {},
     data_freshness: isRecord(payload.data_freshness) ? payload.data_freshness : {},
     latest_ingestion: isRecord(payload.latest_ingestion) ? payload.latest_ingestion : {},
+    source_health: isRecord(payload.source_health) ? payload.source_health : {},
+    coverage: isRecord(payload.coverage) ? payload.coverage : {},
+    quality_gate: isRecord(payload.quality_gate) ? payload.quality_gate : {},
     confidence: isRecord(payload.confidence) ? payload.confidence : {},
     validation: isRecord(payload.validation) ? payload.validation : {},
   };
@@ -999,7 +1005,7 @@ export type CryptoPulseData = {
 
 export type DisasterItem = {
   id: string;
-  type: "earthquake" | "weather";
+  type: "earthquake" | "weather" | "wildfire" | "flood" | "storm" | "volcano" | "humanitarian" | "conflict";
   title: string;
   location: string;
   coordinates?: {
@@ -1015,6 +1021,12 @@ export type DisasterItem = {
   wind_speed?: number;
   timestamp: string;
   source: string;
+  confidence?: number;
+  signal_value?: number;
+  category?: string;
+  is_fallback_observation?: boolean;
+  context_tag?: "live" | "older_7d";
+  is_broadened_context?: boolean;
 };
 
 export type DisasterMonitorData = {
@@ -1069,6 +1081,8 @@ export type HealthAlert = {
   timestamp: string;
   source: string;
   description: string;
+  context_tag?: "live" | "older_30d";
+  is_broadened_context?: boolean;
 };
 
 export type VaccinationData = {
@@ -1083,6 +1097,9 @@ export type HealthAlertsData = {
   vaccination: VaccinationData;
   last_updated: string;
   total_active: number;
+  context_mode?: "live_only" | "broadened";
+  broadened_context_added?: number;
+  broaden_context_enabled?: boolean;
 };
 
 export type TrendItem = {
@@ -1096,6 +1113,8 @@ export type TrendItem = {
   breakout: boolean;
   timestamp: string;
   related_queries: string[];
+  source_mode?: "trending_searches" | "interest_over_time" | string;
+  region?: string;
 };
 
 export type TrendsSummary = {
@@ -1448,8 +1467,49 @@ export async function getAIReport(reportType: string = "brief"): Promise<AIRepor
 }
 
 export async function getAdvancedInsights(): Promise<AdvancedInsightsData> {
-  const res = await API.get("/analytics/advanced/insights", { headers: API_HEADERS });
-  return res.data as AdvancedInsightsData;
+  try {
+    const res = await API.get("/analytics/advanced/insights", { headers: API_HEADERS, timeout: 35000 });
+    return res.data as AdvancedInsightsData;
+  } catch (primaryError) {
+    const [predictions, anomalies, causal, momentum, report] = await Promise.allSettled([
+      API.get("/analytics/advanced/ml-predictions", { headers: API_HEADERS, timeout: 25000 }),
+      API.get("/analytics/advanced/anomalies", { headers: API_HEADERS, timeout: 15000 }),
+      API.get("/analytics/advanced/causal", { headers: API_HEADERS, timeout: 15000 }),
+      API.get("/analytics/advanced/sentiment-momentum", { headers: API_HEADERS, timeout: 15000 }),
+      API.get("/analytics/advanced/report", { headers: API_HEADERS, params: { report_type: "brief" }, timeout: 20000 }),
+    ]);
+
+    const hasAny = [predictions, anomalies, causal, momentum, report].some((r) => r.status === "fulfilled");
+    if (!hasAny) throw primaryError;
+
+    return {
+      timestamp: new Date().toISOString(),
+      predictions:
+        predictions.status === "fulfilled"
+          ? (predictions.value.data as MLPredictionsData)
+          : { predictions: [], model_type: "unavailable" },
+      anomalies: anomalies.status === "fulfilled" && Array.isArray(anomalies.value.data)
+        ? (anomalies.value.data as AnomalyData[])
+        : [],
+      causal_graph: causal.status === "fulfilled" && Array.isArray(causal.value.data)
+        ? (causal.value.data as CausalLink[])
+        : [],
+      sentiment_momentum:
+        momentum.status === "fulfilled"
+          ? (momentum.value.data as SentimentMomentumData)
+          : { velocity: 0, acceleration: 0, trend: "stable", rsi: 50, macd_signal: "neutral" },
+      ai_report:
+        report.status === "fulfilled"
+          ? (report.value.data as AIReportData)
+          : {
+              title: "Advanced Analytics Partial Report",
+              summary: "Some analytics components were unavailable in time.",
+              key_findings: [],
+              recommendations: [],
+              risk_level: "moderate",
+            },
+    };
+  }
 }
 
 export default API;
@@ -1508,3 +1568,7 @@ export async function runPolicyReplay(
   );
   return res.data as PolicyReplayResponse;
 }
+
+
+
+

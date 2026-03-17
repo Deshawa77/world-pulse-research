@@ -16,6 +16,7 @@ from processing.country_signal_fusion import build_country_external_signal_snaps
 from processing.global_mood import augment_country_mood_fields
 from feature_store.feature_store import FeatureStore
 from feature_store.load_models import load_all_models
+from processing.sentiment_features import extract_sentiment_signal
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COUNTRY_FEATURE_CSV = os.path.join(PROJECT_ROOT, "data", "country_features.csv")
@@ -307,7 +308,7 @@ def _canonicalize_topic(token):
 def _sentiment_values(country_docs):
     values = []
     for doc in country_docs:
-        compound = (((doc.get("data") or {}).get("sentiment") or {}).get("vader") or {}).get("compound")
+        compound = extract_sentiment_signal(doc)
         if compound is None:
             continue
         try:
@@ -728,4 +729,5 @@ def country_daily_refresh_if_due(day: datetime | None = None, max_records: int =
 
 if __name__ == "__main__":
     print(build_daily_country_features())
+
 

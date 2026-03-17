@@ -3,9 +3,10 @@ import pandas as pd
 import numpy as np
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pymongo.errors import DuplicateKeyError
 from database.mongo import db
+from processing.sentiment_features import extract_sentiment_signal, parse_doc_timestamp
 
 # -------------------------
 # Logging setup
@@ -100,21 +101,40 @@ def compute_weather_features(df):
 # -------------------------
 # Sentiment helpers
 # -------------------------
-def compute_hourly_sentiment(collection_name):
-    cursor = db[collection_name].find({}, {"data.sentiment.vader.compound": 1, "data.processed_at": 1})
+def compute_hourly_sentiment(collection_name, hours=72, doc_limit=6000):
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cursor = db[collection_name].find(
+        {},
+        {
+            "data": 1,
+            "text_en": 1,
+            "text_original": 1,
+            "collected_at": 1,
+            "processed_at": 1,
+            "timestamp": 1,
+        },
+    ).sort("_id", -1).limit(doc_limit)
+
     rows = []
     for doc in cursor:
-        sentiment = doc.get("data", {}).get("sentiment", {}).get("vader", {}).get("compound")
-        ts = doc.get("data", {}).get("processed_at")
-        if sentiment is None or not ts:
+        sentiment = extract_sentiment_signal(doc)
+        if sentiment is None:
             continue
-        try:
-            ts = datetime.fromisoformat(ts)
-        except:
+
+        ts = parse_doc_timestamp(doc)
+        if ts is None:
             continue
+
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+        if ts < cutoff:
+            continue
+
         rows.append({"timestamp": ts, "polarity": float(sentiment)})
+
     if not rows:
         return 0.0, 0.0
+
     df = pd.DataFrame(rows).sort_values("timestamp")
     df["hour"] = df["timestamp"].dt.floor("h")
     hourly_avg = df.groupby("hour")["polarity"].mean()
@@ -234,3 +254,5 @@ def build_hourly_features(db) -> dict:
 if __name__ == "__main__":
     feature_row = build_hourly_features(db)
     print("Hourly features computed:", feature_row)
+
+

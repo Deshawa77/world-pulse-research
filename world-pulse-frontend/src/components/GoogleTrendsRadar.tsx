@@ -45,6 +45,9 @@ export default function GoogleTrendsRadar({
 
   const categories = data ? ["all", ...new Set(data.trends.map(t => t.category))] : ["all"];
 
+  const formatCategoryLabel = (value: string) =>
+    value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+
   const filteredTrends = selectedCategory === "all" 
     ? data?.trends || []
     : (data?.trends || []).filter(t => t.category === selectedCategory);
@@ -142,7 +145,7 @@ export default function GoogleTrendsRadar({
             onClick={() => setSelectedCategory(category)}
             style={categoryButtonStyle(selectedCategory === category)}
           >
-            {category === "all" ? "All" : category}
+            {category === "all" ? "All" : formatCategoryLabel(category)}
           </button>
         ))}
       </div>
@@ -175,7 +178,10 @@ export default function GoogleTrendsRadar({
               <div style={trendInfoStyle}>
                 <div style={trendHeaderStyle}>
                   <span style={trendTopicStyle}>{trend.topic}</span>
-                  <span style={categoryBadgeStyle}>{trend.category}</span>
+                  <span style={categoryBadgeStyle}>{formatCategoryLabel(trend.category)}</span>
+                  {trend.source_mode === "trending_searches" ? <span style={liveQueryBadgeStyle}>Live Query</span> : null}
+                  {String(trend.source_mode || "").startsWith("proxy_") ? <span style={proxyBadgeStyle}>Proxy (not Google Trends)</span> : null}
+                  {trend.region ? <span style={regionBadgeStyle}>{trend.region.replace(/_/g, " ")}</span> : null}
                 </div>
                 
                 {/* Related Queries */}
@@ -219,7 +225,7 @@ export default function GoogleTrendsRadar({
       {/* Footer */}
       <div style={footerStyle}>
         <span style={footerTextStyle}>
-          {filteredTrends.length} topics • Updated {new Date(data.last_updated).toLocaleTimeString()}
+          {filteredTrends.length} topics - Updated {new Date(data.last_updated).toLocaleTimeString()}
         </span>
       </div>
 
@@ -457,6 +463,41 @@ const categoryBadgeStyle: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
+const liveQueryBadgeStyle: React.CSSProperties = {
+  padding: "2px 8px",
+  borderRadius: "4px",
+  background: "rgba(34, 197, 94, 0.18)",
+  border: "1px solid rgba(34, 197, 94, 0.35)",
+  color: "#86efac",
+  fontSize: "9px",
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+  fontWeight: 700,
+};
+
+const proxyBadgeStyle: React.CSSProperties = {
+  padding: "2px 8px",
+  borderRadius: "4px",
+  background: "rgba(245, 158, 11, 0.18)",
+  border: "1px solid rgba(245, 158, 11, 0.35)",
+  color: "#fbbf24",
+  fontSize: "9px",
+  letterSpacing: "0.04em",
+  fontWeight: 700,
+};
+
+const regionBadgeStyle: React.CSSProperties = {
+  padding: "2px 8px",
+  borderRadius: "4px",
+  background: "rgba(59, 130, 246, 0.18)",
+  border: "1px solid rgba(59, 130, 246, 0.35)",
+  color: "#93c5fd",
+  fontSize: "9px",
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+  fontWeight: 700,
+};
+
 const queriesStyle: React.CSSProperties = {
   display: "flex",
   gap: "6px",
@@ -600,4 +641,8 @@ const errorStyle: React.CSSProperties = {
   fontSize: "12px",
   flex: 1,
 };
+
+
+
+
 

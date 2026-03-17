@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap");
+﻿@import url("https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap");
 
 :root {
   --bg: #060a11;
@@ -2167,6 +2167,73 @@ button:hover {
   }
 
   .drilldown-country-telemetry {
+    grid-template-columns: 1fr;
+  }
+}
+
+.region-tag-muted {
+  background: rgba(146, 170, 210, 0.14);
+  color: #b7c7de;
+}
+
+@media (max-width: 900px) {
+  .event-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* Event Prediction Readability Patch */
+.event-header {
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.severity-badge {
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.severity-score {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(146, 170, 210, 0.35);
+  font-size: 0.75rem;
+  color: #bfd9ff;
+}
+
+.event-details {
+  gap: 8px;
+}
+
+.event-metrics-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.event-metric {
+  padding: 8px 10px;
+  border: 1px solid rgba(146, 170, 210, 0.2);
+  border-radius: 8px;
+  background: rgba(8, 14, 25, 0.38);
+}
+
+.risk-increase {
+  color: #e7efff;
+}
+
+.region-tag-muted {
+  background: rgba(146, 170, 210, 0.14);
+  color: #b7c7de;
+}
+
+@media (max-width: 900px) {
+  .event-metrics-grid {
     grid-template-columns: 1fr;
   }
 }

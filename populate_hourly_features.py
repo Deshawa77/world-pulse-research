@@ -6,25 +6,19 @@ import requests
 from pycoingecko import CoinGeckoAPI
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from dotenv import load_dotenv
-
 from utils import log_event             # <-- only this one
+from processing.sentiment_features import extract_sentiment_signal, parse_doc_timestamp
 from feature_store.feature_store import FeatureStore
 from config import HOURLY_FEATURES_CSV
-
 fs = FeatureStore()
-
-
 load_dotenv()
-
 # API keys
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 OPENWEATHER_KEY = os.getenv("OPENWEATHER_KEY")
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY")
-
 # Sentiment analyzer and CoinGecko client
 analyzer = SentimentIntensityAnalyzer()
 cg = CoinGeckoAPI()
-
 # --- Fetch News ---
 def fetch_news_texts(query="bitcoin", page_size=20):
     url = "https://newsapi.org/v2/everything"
@@ -49,10 +43,38 @@ def fetch_news_texts(query="bitcoin", page_size=20):
         return texts
     except:
         return []
-
 def compute_sentiment(texts):
     return [analyzer.polarity_scores(t)["compound"] for t in texts if t]
-
+def fetch_collection_sentiments(collection_name, hours=72, limit=4000):
+    sentiments = []
+    try:
+        from database.mongo import db as mongo_db
+        docs = list(mongo_db[collection_name].find(
+            {},
+            {
+                "data": 1,
+                "text_en": 1,
+                "text_original": 1,
+                "collected_at": 1,
+                "processed_at": 1,
+                "timestamp": 1,
+            },
+        ).sort("_id", -1).limit(limit))
+        now = datetime.now(timezone.utc)
+        for doc in docs:
+            sentiment = extract_sentiment_signal(doc)
+            if sentiment is None:
+                continue
+            ts = parse_doc_timestamp(doc)
+            if ts is not None:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if (now - ts).total_seconds() > hours * 3600:
+                    continue
+            sentiments.append(float(sentiment))
+    except Exception:
+        sentiments = []
+    return sentiments
 def _get_nested(doc, *paths):
     for path in paths:
         cursor = doc
@@ -66,8 +88,6 @@ def _get_nested(doc, *paths):
         if valid and cursor is not None:
             return cursor
     return None
-
-
 # --- Fetch GDELT sentiment from stored collector data ---
 def fetch_gdelt_sentiments(query="bitcoin", limit=60):
     sentiments = []
@@ -81,14 +101,11 @@ def fetch_gdelt_sentiments(query="bitcoin", limit=60):
             sentiments.append(analyzer.polarity_scores(str(text))["compound"])
     except Exception:
         sentiments = []
-
     if sentiments:
         return sentiments
-
     # Fallback: derive approximate sentiment from latest news texts instead of static constants.
     texts = fetch_news_texts(query, page_size=20)
     return compute_sentiment(texts) if texts else []
-
 # --- Crypto Prices ---
 def get_crypto_prices(coin="bitcoin", vs_currency="usd", minutes=60):
     try:
@@ -97,12 +114,10 @@ def get_crypto_prices(coin="bitcoin", vs_currency="usd", minutes=60):
         return prices if prices else []
     except:
         return []
-
 # --- Stock Prices (TwelveData) ---
 def fetch_stock_prices_twelvedata(symbols=["AAPL"], interval="5min", outputsize=12):
     stock_dict = {}
     base_url = "https://api.twelvedata.com/time_series"
-
     for symbol in symbols:
         params = {
             "symbol": symbol,
@@ -114,22 +129,17 @@ def fetch_stock_prices_twelvedata(symbols=["AAPL"], interval="5min", outputsize=
             resp = requests.get(base_url, params=params, timeout=10)
             resp.raise_for_status()
             data = resp.json()
-
             if "values" not in data:
                 print(f"Error fetching {symbol}: {data}")
                 stock_dict[symbol] = []
                 continue
-
             # Reverse to chronological order
             closes = [float(item["close"]) for item in reversed(data["values"])]
             stock_dict[symbol] = closes
-
         except Exception as e:
             print(f"Exception fetching {symbol}: {e}")
             stock_dict[symbol] = []
-
     return stock_dict
-
 # --- Weather ---
 def fetch_weather_from_mongo(limit=24):
     temps = []
@@ -154,12 +164,9 @@ def fetch_weather_from_mongo(limit=24):
     except Exception:
         return []
     return temps
-
-
 def fetch_weather(lat=6.9271, lon=79.8612):
     if not OPENWEATHER_KEY:
         return []
-
     url = f"https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&exclude=minutely,daily&appid={OPENWEATHER_KEY}&units=metric"
     try:
         r = requests.get(url, timeout=10)
@@ -169,8 +176,6 @@ def fetch_weather(lat=6.9271, lon=79.8612):
         return [float(t) for t in temps if isinstance(t, (int, float))]
     except Exception:
         return []
-
-
 def compute_weather_anomaly(weather_data):
     if not weather_data:
         return 0.0
@@ -178,33 +183,32 @@ def compute_weather_anomaly(weather_data):
     if diffs.empty:
         return 0.0
     return float(diffs.mean())
-
 # --- Global Risk ---
 def calculate_global_risk(news_mean, gdelt_mean, crypto_vol, weather_anomaly):
     return 0.3*news_mean + 0.3*gdelt_mean + 0.2*(crypto_vol/100) + 0.2*(weather_anomaly if not np.isnan(weather_anomaly) else 0)
-
 # --- Main ---
 def populate_hourly_features():
     # -------------------------------
     # 1️⃣ Compute features
     # -------------------------------
-    # News
-    news_texts = fetch_news_texts("bitcoin")
-    news_sentiments = compute_sentiment(news_texts)
+    # News: prefer local Mongo corpus (schema-aware), fallback to external API.
+    news_sentiments = fetch_collection_sentiments("news", hours=72, limit=5000)
+    if not news_sentiments:
+        news_texts = fetch_news_texts("bitcoin")
+        news_sentiments = compute_sentiment(news_texts)
     news_mean = np.mean(news_sentiments) if news_sentiments else 0.0
     news_std = np.std(news_sentiments) if news_sentiments else 0.0
-
-    # GDELT
-    gdelt_sentiments = fetch_gdelt_sentiments("bitcoin")
+    # GDELT: prefer local Mongo corpus (schema-aware), fallback to legacy helper.
+    gdelt_sentiments = fetch_collection_sentiments("gdelt", hours=72, limit=5000)
+    if not gdelt_sentiments:
+        gdelt_sentiments = fetch_gdelt_sentiments("bitcoin")
     gdelt_mean = np.mean(gdelt_sentiments) if gdelt_sentiments else 0.0
     gdelt_std = np.std(gdelt_sentiments) if gdelt_sentiments else 0.0
-
     # --- Crypto ---
     crypto_prices = get_crypto_prices("bitcoin")
     print("Crypto prices:", crypto_prices)        # ✅ Debug print
     crypto_return = (crypto_prices[-1] - crypto_prices[0]) / crypto_prices[0] if len(crypto_prices) > 1 else 0.0
     crypto_volatility = np.std(np.diff(crypto_prices)) if len(crypto_prices) > 1 else 0.0
-
     # --- Stock ---
     stock_prices_dict = fetch_stock_prices_twelvedata(["AAPL", "MSFT"])
     print("Stock prices:", stock_prices_dict)    # ✅ Debug print
@@ -214,17 +218,13 @@ def populate_hourly_features():
             all_returns.extend(np.diff(prices)/prices[:-1])
     stock_return = np.mean(all_returns) if all_returns else 0.0
     stock_volatility = np.std(all_returns) if all_returns else 0.0
-
-
     # Weather
     weather_data = fetch_weather_from_mongo(limit=24)
     if not weather_data:
         weather_data = fetch_weather(6.9271, 79.8612)
     weather_anomaly = compute_weather_anomaly(weather_data)
-
     # Global Risk
     global_risk_score = calculate_global_risk(news_mean, gdelt_mean, crypto_volatility, weather_anomaly)
-
     # -------------------------------
     # 2️⃣ Compose row
     # -------------------------------
@@ -241,7 +241,6 @@ def populate_hourly_features():
         "weather_anomaly": weather_anomaly,
         "global_risk_score": global_risk_score
     }
-
     # -------------------------------
     # 3️⃣ Save to CSV
     # -------------------------------
@@ -261,10 +260,8 @@ def populate_hourly_features():
         df_combined = pd.concat([df_existing[columns], df_new], ignore_index=True)
     else:
         df_combined = pd.DataFrame([row], columns=columns)
-
     df_combined.to_csv(csv_path, index=False)
     log_event("✅ hourly_features.csv populated successfully")
-
     # -------------------------------
     # 4️⃣ Ensure all numeric features exist
     # -------------------------------
@@ -274,13 +271,10 @@ def populate_hourly_features():
     ]:
         if col not in df_combined.columns:
             df_combined[col] = 0.0
-
     # -------------------------------
     # 5️⃣ Write to FeatureStore / Mongo
     # -------------------------------
     fs.write_global(df_combined)
     log_event(f"Hourly features written to global store ({len(df_combined)} rows)")
-
-
 if __name__ == "__main__":
     populate_hourly_features()

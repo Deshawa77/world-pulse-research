@@ -1,9 +1,10 @@
 from database.mongo import db
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import numpy as np
 import hashlib
 import traceback
+from processing.sentiment_features import extract_sentiment_signal, parse_doc_timestamp
 
 
 # -------------------------
@@ -20,26 +21,39 @@ COLLECTIONS = {
 # -------------------------
 # Helper: Load recent hourly sentiment
 # -------------------------
-def _get_hourly_sentiments(hours=24):
+def _get_hourly_sentiments(hours=24, doc_limit=6000):
     """
     Load recent sentiment data from Mongo and return a DataFrame
     with timestamp and weighted polarity for the last `hours` hours.
     """
     rows = []
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
 
     for col, weight in COLLECTIONS.items():
-        cursor = db[col].find({}, {"data.sentiment.vader.compound": 1, "data.processed_at": 1})
+        cursor = db[col].find(
+            {},
+            {
+                "data": 1,
+                "text_en": 1,
+                "text_original": 1,
+                "collected_at": 1,
+                "processed_at": 1,
+                "timestamp": 1,
+            },
+        ).sort("_id", -1).limit(doc_limit)
         for doc in cursor:
-            sentiment = doc.get("data", {}).get("sentiment", {}).get("vader", {}).get("compound")
-            processed_time = doc.get("data", {}).get("processed_at")
-            if sentiment is None or not processed_time:
+            sentiment = extract_sentiment_signal(doc)
+            if sentiment is None:
                 continue
-            try:
-                ts = datetime.fromisoformat(processed_time)
-            except:
+
+            ts = parse_doc_timestamp(doc)
+            if ts is None:
                 continue
-            if ts >= datetime.utcnow() - timedelta(hours=hours):
-                rows.append({"timestamp": ts, "polarity": sentiment * weight})
+            if ts.tzinfo is not None:
+                ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+
+            if ts >= cutoff:
+                rows.append({"timestamp": ts, "polarity": float(sentiment) * weight})
 
     if rows:
         df = pd.DataFrame(rows)
@@ -301,3 +315,5 @@ def verify_country_risks(sample_countries=None):
             })
     
     return results
+
+

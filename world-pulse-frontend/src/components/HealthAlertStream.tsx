@@ -46,6 +46,7 @@ export default function HealthAlertStream({
   const filteredOutbreaks = selectedSeverity === "all" 
     ? data?.outbreaks || []
     : (data?.outbreaks || []).filter(o => o.severity === selectedSeverity);
+  const broadenedContextCount = (data?.outbreaks || []).filter(o => Boolean(o.is_broadened_context) || o.context_tag === "older_30d").length;
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -151,6 +152,13 @@ export default function HealthAlertStream({
         ))}
       </div>
 
+
+      {broadenedContextCount > 0 ? (
+        <div style={contextModeStyle}>
+          Broadened context mode active: showing {broadenedContextCount} older health indicators (last 30 days).
+        </div>
+      ) : null}
+
       {/* Outbreaks List */}
       <div style={outbreaksContainerStyle}>
         {filteredOutbreaks.length === 0 ? (
@@ -213,6 +221,9 @@ export default function HealthAlertStream({
                 <span style={sourceStyle}>Source: {outbreak.source}</span>
                 <span style={timestampStyle}>
                   {new Date(outbreak.timestamp).toLocaleDateString()}
+                  {outbreak.context_tag === "older_30d" || outbreak.is_broadened_context ? (
+                    <span style={olderBadgeStyle}>Older 30d</span>
+                  ) : null}
                 </span>
               </div>
             </div>
@@ -501,6 +512,30 @@ const descriptionStyle: React.CSSProperties = {
   margin: "0 0 10px 0",
 };
 
+const contextModeStyle: React.CSSProperties = {
+  marginBottom: "10px",
+  padding: "8px 10px",
+  borderRadius: "8px",
+  border: "1px solid rgba(56, 189, 248, 0.35)",
+  background: "rgba(3, 37, 65, 0.35)",
+  color: "rgba(186, 230, 253, 0.95)",
+  fontSize: "11px",
+  lineHeight: 1.35,
+};
+
+const olderBadgeStyle: React.CSSProperties = {
+  marginLeft: "8px",
+  padding: "2px 6px",
+  borderRadius: "999px",
+  border: "1px solid rgba(56, 189, 248, 0.45)",
+  background: "rgba(2, 132, 199, 0.22)",
+  color: "#bae6fd",
+  fontSize: "9px",
+  fontWeight: 700,
+  letterSpacing: "0.04em",
+  textTransform: "uppercase",
+};
+
 const outbreakFooterStyle: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
@@ -574,3 +609,4 @@ const errorStyle: React.CSSProperties = {
   fontSize: "12px",
   flex: 1,
 };
+

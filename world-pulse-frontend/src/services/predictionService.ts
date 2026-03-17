@@ -141,10 +141,11 @@ class PredictionService {
     return response.data;
   }
 
-  async getEventPredictions(): Promise<EventPrediction[]> {
+  async getEventPredictions(limit: number = 233): Promise<EventPrediction[]> {
     try {
       const response = await API.get("/analytics/incidents-outlook", {
         headers: API_HEADERS,
+        params: { limit },
       });
       return Array.isArray(response.data) ? response.data : [];
     } catch (error) {
@@ -198,5 +199,3 @@ class PredictionService {
 
 export const predictionService = new PredictionService();
 export default predictionService;
-
-
