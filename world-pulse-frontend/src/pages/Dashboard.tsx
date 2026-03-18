@@ -1,4 +1,4 @@
-﻿import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+﻿import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
@@ -372,6 +372,7 @@ export default function Dashboard() {
   const [sentinelEnabled, setSentinelEnabled] = useState(true);
   const [showDeferredPanels, setShowDeferredPanels] = useState(false);
   const [recentSocketUpdates, setRecentSocketUpdates] = useState<Array<{ country: string; risk: number | null; timestamp: string; quality: string }>>([]);
+  const [streamHeight, setStreamHeight] = useState<number | null>(null);
 
   const cacheRef = useRef<{
     liveFeed: { data: LiveCommandFeed | null; timestamp: number; ttl: number };
@@ -397,6 +398,8 @@ export default function Dashboard() {
   
   const retriesRef = useRef(0);
   const mapRef = useRef<HTMLDivElement | null>(null);
+  const leftColumnRef = useRef<HTMLDivElement | null>(null);
+  const streamHostRef = useRef<HTMLElement | null>(null);
   const mapMounted = useRef(false);
   const plotlyRef = useRef<any>(null);
   const plotlyLoadingRef = useRef<Promise<any> | null>(null);
@@ -802,6 +805,35 @@ export default function Dashboard() {
       window.clearTimeout(timer);
     };
   }, []);
+
+  useLayoutEffect(() => {
+    const leftEl = leftColumnRef.current;
+    const hostEl = streamHostRef.current;
+    if (!leftEl || !hostEl) return;
+
+    let frame = 0;
+    const syncHeight = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const leftRect = leftEl.getBoundingClientRect();
+        const hostRect = hostEl.getBoundingClientRect();
+        const next = Math.max(280, Math.round(leftRect.bottom - hostRect.top));
+        setStreamHeight((prev) => (prev === next ? prev : next));
+      });
+    };
+
+    syncHeight();
+    const observer = new ResizeObserver(syncHeight);
+    observer.observe(leftEl);
+    observer.observe(hostEl);
+    window.addEventListener("resize", syncHeight);
+
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("resize", syncHeight);
+    };
+  }, [showDeferredPanels, selectedCountry, selectedCountryNews.length, recentSocketUpdates.length, history.length]);
 
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -1308,7 +1340,7 @@ export default function Dashboard() {
 
       {/* Unified Intelligence Panel - Map + Global Intelligence (left) | Sentinel Core (right) */}
       <section id="dashboard-global-behavior" className="dashboard-layout">
-        <div className="left-column">
+        <div ref={leftColumnRef} className="left-column">
           <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`}>
             <div className="panel-head">
               <h3>Global Behavior Map</h3>
@@ -1401,7 +1433,7 @@ export default function Dashboard() {
               {showDeferredPanels ? (
                 <Suspense fallback={<DeferredPanelPlaceholder label="Loading global intelligence feed..." />}>
                   <GlobalIntelligenceFeed
-                    maxRows={selectedCountry ? 6 : 3}
+                    maxRows={selectedCountry ? 6 : 5}
                     refreshInterval={5000}
                     selectedCountry={selectedCountry}
                     onVisibleItemsChange={setSelectedCountryNews}
@@ -1465,6 +1497,24 @@ export default function Dashboard() {
               </div>
             </div>
           </article>
+
+          <section ref={streamHostRef} id="dashboard-system-events" className="hero-system-events">
+            {showDeferredPanels ? (
+              <Suspense fallback={<DeferredPanelPlaceholder label="Loading system event stream..." />}>
+                <SystemEventStream
+                  packets={systemEventPackets}
+                  stale={panelStale.stream}
+                  style={streamHeight ? { height: `${streamHeight}px` } : undefined}
+                />
+              </Suspense>
+            ) : (
+              <article className="wp-card panel-frame operator-response-panel">
+                <div className="panel-content operational-panel-content">
+                  <DeferredPanelPlaceholder label="Preparing system event stream..." />
+                </div>
+              </article>
+            )}
+          </section>
         </div>
       </section>
 
@@ -1517,23 +1567,6 @@ export default function Dashboard() {
             <article className="wp-card panel-frame operational-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing priority watchlist..." /></div></article>
             <article className="wp-card panel-frame operational-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing signal integrity board..." /></div></article>
           </>
-        )}
-      </section>
-
-      <section id="dashboard-system-events" className="operator-queue-section">
-        {showDeferredPanels ? (
-          <Suspense fallback={<DeferredPanelPlaceholder label="Loading system event stream..." />}>
-            <SystemEventStream
-              packets={systemEventPackets}
-              stale={panelStale.stream}
-            />
-          </Suspense>
-        ) : (
-          <article className="wp-card panel-frame operator-response-panel">
-            <div className="panel-content operational-panel-content">
-              <DeferredPanelPlaceholder label="Preparing system event stream..." />
-            </div>
-          </article>
         )}
       </section>
 

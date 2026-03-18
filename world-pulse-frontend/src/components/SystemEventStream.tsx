@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+
 type SystemEventPacket = {
   id: string;
   timestamp: string;
@@ -10,6 +12,7 @@ type SystemEventPacket = {
 type Props = {
   packets: SystemEventPacket[];
   stale: boolean;
+  style?: CSSProperties;
 };
 
 function formatStamp(value: string): string {
@@ -18,9 +21,9 @@ function formatStamp(value: string): string {
   return date.toLocaleTimeString();
 }
 
-export default function SystemEventStream({ packets, stale }: Props) {
+export default function SystemEventStream({ packets, stale, style }: Props) {
   return (
-    <article className="wp-card panel-frame operator-response-panel stream-panel">
+    <article className="wp-card panel-frame operator-response-panel stream-panel" style={style}>
       <div className="panel-head analytics-panel-head analytics-panel-head-wide">
         <div>
           <div className="analytics-kicker">Telemetry</div>

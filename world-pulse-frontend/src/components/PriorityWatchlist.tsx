@@ -46,6 +46,13 @@ function deriveConfidence(row: RiskMapPoint): string {
   return "Partial";
 }
 
+function toneClass(risk: number): string {
+  if (risk >= 75) return "tone-critical";
+  if (risk >= 55) return "tone-elevated";
+  if (risk >= 35) return "tone-guarded";
+  return "tone-stable";
+}
+
 export default function PriorityWatchlist({ rows, incidents, selectedCountry, onSelectCountry }: Props) {
   const incidentCountries = new Set(
     incidents
@@ -85,31 +92,33 @@ export default function PriorityWatchlist({ rows, incidents, selectedCountry, on
       </div>
       <div className="panel-content operational-panel-content">
         <div className="operational-panel-intro">
-          Ranked countries with the highest current escalation pressure and strongest evidence for analyst focus.
+          Highest-pressure countries shown as ranked escalation bars for faster analyst scanning.
         </div>
-        <div className="watchlist-table" role="table" aria-label="Priority watchlist">
-          <div className="watchlist-header" role="row">
-            <span>Country</span>
-            <span>Risk</span>
-            <span>Status</span>
-            <span>Confidence</span>
-            <span>Driver</span>
-          </div>
+        <div className="watchlist-chart" role="list" aria-label="Priority watchlist chart">
           {rankedRows.map((row) => (
             <button
               key={row.country}
               type="button"
-              className={`watchlist-row ${selectedCountry === row.country ? "is-selected" : ""}`}
+              className={`watchlist-chart-row ${selectedCountry === row.country ? "is-selected" : ""}`}
               onClick={() => onSelectCountry(row.country)}
             >
-              <span className="watchlist-country">
-                <strong>{row.country}</strong>
-                {row.incidentFlag ? <em>Hot</em> : null}
-              </span>
-              <span>{row.risk.toFixed(1)}</span>
-              <span>{row.status}</span>
-              <span>{row.confidence}</span>
-              <span>{row.driver}</span>
+              <div className="watchlist-chart-head">
+                <div className="watchlist-country-block">
+                  <strong>{row.country}</strong>
+                  <span>{row.driver}</span>
+                </div>
+                <div className="watchlist-chart-meta">
+                  <span className={`watchlist-status-pill ${toneClass(row.risk)}`}>{row.status}</span>
+                  <strong>{row.risk.toFixed(1)}</strong>
+                </div>
+              </div>
+              <div className="watchlist-bar-track">
+                <div className={`watchlist-bar-fill ${toneClass(row.risk)}`} style={{ width: `${Math.min(100, Math.max(8, row.risk))}%` }} />
+              </div>
+              <div className="watchlist-chart-foot">
+                <span>{row.confidence}</span>
+                <span>{row.incidentFlag ? "Live incident" : "No active incident"}</span>
+              </div>
             </button>
           ))}
           {!rankedRows.length ? <div className="watchlist-empty">Watchlist will populate when verified country signals arrive.</div> : null}
