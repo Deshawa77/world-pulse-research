@@ -29,6 +29,12 @@ export default function IntroSplash({ onComplete, forced = false }: IntroSplashP
   return (
     <div className={`wp-intro${reduceMotion ? " wp-intro--reduced" : ""}`} role="status" aria-live="polite" aria-label="Loading The World's Pulse">
       <div className="wp-intro-brand">
+        <div className="wp-intro-google-squares">
+          <div className="wp-intro-google-square"></div>
+          <div className="wp-intro-google-square"></div>
+          <div className="wp-intro-google-square"></div>
+          <div className="wp-intro-google-square"></div>
+        </div>
         <div className="wp-intro-globe-shell" aria-hidden="true">
           <WorldGlobe3D data={[]} autoRotate rotationSpeed={2.2} showActivityDots={false} visualPreset="introCinematic" height="100%" />
         </div>

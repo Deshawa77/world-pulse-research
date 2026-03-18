@@ -23,15 +23,12 @@ import {
 import { getCountryWeatherByCoords, type CountryWeatherSnapshot } from "../services/weather";
 
 const CountryDrilldown = lazy(() => import("../components/CountryDrilldown"));
-const EventLog = lazy(() => import("../components/EventLog"));
 const BrainModelViewer = lazy(() => import("../components/BrainModelViewer"));
 const GlobalIntelligenceFeed = lazy(() => import("../components/GlobalIntelligenceFeed"));
-const CryptoMarketPulse = lazy(() => import("../components/CryptoMarketPulse"));
-const GlobalDisasterMonitor = lazy(() => import("../components/GlobalDisasterMonitor"));
-const EconomicIndicatorsFeed = lazy(() => import("../components/EconomicIndicatorsFeed"));
-const HealthAlertStream = lazy(() => import("../components/HealthAlertStream"));
-const GoogleTrendsRadar = lazy(() => import("../components/GoogleTrendsRadar"));
-const CausalRiskNavigator = lazy(() => import("../components/CausalRiskNavigator"));
+const PriorityWatchlist = lazy(() => import("../components/PriorityWatchlist"));
+const SignalIntegrityBoard = lazy(() => import("../components/SignalIntegrityBoard"));
+const BehavioralAnalyticsPanel = lazy(() => import("../components/BehavioralAnalyticsPanel"));
+const OperatorResponseQueue = lazy(() => import("../components/OperatorResponseQueue"));
 
 type Features = {
   news_sentiment: number;
@@ -298,20 +295,6 @@ function mergeRiskMapRows(rows: RiskMapPoint[], updates: Iterable<RiskMapPoint>)
   return next;
 }
 
-function formatRelativeTime(value?: string | null): string {
-  if (!value) return "No recent update";
-  const stamp = new Date(value).getTime();
-  if (!Number.isFinite(stamp)) return "No recent update";
-  const deltaSec = Math.max(0, Math.floor((Date.now() - stamp) / 1000));
-  if (deltaSec < 15) return "Just now";
-  if (deltaSec < 60) return `${deltaSec}s ago`;
-  const deltaMin = Math.floor(deltaSec / 60);
-  if (deltaMin < 60) return `${deltaMin}m ago`;
-  const deltaHr = Math.floor(deltaMin / 60);
-  if (deltaHr < 24) return `${deltaHr}h ago`;
-  return `${Math.floor(deltaHr / 24)}d ago`;
-}
-
 function describeDashboardError(error: unknown): string {
   const message = String((error as { message?: string } | null)?.message || "Failed to refresh dashboard feed");
   const status = Number((error as { response?: { status?: number } } | null)?.response?.status || 0);
@@ -516,7 +499,6 @@ export default function Dashboard() {
   const windLineCount = Math.max(18, Math.min(40, Math.round(18 + weatherWindStrength * 22)));
   const topTopic = active?.topics?.find((topic) => topic && topic !== "no data") ?? "No dominant topic";
   const validationSummary = coverageState.latest_validation;
-  const liveFreshness = formatRelativeTime(liveFeedState.lastUpdated);
   const verifiedCoverageLabel = `${coverageState.verified} / ${coverageState.total || riskMapRows.length || 233}`;
   const globalRiskScore = active?.riskScore ?? 50;
   const globalMoodScore = active?.moodScore ?? 50;
@@ -550,7 +532,6 @@ export default function Dashboard() {
   const dockConnectionLabel = `${connectionState.charAt(0).toUpperCase()}${connectionState.slice(1)}`;
   const liveSignalCount = coverageState.verified || verifiedRiskMap.length || liveFeedState.incidents?.length || 0;
   const telemetryStatusLine = `${dockConnectionLabel} - ${liveSignalCount} verified signals - Updated ${formatTelemetryTime(liveFeedState.lastUpdated)}`;
-  const trustValidation = (trustSnapshot?.validation ?? {}) as Record<string, unknown>;
   const trustFreshness = (trustSnapshot?.data_freshness ?? {}) as Record<string, unknown>;
   const trustConfidence = (trustSnapshot?.confidence ?? {}) as Record<string, unknown>;
   const qualityGate = (trustSnapshot as Record<string, unknown> | null)?.quality_gate as Record<string, unknown> | undefined;
@@ -569,46 +550,11 @@ export default function Dashboard() {
       ? "Shadow mode active: monitoring reliability; headline scores remain visible."
       : (qualityGateReasons.join(" | ") || "Global metrics downweighted due to insufficient reliability."))
     : "All quality thresholds are currently passing.";
-  const countryBacktest = (trustValidation.country_backtest ?? {}) as Record<string, unknown>;
-  const globalBacktest = (trustValidation.global_backtest ?? {}) as Record<string, unknown>;
   const staleSources = safeN(trustFreshness.stale_count, 0);
   const freshSources = safeN(trustFreshness.fresh_count, 0);
   const reliabilityStatus = staleSources > 0 ? "Degraded" : "Healthy";
-  const countryBacktestBrier = safeN(countryBacktest.weighted_brier_score, Number.NaN);
-  const countryBacktestDays = safeN(countryBacktest.matched_days, 0);
-  const globalBacktestMae = safeN(globalBacktest.weighted_mae, Number.NaN);
   const moodUncertaintyDisplay = safeN(trustConfidence.global_mood_uncertainty, globalMoodUncertainty);
   const forecastConfidenceDisplay = Math.max(0, Math.min(1, safeN(trustConfidence.forecast_confidence, forecastConfidence)));
-
-  const domainCards = [
-    {
-      title: "Multi-Source Signal Fusion",
-      value: verifiedCoverageLabel,
-      detail: "Countries with verified same-day intelligence on the live map",
-    },
-    {
-      title: "Sentiment + NLP",
-      value: topTopic,
-      detail: "Leading behavior topic extracted from the latest global intelligence signals",
-    },
-    {
-      title: "Predictive Outlook",
-      value: `${forecastRiskScore.toFixed(1)} / 100`,
-      detail: `${forecastHorizonHours}h risk forecast with ${forecastRiskDelta >= 0 ? "rising" : "cooling"} momentum ${forecastRiskDelta >= 0 ? "+" : ""}${forecastRiskDelta.toFixed(2)} | confidence ${(forecastConfidenceDisplay * 100).toFixed(0)}%`,
-    },
-    {
-      title: "Confidence + Uncertainty",
-      value: `${(globalMoodConfidence * 100).toFixed(0)}% mood confidence`,
-      detail: `Uncertainty +/- ${moodUncertaintyDisplay.toFixed(1)} pts | ${globalMoodCountrySummary}`,
-    },
-    {
-      title: "Reliability + Backtests",
-      value: reliabilityStatus,
-      detail: Number.isFinite(countryBacktestBrier)
-        ? `${freshSources} fresh / ${staleSources} stale feeds | Country Brier ${countryBacktestBrier.toFixed(3)} over ${countryBacktestDays} days${Number.isFinite(globalBacktestMae) ? `, mood MAE ${globalBacktestMae.toFixed(2)}` : ""}`
-        : `Validation ${validationSummary?.status ?? connectionState}, latest stream ${liveFreshness}`,
-    },
-  ];
   
   const panelStale = useMemo(() => {
     const now = Date.now();
@@ -1197,8 +1143,8 @@ export default function Dashboard() {
         sectionTabs={[
           { label: "Overview", targetId: "dashboard-overview" },
           { label: "Global Behavior", targetId: "dashboard-global-behavior" },
-          { label: "Live Domains", targetId: "dashboard-live-domains" },
-          { label: "Operator Log", targetId: "dashboard-operator-log" },
+          { label: "Analytics", targetId: "dashboard-operational-analytics" },
+          { label: "Operator Queue", targetId: "dashboard-operator-queue" },
         ]}
       />
 
@@ -1293,339 +1239,241 @@ export default function Dashboard() {
         </div>
       </section>
 
-      <section className="proposal-summary-grid">
-        {domainCards.map((card) => (
-          <article key={card.title} className="wp-card proposal-summary-card">
-            <h3>{card.title}</h3>
-            <strong className="wp-highlight proposal-summary-value">{card.value}</strong>
-            <p className="proposal-summary-detail">{card.detail}</p>
-          </article>
-        ))}
-      </section>
-
-      {/* Unified Intelligence Panel - Map + Global Intelligence (left) | Sentinel AI (right) */}
+      {/* Unified Intelligence Panel - Map + Global Intelligence (left) | Sentinel Core (right) */}
       <section id="dashboard-global-behavior" className="dashboard-layout">
         <div className="left-column">
-            {/* Map Intelligence - Top Left */}
-            <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`}>
-              <div className="panel-head">
-                <h3>Global Behavior Map</h3>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`}>
+            <div className="panel-head">
+              <h3>Global Behavior Map</h3>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <button onClick={triggerMapRefresh} disabled={refreshingMap}>{refreshingMap ? "Refreshing..." : "Refresh Next 50"}</button>
                 {selectedCountry ? (
                   <button onClick={() => setSelectedCountry(null)}>Clear Country Focus</button>
                 ) : null}
               </div>
+            </div>
+            {panelStale.map ? <div className="panel-stale">stale</div> : null}
+            <div className="panel-content wp-map-surface map-surface-advanced">
+              <div className="proposal-map-stage">
+                <div ref={mapRef} className="echart-map" />
+                {selectedCountry ? (
+                  <div className="map-weather-overlay" aria-hidden="true">
+                    {showRainAnimation ? (
+                      <div className="map-rain-layer">
+                        {Array.from({ length: rainDropCount }).map((_, idx) => (
+                          <span
+                            key={`rain-${idx}`}
+                            style={{
+                              left: `${(idx * 37) % 100}%`,
+                              animationDelay: `${(idx % 9) * 0.18}s`,
+                              animationDuration: `${0.75 + (((idx * 13) % 7) * 0.12)}s`,
+                            }}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                    {showWindAnimation ? (
+                      <div className="map-wind-layer">
+                        {Array.from({ length: windLineCount }).map((_, idx) => (
+                          <span
+                            key={`wind-${idx}`}
+                            style={{
+                              top: `${(idx * 19) % 95}%`,
+                              animationDelay: `${(idx % 8) * 0.28}s`,
+                              animationDuration: `${1.8 + (((idx * 11) % 6) * 0.22)}s`,
+                            }}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {selectedCountry ? (
+                  <div className="map-weather-live-chip">
+                    {selectedCountryWeather ? (
+                      <>
+                        <strong>{selectedCountryWeather.conditionLabel}</strong>
+                        <span>{selectedCountryWeather.temperatureC.toFixed(1)}C</span>
+                        <span>Wind {selectedCountryWeather.windSpeedKmh.toFixed(1)} km/h</span>
+                        <span>{selectedCountryWeather.provider === "open-meteo" ? "Open-Meteo" : "Met.no"}</span>
+                      </>
+                    ) : (
+                      <strong>Live weather temporarily unavailable</strong>
+                    )}
+                    {countryWeatherLoading ? <span>Updating...</span> : null}
+                  </div>
+                ) : null}
+                {mapHover ? (
+                  <div className="map-hover-box map-hover-card">
+                    <strong className="map-hover-title">{mapHover.country}</strong>
+                    <span className="map-hover-risk">{mapHover.quality === "verified" ? `Risk Score: ${mapHover.risk.toFixed(1)}` : `Status: ${mapHover.quality}`}</span>
+                  </div>
+                ) : null}
               </div>
-              {panelStale.map ? <div className="panel-stale">stale</div> : null}
-              <div className="panel-content wp-map-surface map-surface-advanced">
-                <div className="proposal-map-stage">
-                  <div ref={mapRef} className="echart-map" />
-                  {selectedCountry ? (
-                    <div className="map-weather-overlay" aria-hidden="true">
-                      {showRainAnimation ? (
-                        <div className="map-rain-layer">
-                          {Array.from({ length: rainDropCount }).map((_, idx) => (
-                            <span
-                              key={`rain-${idx}`}
-                              style={{
-                                left: `${(idx * 37) % 100}%`,
-                                animationDelay: `${(idx % 9) * 0.18}s`,
-                                animationDuration: `${0.75 + (((idx * 13) % 7) * 0.12)}s`,
-                              }}
-                            />
-                          ))}
-                        </div>
-                      ) : null}
-                      {showWindAnimation ? (
-                        <div className="map-wind-layer">
-                          {Array.from({ length: windLineCount }).map((_, idx) => (
-                            <span
-                              key={`wind-${idx}`}
-                              style={{
-                                top: `${(idx * 19) % 95}%`,
-                                animationDelay: `${(idx % 8) * 0.28}s`,
-                                animationDuration: `${1.8 + (((idx * 11) % 6) * 0.22)}s`,
-                              }}
-                            />
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {selectedCountry ? (
-                    <div className="map-weather-live-chip">
-                      {selectedCountryWeather ? (
-                        <>
-                          <strong>{selectedCountryWeather.conditionLabel}</strong>
-                          <span>{selectedCountryWeather.temperatureC.toFixed(1)}C</span>
-                          <span>Wind {selectedCountryWeather.windSpeedKmh.toFixed(1)} km/h</span>
-                          <span>{selectedCountryWeather.provider === "open-meteo" ? "Open-Meteo" : "Met.no"}</span>
-                        </>
-                      ) : (
-                        <strong>Live weather temporarily unavailable</strong>
-                      )}
-                      {countryWeatherLoading ? <span>Updating...</span> : null}
-                    </div>
-                  ) : null}
-                  {mapHover ? (
-                    <div className="map-hover-box map-hover-card">
-                      <strong className="map-hover-title">{mapHover.country}</strong>
-                      <span className="map-hover-risk">{mapHover.quality === "verified" ? `Risk Score: ${mapHover.risk.toFixed(1)}` : `Status: ${mapHover.quality}`}</span>
-                    </div>
-                  ) : null}
-                </div>
-                <div className="proposal-map-meta">
-                  <p style={{ fontSize: 12, color: "#d1d5db" }}>
-                    {coverageState.verified} / {coverageState.total || riskMapRows.length} countries verified today. Gray countries have no same-day source data yet. Click a country to zoom/focus, show red news beacons, and open drilldown analysis.
-                  </p>
-                  <p style={{ fontSize: 12, color: "#94a3b8" }}>
-                    Latest validation: {validationSummary?.status ?? "not available"}{validationSummary?.sample_count ? `, ${validationSummary.sample_count} benchmark rows, Brier ${safeN(validationSummary.brier_score).toFixed(3)}` : ""}.
-                  </p>
-                </div>
+              <div className="proposal-map-meta">
+                <p style={{ fontSize: 12, color: "#d1d5db" }}>
+                  {coverageState.verified} / {coverageState.total || riskMapRows.length} countries verified today. Gray countries have no same-day source data yet. Click a country to zoom, inspect news beacons, and open drilldown analysis.
+                </p>
+                <p style={{ fontSize: 12, color: "#94a3b8" }}>
+                  Latest validation: {validationSummary?.status ?? "not available"}{validationSummary?.sample_count ? `, ${validationSummary.sample_count} benchmark rows, Brier ${safeN(validationSummary.brier_score).toFixed(3)}` : ""}.
+                </p>
               </div>
-            </article>
+            </div>
+          </article>
 
-            {/* Global Intelligence Feed - Bottom Left */}
-            <article className={`wp-card panel-frame global-intelligence-panel ${fpsLow ? "" : "panel-animated"}`}>
-              <div className="panel-head futuristic-panel-header">
-                <div className="header-glow cyan"></div>
-                <h3>
-                  <span className="header-icon">GLB</span>
-                  Global Intelligence Feed
-                  <span className="header-badge">LIVE</span>
-                </h3>
-              </div>
-              <div className="panel-content">
-                {showDeferredPanels ? (
-                  <Suspense fallback={<DeferredPanelPlaceholder label="Loading global intelligence feed..." />}>
-                    <GlobalIntelligenceFeed
-                      maxRows={selectedCountry ? 6 : 3}
-                      refreshInterval={5000}
-                      selectedCountry={selectedCountry}
-                      onVisibleItemsChange={setSelectedCountryNews}
-                      onClearCountry={() => setSelectedCountry(null)}
-                    />
-                  </Suspense>
-                ) : (
-                  <DeferredPanelPlaceholder label="Preparing global intelligence feed..." />
-                )}
-              </div>
-            </article>
+          <article className={`wp-card panel-frame global-intelligence-panel ${fpsLow ? "" : "panel-animated"}`}>
+            <div className="panel-head futuristic-panel-header">
+              <div className="header-glow cyan"></div>
+              <h3>
+                <span className="header-icon">GLB</span>
+                Global Intelligence Feed
+                <span className="header-badge">LIVE</span>
+              </h3>
+            </div>
+            <div className="panel-content">
+              {showDeferredPanels ? (
+                <Suspense fallback={<DeferredPanelPlaceholder label="Loading global intelligence feed..." />}>
+                  <GlobalIntelligenceFeed
+                    maxRows={selectedCountry ? 6 : 3}
+                    refreshInterval={5000}
+                    selectedCountry={selectedCountry}
+                    onVisibleItemsChange={setSelectedCountryNews}
+                    onClearCountry={() => setSelectedCountry(null)}
+                  />
+                </Suspense>
+              ) : (
+                <DeferredPanelPlaceholder label="Preparing global intelligence feed..." />
+              )}
+            </div>
+          </article>
         </div>
 
         <div className="right-column">
-            {/* Brain Model - Right Side */}
-            <article className={`wp-card panel-frame sentinel-ai-panel brain-model-panel ${fpsLow ? "" : "panel-animated"}`}>
-              <div className="panel-head futuristic-panel-header">
-                <div className="header-glow pink"></div>
-                <h3>
-                  <span className="header-icon">3D</span>
-                  Neural Brain Model
-                  <span className="header-badge">GLB</span>
-                </h3>
+          <article className={`wp-card panel-frame sentinel-ai-panel brain-model-panel ${fpsLow ? "" : "panel-animated"}`}>
+            <div className="panel-head futuristic-panel-header">
+              <div className="header-glow pink"></div>
+              <h3>
+                <span className="header-icon">3D</span>
+                Sentinel Intelligence Core
+                <span className="header-badge">GLB</span>
+              </h3>
+            </div>
+            <div className="panel-content brain-model-panel-content">
+              <div className="brain-model-stage">
+                {showDeferredPanels ? (
+                  <Suspense fallback={<DeferredPanelPlaceholder label="Loading sentinel intelligence core..." />}>
+                    <BrainModelViewer className="dashboard-brain-model" />
+                  </Suspense>
+                ) : (
+                  <DeferredPanelPlaceholder label="Preparing sentinel intelligence core..." />
+                )}
               </div>
-              <div className="panel-content brain-model-panel-content">
-                <div className="brain-model-stage">
-                  {showDeferredPanels ? (
-                    <Suspense fallback={<DeferredPanelPlaceholder label="Loading neural brain model..." />}>
-                      <BrainModelViewer className="dashboard-brain-model" />
-                    </Suspense>
-                  ) : (
-                    <DeferredPanelPlaceholder label="Preparing neural brain model..." />
-                  )}
-                </div>
-                <div className="brain-telemetry-dock" role="status" aria-live="polite">
-                  <div className="brain-telemetry-summary-row">
-                    <div className="brain-telemetry-card brain-telemetry-card-primary">
-                      <span className="brain-telemetry-card-label">Risk Score</span>
-                      <strong>{globalRiskScore.toFixed(1)}</strong>
-                    </div>
-                    <div className={`brain-telemetry-card brain-telemetry-card-tone tone-${telemetryThreat.tone}`}>
-                      <span className="brain-telemetry-card-label">Threat Level</span>
-                      <strong>{telemetryThreat.label}</strong>
-                    </div>
-                    <div className={`brain-telemetry-card brain-telemetry-card-tone tone-${telemetryTrend.tone}`}>
-                      <span className="brain-telemetry-card-label">Trend</span>
-                      <strong>{telemetryTrend.label}</strong>
-                    </div>
+              <div className="brain-telemetry-dock" role="status" aria-live="polite">
+                <div className="brain-telemetry-summary-row">
+                  <div className="brain-telemetry-card brain-telemetry-card-primary">
+                    <span className="brain-telemetry-card-label">Risk Score</span>
+                    <strong>{globalRiskScore.toFixed(1)}</strong>
                   </div>
-                  <div className="brain-telemetry-drivers-row">
-                    <span className="brain-telemetry-row-label">Top Drivers</span>
-                    <div className="brain-telemetry-chip-list">
-                      {telemetryDrivers.map((driver) => (
-                        <span key={driver} className="brain-telemetry-chip">{driver}</span>
-                      ))}
-                    </div>
+                  <div className={`brain-telemetry-card brain-telemetry-card-tone tone-${telemetryThreat.tone}`}>
+                    <span className="brain-telemetry-card-label">Threat Level</span>
+                    <strong>{telemetryThreat.label}</strong>
                   </div>
-                  <div className="brain-telemetry-status-row">
-                    <span className={`brain-telemetry-status-dot state-${connectionState}`} />
-                    <span className="brain-telemetry-status-line">{telemetryStatusLine}</span>
+                  <div className={`brain-telemetry-card brain-telemetry-card-tone tone-${telemetryTrend.tone}`}>
+                    <span className="brain-telemetry-card-label">Trend</span>
+                    <strong>{telemetryTrend.label}</strong>
                   </div>
                 </div>
+                <div className="brain-telemetry-drivers-row">
+                  <span className="brain-telemetry-row-label">Top Drivers</span>
+                  <div className="brain-telemetry-chip-list">
+                    {telemetryDrivers.map((driver) => (
+                      <span key={driver} className="brain-telemetry-chip">{driver}</span>
+                    ))}
+                  </div>
+                </div>
+                <div className="brain-telemetry-status-row">
+                  <span className={`brain-telemetry-status-dot state-${connectionState}`} />
+                  <span className="brain-telemetry-status-line">{telemetryStatusLine}</span>
+                </div>
               </div>
-            </article>
+            </div>
+          </article>
         </div>
       </section>
 
-
-
-      {/* Real-Time Intelligence Grid - 2 Columns */}
-      <section id="dashboard-live-domains" className="realtime-intelligence-grid">
-        {/* Crypto Market Pulse */}
-        <article className={`wp-card panel-frame realtime-domain-card ${fpsLow ? "" : "panel-animated"}`}>
-
-          <div className="panel-head futuristic-panel-header domain-header domain-header-amber">
-            <div className="header-glow domain-header-glow domain-header-glow-amber"></div>
-            <h3>
-              <span className="header-icon">BTC</span>
-              Crypto Market Pulse
-              <span className="header-badge domain-badge domain-badge-amber">LIVE</span>
-            </h3>
-          </div>
-          <div className="panel-content panel-content-scrollless">
-            {showDeferredPanels ? (
-              <Suspense fallback={<DeferredPanelPlaceholder label="Loading crypto market pulse..." />}>
-                <CryptoMarketPulse maxItems={12} refreshInterval={15000} />
-              </Suspense>
-            ) : (
-              <DeferredPanelPlaceholder label="Preparing crypto market pulse..." />
-            )}
-          </div>
-        </article>
-
-        {/* Global Disaster Monitor */}
-        <article className={`wp-card panel-frame realtime-domain-card ${fpsLow ? "" : "panel-animated"}`}>
-
-          <div className="panel-head futuristic-panel-header domain-header domain-header-red">
-            <div className="header-glow domain-header-glow domain-header-glow-red"></div>
-            <h3>
-              <span className="header-icon">DIS</span>
-              Global Disaster Monitor
-              <span className="header-badge domain-badge domain-badge-red">LIVE</span>
-            </h3>
-          </div>
-          <div className="panel-content panel-content-scrollless">
-            {showDeferredPanels ? (
-              <Suspense fallback={<DeferredPanelPlaceholder label="Loading disaster monitor..." />}>
-                <GlobalDisasterMonitor maxItems={10} refreshInterval={20000} />
-              </Suspense>
-            ) : (
-              <DeferredPanelPlaceholder label="Preparing disaster monitor..." />
-            )}
-          </div>
-        </article>
-
-        {/* Economic Indicators Feed */}
-        <article className={`wp-card panel-frame realtime-domain-card ${fpsLow ? "" : "panel-animated"}`}>
-
-          <div className="panel-head futuristic-panel-header domain-header domain-header-green">
-            <div className="header-glow domain-header-glow domain-header-glow-green"></div>
-            <h3>
-              <span className="header-icon">ECO</span>
-              Economic Indicators
-              <span className="header-badge domain-badge domain-badge-green">LIVE</span>
-            </h3>
-          </div>
-          <div className="panel-content panel-content-scrollless">
-            {showDeferredPanels ? (
-              <Suspense fallback={<DeferredPanelPlaceholder label="Loading economic indicators..." />}>
-                <EconomicIndicatorsFeed refreshInterval={30000} />
-              </Suspense>
-            ) : (
-              <DeferredPanelPlaceholder label="Preparing economic indicators..." />
-            )}
-          </div>
-        </article>
-
-        {/* Health Alert Stream */}
-        <article className={`wp-card panel-frame realtime-domain-card ${fpsLow ? "" : "panel-animated"}`}>
-
-          <div className="panel-head futuristic-panel-header domain-header domain-header-pink">
-            <div className="header-glow domain-header-glow domain-header-glow-pink"></div>
-            <h3>
-              <span className="header-icon">HLT</span>
-              Health Alert Stream
-              <span className="header-badge domain-badge domain-badge-pink">LIVE</span>
-            </h3>
-          </div>
-          <div className="panel-content panel-content-scrollless">
-            {showDeferredPanels ? (
-              <Suspense fallback={<DeferredPanelPlaceholder label="Loading health alert stream..." />}>
-                <HealthAlertStream maxItems={10} refreshInterval={25000} />
-              </Suspense>
-            ) : (
-              <DeferredPanelPlaceholder label="Preparing health alert stream..." />
-            )}
-          </div>
-        </article>
-
-        {/* Google Trends Radar - Full Width */}
-        <article className={`wp-card panel-frame realtime-domain-card realtime-domain-card-wide ${fpsLow ? "" : "panel-animated"}`}>
-
-          <div className="panel-head futuristic-panel-header domain-header domain-header-violet">
-            <div className="header-glow domain-header-glow domain-header-glow-violet"></div>
-            <h3>
-              <span className="header-icon">TRD</span>
-              Google Trends Radar
-              <span className="header-badge domain-badge domain-badge-violet">LIVE</span>
-            </h3>
-          </div>
-          <div className="panel-content panel-content-scrollless">
-            {showDeferredPanels ? (
-              <Suspense fallback={<DeferredPanelPlaceholder label="Loading trends radar..." />}>
-                <GoogleTrendsRadar maxItems={16} refreshInterval={30000} />
-              </Suspense>
-            ) : (
-              <DeferredPanelPlaceholder label="Preparing trends radar..." />
-            )}
-          </div>
-        </article>
-
-        {/* Causal Risk Navigator - Full Width */}
-        <article className={`wp-card panel-frame realtime-domain-card realtime-domain-card-wide ${fpsLow ? "" : "panel-animated"}`}>
-          <div className="panel-head futuristic-panel-header domain-header domain-header-orange">
-            <div className="header-glow domain-header-glow domain-header-glow-orange"></div>
-            <h3>
-              <span className="header-icon">AI</span>
-              Causal Risk Navigator
-              <span className="header-badge domain-badge domain-badge-orange">NEW</span>
-            </h3>
-          </div>
-          <div className="panel-content panel-content-scrollless">
-            {showDeferredPanels ? (
-              <Suspense fallback={<DeferredPanelPlaceholder label="Loading causal risk navigator..." />}>
-                <CausalRiskNavigator selectedCountry={selectedCountry} refreshInterval={30000} />
-              </Suspense>
-            ) : (
-              <DeferredPanelPlaceholder label="Preparing causal risk navigator..." />
-            )}
-          </div>
-        </article>
+      <section id="dashboard-operational-analytics" className="operational-analytics-grid">
+        {showDeferredPanels ? (
+          <>
+            <Suspense fallback={<DeferredPanelPlaceholder label="Loading behavioral analytics..." />}>
+              <BehavioralAnalyticsPanel
+                history={history}
+                rows={riskMapRows}
+                telemetryDrivers={telemetryDrivers}
+                topTopic={topTopic}
+                riskDelta={riskDelta}
+                globalRiskScore={globalRiskScore}
+                globalMoodScore={globalMoodScore}
+                forecastRiskDelta={forecastRiskDelta}
+                incidentCount={liveFeedState.incidents?.length ?? 0}
+                coveragePct={coverageState.coverage_pct}
+              />
+            </Suspense>
+            <Suspense fallback={<DeferredPanelPlaceholder label="Loading priority watchlist..." />}>
+              <PriorityWatchlist
+                rows={riskMapRows}
+                incidents={liveFeedState.incidents ?? []}
+                selectedCountry={selectedCountry}
+                onSelectCountry={setSelectedCountry}
+              />
+            </Suspense>
+            <Suspense fallback={<DeferredPanelPlaceholder label="Loading signal integrity board..." />}>
+              <SignalIntegrityBoard
+                coverage={coverageState}
+                trustSnapshot={trustSnapshot}
+                connectionState={connectionState}
+                heartbeatSec={liveFeedState.ingestionHeartbeatSec}
+                modelDrift={liveFeedState.modelDrift}
+                validationStatus={validationSummary?.status ?? "pending"}
+                moodConfidence={globalMoodConfidence}
+                moodUncertainty={moodUncertaintyDisplay}
+                forecastConfidence={forecastConfidenceDisplay}
+                qualityGateMessage={qualityGateMessage}
+                reliabilityStatus={reliabilityStatus}
+                freshSources={freshSources}
+                staleSources={staleSources}
+              />
+            </Suspense>
+          </>
+        ) : (
+          <>
+            <article className="wp-card panel-frame operational-panel analytics-hero-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing behavioral analytics..." /></div></article>
+            <article className="wp-card panel-frame operational-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing priority watchlist..." /></div></article>
+            <article className="wp-card panel-frame operational-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing signal integrity board..." /></div></article>
+          </>
+        )}
       </section>
 
-      {/* Operator Workflow - Full Width */}
-      <section id="dashboard-operator-log" style={{ margin: "0 16px 16px" }}>
-        <article className={`wp-card panel-frame operator-panel operator-panel-card ${fpsLow ? "" : "panel-animated"}`}>
-          <div className="panel-head futuristic-panel-header domain-header domain-header-orange">
-            <div className="header-glow domain-header-glow domain-header-glow-orange"></div>
-            <h3>
-              <span className="header-icon">OPS</span>
-              Operator Workflow And Reliability Log
-              <span className="header-badge domain-badge domain-badge-orange">OPS</span>
-            </h3>
-          </div>
-          <div className="panel-content panel-content-scrollless">
-            {panelStale.ops ? <div className="panel-stale">stale</div> : null}
-            {showDeferredPanels ? (
-              <Suspense fallback={<DeferredPanelPlaceholder label="Loading operator log..." />}>
-                <EventLog events={operatorEvents} />
-              </Suspense>
-            ) : (
-              <DeferredPanelPlaceholder label="Preparing operator log..." />
-            )}
-          </div>
-        </article>
+      <section id="dashboard-operator-queue" className="operator-queue-section">
+        {showDeferredPanels ? (
+          <Suspense fallback={<DeferredPanelPlaceholder label="Loading operator response queue..." />}>
+            <OperatorResponseQueue
+              events={operatorEvents}
+              incidents={liveFeedState.incidents ?? []}
+              selectedCountry={selectedCountry}
+              onSelectCountry={setSelectedCountry}
+              onAction={(action, comment, owner) => {
+                void addEvent(action, comment, owner);
+              }}
+              stale={panelStale.ops}
+            />
+          </Suspense>
+        ) : (
+          <article className="wp-card panel-frame operator-response-panel">
+            <div className="panel-content operational-panel-content">
+              <DeferredPanelPlaceholder label="Preparing operator response queue..." />
+            </div>
+          </article>
+        )}
       </section>
 
       {showDeferredPanels ? (

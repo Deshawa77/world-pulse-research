@@ -139,3 +139,84 @@
     margin-bottom: -4px;
   }
 }
+
+/* Subtle Google logo-style orbiting squares - minimal continuous motion */
+.wp-intro-google-squares {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.wp-intro-google-square {
+  position: absolute;
+  background: radial-gradient(circle at 30% 30%, rgba(86,214,255,0.25) 0%, rgba(78,137,255,0.12) 70%, transparent);
+  border-radius: 3px;
+  opacity: 0.18;
+  animation: google-logo-orbit 3.8s cubic-bezier(0.68,-0.55,0.265,1.55) infinite;
+  box-shadow: 0 0 8px rgba(86,214,255,0.12);
+}
+
+.wp-intro-google-square:nth-child(1) {
+  width: 20px;
+  height: 20px;
+  top: 25%;
+  left: 18%;
+  animation-delay: 0s;
+  animation-duration: 3s;
+}
+
+.wp-intro-google-square:nth-child(2) {
+  width: 18px;
+  height: 18px;
+  top: 38%;
+  right: 22%;
+  animation-delay: 0.9s;
+  animation-duration: 3.8s;
+  background: radial-gradient(circle at 70% 30%, rgba(78,137,255,0.22) 0%, rgba(86,214,255,0.1) 70%, transparent);
+}
+
+.wp-intro-google-square:nth-child(3) {
+  width: 24px;
+  height: 24px;
+  bottom: 28%;
+  left: 28%;
+  animation-delay: 1.8s;
+  animation-duration: 3.4s;
+}
+
+.wp-intro-google-square:nth-child(4) {
+  width: 14px;
+  height: 14px;
+  bottom: 42%;
+  right: 18%;
+  animation-delay: 2.6s;
+  animation-duration: 4.2s;
+  background: radial-gradient(circle at 40% 70%, rgba(86,214,255,0.18) 0%, rgba(78,137,255,0.15) 70%, transparent);
+}
+
+@keyframes google-logo-orbit {
+  0%, 100% {
+    transform: translate(0, 0) scale(1) rotate(0deg);
+    opacity: 0.18;
+  }
+  25% {
+    transform: translate(6px, -4px) scale(1.12) rotate(90deg);
+    opacity: 0.32;
+  }
+  50% {
+    transform: translate(-3px, 10px) scale(0.88) rotate(180deg);
+    opacity: 0.14;
+  }
+  75% {
+    transform: translate(10px, 3px) scale(1.08) rotate(270deg);
+    opacity: 0.28;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wp-intro-google-square {
+    display: none;
+  }
+}
