@@ -1,4 +1,3 @@
-import BrainModelViewer from "./BrainModelViewer";
 import type { CountryDrilldownData, IntelligenceFeedItem } from "../services/api";
 import AlertControls from "./AlertControls";
 import EventLog, { type OperatorEvent } from "./EventLog";
@@ -55,7 +54,7 @@ function riskBand(score: number): string {
 }
 
 function cleanDriverLabel(label: string): string {
-  return label.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+  return label.replace(/_/g, " ").replace(/\w/g, (char) => char.toUpperCase());
 }
 
 function driverReason(feature: string, contribution: number): string {
@@ -152,8 +151,8 @@ export default function CountryDrilldown({
   ].slice(0, 6);
 
   const quickRead = `${data?.country ?? "This country"} is currently in a ${riskBand(risk)} risk band at ${risk.toFixed(1)} / 100, with a ${trendLabel.toLowerCase()} trend (${riskDelta >= 0 ? "+" : ""}${riskDelta.toFixed(2)}).`;
-
   const weatherObserved = weather?.observedAt ? new Date(weather.observedAt).toLocaleString() : "n/a";
+
   const implications = [
     {
       label: "Base case",
@@ -178,239 +177,239 @@ export default function CountryDrilldown({
     },
   ];
 
+  const summaryCards = [
+    { label: "Risk Score", value: `${risk.toFixed(1)} / 100`, detail: threatLabel },
+    { label: "Trend", value: `${trendLabel}`, detail: `${riskDelta >= 0 ? "+" : ""}${riskDelta.toFixed(2)} delta` },
+    { label: "Forecast", value: `${forecast.score.toFixed(1)}`, detail: `${forecast.horizonHours}h outlook` },
+    { label: "Trust", value: reliability.status, detail: `${(reliability.confidence * 100).toFixed(0)}% confidence` },
+  ];
+
   return (
-    <aside className="country-drilldown country-drilldown-v2">
-      <header className="country-drilldown-header">
-        <h3>Country Drilldown: {data?.country ?? "n/a"}</h3>
-        <button onClick={onClose}>Close</button>
-      </header>
-
-      {loading ? <p>Loading country intelligence...</p> : null}
-
-      {data ? (
-        <>
-          <section className="drilldown-brain-section">
-            <div className="drilldown-brain-view">
-              <BrainModelViewer className="dashboard-brain-model" />
+    <aside className="country-drilldown country-drilldown-analytics">
+      <div className="country-drilldown-shell">
+        <header className="country-drilldown-hero wp-card panel-frame analytics-hero-panel">
+          <button type="button" className="country-drilldown-close country-drilldown-close-corner" onClick={onClose}>Close</button>
+          <div className="analytics-panel-head analytics-panel-head-wide">
+            <div>
+              <span className="country-drilldown-eyebrow">Country Analytics</span>
+              <h3>{data?.country ?? "Country Drilldown"}</h3>
             </div>
-            <div className="drilldown-country-telemetry">
-              <article className="drilldown-telemetry-card">
-                <span>Risk Score</span>
-                <strong>{risk.toFixed(1)} / 100</strong>
+            <div className="country-drilldown-hero-actions">
+              <span className="analytics-pill">Live focus</span>
+            </div>
+          </div>
+          <div className="country-drilldown-subtitle">
+            {loading ? "Refreshing country intelligence..." : quickRead}
+          </div>
+        </header>
+
+        {data ? (
+          <>
+            <section className="country-drilldown-kpi-grid">
+              {summaryCards.map((card) => (
+                <article key={card.label} className="country-drilldown-kpi-card">
+                  <span>{card.label}</span>
+                  <strong>{card.value}</strong>
+                  <small>{card.detail}</small>
+                </article>
+              ))}
+            </section>
+
+            <section className="country-drilldown-grid country-drilldown-grid-hero">
+              <article className="country-analytics-card country-analytics-card-model">
+                <div className="analytics-panel-head">
+                  <h4>Country Signal Overview</h4>
+                  <span className="analytics-pill">Live state</span>
+                </div>
+                <div className="country-drilldown-snapshot-grid">
+                  <article className="country-drilldown-mini-card">
+                    <span>Current Read</span>
+                    <strong>{risk.toFixed(1)} / 100</strong>
+                    <small>{quickRead}</small>
+                  </article>
+                  <article className={`country-drilldown-mini-card tone-${trendMode}`}>
+                    <span>Live Trend</span>
+                    <strong>{trendLabel}</strong>
+                    <small>{riskDelta >= 0 ? "+" : ""}{riskDelta.toFixed(2)} delta with {threatLabel.toLowerCase()} pressure</small>
+                  </article>
+                  <article className="country-drilldown-mini-card">
+                    <span>Latest Conditions</span>
+                    <strong>{weather ? weather.conditionLabel : "Signal-only view"}</strong>
+                    <small>{weather ? `${weather.temperatureC.toFixed(1)}C, humidity ${weather.humidityPct.toFixed(0)}%, wind ${weather.windSpeedKmh.toFixed(1)} km/h` : "Weather data temporarily unavailable."}</small>
+                  </article>
+                  <article className={`country-drilldown-mini-card tone-${trendMode}`}>
+                    <span>Confidence Band</span>
+                    <strong>{confidenceLower.toFixed(1)} - {confidenceUpper.toFixed(1)}</strong>
+                    <small>{implications[2].text}</small>
+                  </article>
+                </div>
+                <article className="country-drilldown-mini-card country-drilldown-headline-card">
+                  <span>Headline Read</span>
+                  <strong>{topHeadline?.headline ?? "No current headline in focus"}</strong>
+                  <small>{topHeadline ? `${topHeadline.source} - ${new Date(topHeadline.timestamp).toLocaleTimeString()}` : "Awaiting latest country-specific signal"}</small>
+                </article>
+                <article className="country-drilldown-mini-card">
+                  <span>Main Drivers</span>
+                  <div className="drilldown-driver-chips">
+                    {driverLabels.map((driver) => (
+                      <span key={driver} className="drilldown-driver-chip">{driver}</span>
+                    ))}
+                  </div>
+                </article>
               </article>
-              <article className="drilldown-telemetry-card">
-                <span>Threat Level</span>
-                <strong>{threatLabel}</strong>
-              </article>
-              <article className={`drilldown-telemetry-card tone-${trendMode}`}>
-                <span>Trend</span>
-                <strong>{trendLabel} ({riskDelta >= 0 ? "+" : ""}{riskDelta.toFixed(2)})</strong>
-              </article>
-              <article className="drilldown-telemetry-card drilldown-drivers-card">
-                <span>Main Drivers</span>
-                <div className="drilldown-driver-chips">
-                  {driverLabels.map((driver) => (
-                    <span key={driver} className="drilldown-driver-chip">{driver}</span>
+
+              <article className="country-analytics-card">
+                <div className="analytics-panel-head">
+                  <h4>Situation Overview</h4>
+                  <span className="analytics-pill">Now</span>
+                </div>
+                <div className="drilldown-list">
+                  {implications.map((line) => (
+                    <div key={line.label} className="drilldown-list-row">
+                      <strong>{line.label}</strong>
+                      <span>{line.text}</span>
+                    </div>
+                  ))}
+                  {remainingUpdates.map((item) => (
+                    <div key={item.key} className="drilldown-list-row">
+                      <strong>{item.label}</strong>
+                      <span>{item.meta}</span>
+                    </div>
                   ))}
                 </div>
               </article>
-            </div>
-          </section>
+            </section>
 
-          <article className="drilldown-section-card drilldown-plain-summary">
-            <h4>Quick Read (Plain English)</h4>
-            <p>{quickRead}</p>
-            <div className="drilldown-list">
-              {implications.map((line) => (
-                <div key={line.label} className="drilldown-list-row">
-                  <strong>{line.label}</strong>
-                  <span>{line.text}</span>
+            <section className="country-drilldown-grid">
+              <article className="country-analytics-card">
+                <div className="analytics-panel-head">
+                  <h4>Driver Attribution</h4>
+                  <span className="analytics-pill">Why</span>
                 </div>
-              ))}
-            </div>
-          </article>
+                <RiskWaterfallChart
+                  prevRisk={Math.max(0, risk - 1.8)}
+                  currentRisk={risk}
+                  items={sortedDrivers.slice(0, 8).map((driver) => ({ feature: cleanDriverLabel(driver.feature), delta: driver.contribution }))}
+                  confidence={{ lower: confidenceLower, upper: confidenceUpper }}
+                />
+                <div className="drilldown-list">
+                  {sortedDrivers.slice(0, 4).map((driver) => (
+                    <div key={driver.feature} className="drilldown-list-row">
+                      <strong>{cleanDriverLabel(driver.feature)}</strong>
+                      <span>{driver.contribution >= 0 ? "Pushing risk up" : "Pulling risk down"} by {Math.abs(driver.contribution).toFixed(3)}. {driverReason(driver.feature, driver.contribution)}</span>
+                    </div>
+                  ))}
+                </div>
+              </article>
 
-          <section className="drilldown-section-grid">
-            <article className="drilldown-section-card">
-              <h4>What Is Happening Right Now</h4>
-              {topHeadline ? (
-                <div className="drilldown-list-row">
-                  <strong>Top headline now: {topHeadline.headline}</strong>
-                  <span>{topHeadline.source} - {new Date(topHeadline.timestamp).toLocaleTimeString()}</span>
+              <article className="country-analytics-card">
+                <div className="analytics-panel-head">
+                  <h4>Risk Timeline</h4>
+                  <span className="analytics-pill">24h</span>
                 </div>
-              ) : null}
-              <div className="drilldown-list">
-                {remainingUpdates.map((item) => (
-                  <div key={item.key} className="drilldown-list-row">
-                    <strong>{item.label}</strong>
-                    <span>{item.meta}</span>
+                <TimeSeriesChart
+                  title={`${data.country} risk stream`}
+                  series={[{ name: "Risk", points: trend }]}
+                  anomalies={anomalies}
+                  thresholdBand={{ low: 35, high: 75 }}
+                />
+              </article>
+            </section>
+
+            <section className="country-drilldown-grid">
+              <article className="country-analytics-card">
+                <div className="analytics-panel-head">
+                  <h4>Forward View</h4>
+                  <span className="analytics-pill">24-72h</span>
+                </div>
+                <div className="country-kpis">
+                  <span>Forecast {forecast.score.toFixed(1)} / 100</span>
+                  <span>{forecast.horizonHours}h delta {forecast.delta >= 0 ? "+" : ""}{forecast.delta.toFixed(2)}</span>
+                  <span>Confidence {(forecast.confidence * 100).toFixed(0)}%</span>
+                </div>
+                <div className="drilldown-list">
+                  <div className="drilldown-list-row">
+                    <strong>Most likely path</strong>
+                    <span>{implications[0].text}</span>
                   </div>
-                ))}
-              </div>
-            </article>
-
-            <article className="drilldown-section-card">
-              <h4>Live Weather (Latest)</h4>
-              <div className="drilldown-list">
-                <div className="drilldown-list-row">
-                  <strong>Status</strong>
-                  <span>{weatherError || (weather ? "Live" : "Live weather temporarily unavailable")}</span>
-                </div>
-                <div className="drilldown-list-row">
-                  <strong>Current conditions</strong>
-                  <span>{weather ? weather.conditionLabel : "Unavailable"}</span>
-                </div>
-                <div className="drilldown-list-row">
-                  <strong>Temperature / feels like</strong>
-                  <span>{weather ? `${weather.temperatureC.toFixed(1)}C / ${weather.feelsLikeC.toFixed(1)}C` : "n/a"}</span>
-                </div>
-                <div className="drilldown-list-row">
-                  <strong>Wind / gusts</strong>
-                  <span>{weather ? `${weather.windSpeedKmh.toFixed(1)} km/h / ${weather.windGustKmh.toFixed(1)} km/h` : "n/a"}</span>
-                </div>
-                <div className="drilldown-list-row">
-                  <strong>Rain / precipitation</strong>
-                  <span>{weather ? `${weather.rainMm.toFixed(2)} mm / ${weather.precipitationMm.toFixed(2)} mm` : "n/a"}</span>
-                </div>
-                <div className="drilldown-list-row">
-                  <strong>Humidity / wind direction</strong>
-                  <span>{weather ? `${weather.humidityPct.toFixed(0)}% / ${weather.windDirectionDeg.toFixed(0)} degrees` : "n/a"}</span>
-                </div>
-                <div className="drilldown-list-row">
-                  <strong>Provider / observed at</strong>
-                  <span>{weather ? `${weather.provider} / ${weatherObserved}` : weatherObserved}</span>
-                </div>
-                <div className="drilldown-list-row">
-                  <strong>Refresh state</strong>
-                  <span>{weatherLoading ? "Updating now..." : "Auto-refresh every 90s"}</span>
-                </div>
-              </div>
-            </article>
-
-            <article className="drilldown-section-card">
-              <h4>Why The Risk Is Moving</h4>
-              <RiskWaterfallChart
-                prevRisk={Math.max(0, risk - 1.8)}
-                currentRisk={risk}
-                items={sortedDrivers
-                  .slice(0, 8)
-                  .map((driver) => ({ feature: cleanDriverLabel(driver.feature), delta: driver.contribution }))}
-                confidence={{ lower: confidenceLower, upper: confidenceUpper }}
-              />
-              <div className="drilldown-list">
-                {sortedDrivers.slice(0, 4).map((driver) => (
-                  <div key={driver.feature} className="drilldown-list-row">
-                    <strong>{cleanDriverLabel(driver.feature)}</strong>
-                    <span>
-                      {driver.contribution >= 0 ? "Pushing risk up" : "Pulling risk down"} by {Math.abs(driver.contribution).toFixed(3)}. {driverReason(driver.feature, driver.contribution)}
-                    </span>
+                  <div className="drilldown-list-row">
+                    <strong>Momentum read</strong>
+                    <span>{implications[1].text}</span>
                   </div>
-                ))}
-              </div>
-            </article>
-          </section>
+                  <div className="drilldown-list-row trigger-medium">
+                    <strong>Escalation trigger</strong>
+                    <span>Two new high-severity events in less than 6 hours.</span>
+                  </div>
+                  <div className="drilldown-list-row trigger-low">
+                    <strong>Stabilization trigger</strong>
+                    <span>Top risk drivers turn negative for multiple consecutive updates.</span>
+                  </div>
+                </div>
+              </article>
 
-          <section className="drilldown-section-grid">
-            <article className="drilldown-section-card">
-              <h4>What May Happen Next (24-72h)</h4>
-              <div className="country-kpis">
-                <span>Forecast {forecast.score.toFixed(1)} / 100</span>
-                <span>{forecast.horizonHours}h delta {forecast.delta >= 0 ? "+" : ""}{forecast.delta.toFixed(2)}</span>
-                <span>Confidence {(forecast.confidence * 100).toFixed(0)}%</span>
-              </div>
-              <div className="drilldown-list">
-                <div className="drilldown-list-row">
-                  <strong>Most likely path</strong>
-                  <span>{implications[0].text}</span>
+              <article className="country-analytics-card">
+                <div className="analytics-panel-head">
+                  <h4>Trust And Conditions</h4>
+                  <span className="analytics-pill">Coverage</span>
                 </div>
-                <div className="drilldown-list-row">
-                  <strong>Momentum read</strong>
-                  <span>{implications[1].text}</span>
+                <div className="drilldown-list">
+                  <div className="drilldown-list-row">
+                    <strong>Data status</strong>
+                    <span>{reliability.status}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Fresh vs stale sources</strong>
+                    <span>{reliability.freshSources} / {reliability.staleSources}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Model confidence</strong>
+                    <span>{(reliability.confidence * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Uncertainty</strong>
+                    <span>{reliability.uncertainty.toFixed(1)} points</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Weather status</strong>
+                    <span>{weatherError || (weather ? weather.conditionLabel : "Weather temporarily unavailable")}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Observed</strong>
+                    <span>{weather ? `${weather.provider} - ${weatherObserved}` : weatherObserved}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Conditions</strong>
+                    <span>{weather ? `${weather.temperatureC.toFixed(1)}C, humidity ${weather.humidityPct.toFixed(0)}%, wind ${weather.windSpeedKmh.toFixed(1)} km/h` : "n/a"}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Refresh state</strong>
+                    <span>{weatherLoading ? "Updating now..." : "Auto-refresh every 90s"}</span>
+                  </div>
                 </div>
-              </div>
-            </article>
+              </article>
+            </section>
 
-            <article className="drilldown-section-card">
-              <h4>How Much You Can Trust This</h4>
-              <div className="drilldown-list">
-                <div className="drilldown-list-row">
-                  <strong>Data status</strong>
-                  <span>{reliability.status}</span>
-                </div>
-                <div className="drilldown-list-row">
-                  <strong>Fresh vs stale sources</strong>
-                  <span>{reliability.freshSources} / {reliability.staleSources}</span>
-                </div>
-                <div className="drilldown-list-row">
-                  <strong>Model confidence</strong>
-                  <span>{(reliability.confidence * 100).toFixed(0)}%</span>
-                </div>
-                <div className="drilldown-list-row">
-                  <strong>Uncertainty</strong>
-                  <span>{reliability.uncertainty.toFixed(1)} points</span>
-                </div>
+            <section className="country-analytics-card country-analytics-card-wide">
+              <div className="analytics-panel-head">
+                <h4>{workflowEnabled ? "Operator Actions" : "Response Workflow"}</h4>
+                <span className="analytics-pill">Operations</span>
               </div>
-            </article>
-          </section>
-
-          <section className="drilldown-section-grid">
-            <article className="drilldown-section-card">
-              <h4>What To Watch</h4>
-              <div className="drilldown-list">
-                <div className="drilldown-list-row trigger-medium">
-                  <strong>Escalation trigger</strong>
-                  <span>Two new high-severity events in less than 6 hours.</span>
-                </div>
-                <div className="drilldown-list-row trigger-medium">
-                  <strong>Data trust trigger</strong>
-                  <span>Stale sources exceed fresh sources for this country.</span>
-                </div>
-                <div className="drilldown-list-row trigger-low">
-                  <strong>Stabilization trigger</strong>
-                  <span>Top risk drivers turn negative for multiple consecutive updates.</span>
-                </div>
-              </div>
-            </article>
-
-            <article className="drilldown-section-card">
-              <h4>Risk Timeline (Last 24h)</h4>
-              <TimeSeriesChart
-                title={`${data.country} risk stream`}
-                series={[{ name: "Risk", points: trend }]}
-                anomalies={anomalies}
-                thresholdBand={{ low: 35, high: 75 }}
-              />
-            </article>
-          </section>
-
-          <section className="drilldown-section-card">
-            {workflowEnabled ? (<>
-              <h4>Operator Actions</h4>
-              <AlertControls
-                onAcknowledge={onAcknowledge ?? (() => {})}
-                onSnooze={onSnooze ?? (() => {})}
-                onAssign={onAssign ?? (() => {})}
-              />
-              <EventLog events={safeEvents} />
-            </>) : (<>
-              <h4>Response Workflow</h4>
-              <p>This drilldown is analytics-only on the dashboard. Use the Response Console for acknowledgements, assignments, and action tracking.</p>
-            </>)}
-          </section>
-        </>
-      ) : null}
+              {workflowEnabled ? (
+                <>
+                  <AlertControls
+                    onAcknowledge={onAcknowledge ?? (() => {})}
+                    onSnooze={onSnooze ?? (() => {})}
+                    onAssign={onAssign ?? (() => {})}
+                  />
+                  <EventLog events={safeEvents} />
+                </>
+              ) : (
+                <p className="country-drilldown-ops-note">This drilldown is analytics-only on the dashboard. Use the Response Console for acknowledgements, assignments, and action tracking.</p>
+              )}
+            </section>
+          </>
+        ) : null}
+      </div>
     </aside>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-

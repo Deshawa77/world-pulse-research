@@ -1539,6 +1539,7 @@ export default function Dashboard() {
               <PriorityWatchlist
                 rows={riskMapRows}
                 incidents={liveFeedState.incidents ?? []}
+                feedItems={selectedCountryNews}
                 selectedCountry={selectedCountry}
                 onSelectCountry={setSelectedCountry}
               />

@@ -4835,9 +4835,108 @@ def _identity_from_ws_credentials(
 # =====================================================
 # REAL-TIME RISK STREAM
 # =====================================================
-# =====================================================
-# REAL-TIME RISK STREAM WITH TOPICS
-# =====================================================
+LIVE_UPDATE_TOPIC = "country_risk_updates"
+WS_CONSUMER_TIMEOUT_MS = 250
+WS_IDLE_KEEPALIVE_SECONDS = 20.0
+
+
+def _live_consumer_config(topic: str, group_prefix: str) -> dict:
+    return {
+        "topics": [topic],
+        "group_id": f"{group_prefix}-{uuid.uuid4()}",
+        "auto_offset_reset": "latest",
+        "enable_auto_commit": True,
+        "consumer_timeout_ms": WS_CONSUMER_TIMEOUT_MS,
+    }
+
+
+
+def _drain_consumer_messages(active_consumer, timeout_ms: int = WS_CONSUMER_TIMEOUT_MS, max_records: int = 64) -> list[dict]:
+    records = active_consumer.poll(timeout_ms=timeout_ms, max_records=max_records)
+    messages = []
+    for batch in records.values():
+        for message in batch:
+            if isinstance(message.value, dict):
+                messages.append(message.value)
+    return messages
+
+
+
+def _connect_live_consumer(topic: str, group_prefix: str):
+    return get_consumer(**_live_consumer_config(topic, group_prefix))
+
+
+
+def _latest_online_global_doc() -> dict:
+    return db.global_features.find_one({"mode": "online"}, sort=[("_id", DESCENDING)]) or {}
+
+
+
+def _build_live_risk_snapshot(trigger: dict | None = None) -> dict:
+    doc = _latest_online_global_doc()
+    features = doc.get("features") or {}
+    top_topics = features.get("top_topics") or ["no data"]
+    if not isinstance(top_topics, list):
+        top_topics = [str(top_topics)]
+
+    payload = {
+        "type": "risk_update",
+        "timestamp": str(doc.get("timestamp") or features.get("timestamp") or datetime.utcnow().isoformat()),
+        "global_risk_score": float(features.get("global_risk_score", 50) or 50),
+        "top_topics": top_topics,
+    }
+    if trigger:
+        payload["trigger_country"] = trigger.get("country")
+        payload["trigger_risk"] = trigger.get("risk")
+        payload["trigger_timestamp"] = trigger.get("timestamp")
+        payload["trigger_quality"] = trigger.get("data_quality")
+    return payload
+
+
+
+def _build_sentinel_stream_messages(trigger: dict | None = None) -> list[dict]:
+    analysis = compute_sentinel_analysis()
+    timestamp = datetime.utcnow().isoformat()
+    message = {
+        "type": "sentinel_update",
+        "data": analysis,
+        "timestamp": timestamp,
+    }
+    if trigger:
+        message["trigger"] = {
+            "country": trigger.get("country"),
+            "risk": trigger.get("risk"),
+            "timestamp": trigger.get("timestamp"),
+            "data_quality": trigger.get("data_quality"),
+        }
+
+    messages = [message]
+    risk_score = float(analysis.get("risk_score", 50) or 50)
+    if risk_score >= 75:
+        messages.append({
+            "type": "alert",
+            "alert": {
+                "id": f"alert-{int(time.time())}",
+                "threshold": 75,
+                "condition": "above",
+                "enabled": True,
+                "triggered": True,
+                "lastTriggered": timestamp,
+                "risk_score": risk_score,
+                "message": f"Critical risk level detected: {risk_score}",
+            },
+        })
+    return messages
+
+
+
+def _heartbeat_message(message_type: str) -> dict:
+    return {
+        "type": f"{message_type}_keepalive",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
 @app.websocket("/ws/risk")
 async def websocket_risk(
     websocket: WebSocket,
@@ -4856,27 +4955,51 @@ async def websocket_risk(
         await websocket.close(code=1008)
         return
 
-    # --- Connect client ---
-    await manager.connect(websocket)
+    await websocket.accept()
+    consumer = None
+    last_keepalive = time.monotonic()
 
     try:
+        await websocket.send_json(_build_live_risk_snapshot())
         while True:
-            # Fetch the latest global_features doc
-            doc = db.global_features.find_one({"mode": "online"}, sort=[("_id", DESCENDING)])
-            if doc:
-                # Serialize for JSON + include top topics
-                data = {
-                    "timestamp": doc.get("timestamp"),
-                    "global_risk_score": doc["features"].get("global_risk_score", 50),
-                    "top_topics": doc["features"].get("top_topics", ["no data"])
-                }
-                await websocket.send_json(data)
-            
-            # Repeat every 5 seconds
-            await asyncio.sleep(5)
+            if consumer is None:
+                try:
+                    consumer = await asyncio.to_thread(_connect_live_consumer, LIVE_UPDATE_TOPIC, "dashboard-live-risk")
+                except Exception as exc:
+                    logger.warning("live_risk_ws_consumer_unavailable", extra={"event": {"error": str(exc)}})
+                    await asyncio.sleep(3)
+                    continue
 
+            try:
+                messages = await asyncio.to_thread(_drain_consumer_messages, consumer)
+            except Exception as exc:
+                logger.warning("live_risk_ws_consumer_failed", extra={"event": {"error": str(exc)}})
+                try:
+                    await asyncio.to_thread(consumer.close)
+                except Exception:
+                    pass
+                consumer = None
+                await asyncio.sleep(1)
+                continue
+
+            if messages:
+                await websocket.send_json(_build_live_risk_snapshot(messages[-1]))
+                last_keepalive = time.monotonic()
+                continue
+
+            if time.monotonic() - last_keepalive >= WS_IDLE_KEEPALIVE_SECONDS:
+                await websocket.send_json(_heartbeat_message("risk"))
+                last_keepalive = time.monotonic()
+
+            await asyncio.sleep(0.1)
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        return
+    finally:
+        if consumer is not None:
+            try:
+                await asyncio.to_thread(consumer.close)
+            except Exception:
+                pass
 
 
 # =====================================================
@@ -4901,26 +5024,10 @@ async def websocket_country_risk_map(
         return
 
     await websocket.accept()
-    consumer_config = {
-        "topics": ["country_risk_updates"],
-        "group_id": f"dashboard-country-risk-{uuid.uuid4()}",
-        "auto_offset_reset": "latest",
-        "enable_auto_commit": True,
-        "consumer_timeout_ms": 250,
-    }
-
-    def drain_consumer(active_consumer):
-        records = active_consumer.poll(timeout_ms=250, max_records=64)
-        messages = []
-        for batch in records.values():
-            for message in batch:
-                messages.append(message.value)
-        return messages
-
     consumer = None
     try:
         try:
-            consumer = await asyncio.to_thread(get_consumer, **consumer_config)
+            consumer = await asyncio.to_thread(_connect_live_consumer, LIVE_UPDATE_TOPIC, "dashboard-country-risk")
         except Exception as exc:
             logger.warning(
                 "country_risk_ws_consumer_unavailable",
@@ -4931,13 +5038,13 @@ async def websocket_country_risk_map(
             if consumer is None:
                 await asyncio.sleep(3)
                 try:
-                    consumer = await asyncio.to_thread(get_consumer, **consumer_config)
+                    consumer = await asyncio.to_thread(_connect_live_consumer, LIVE_UPDATE_TOPIC, "dashboard-country-risk")
                 except Exception:
                     continue
                 continue
 
             try:
-                messages = await asyncio.to_thread(drain_consumer, consumer)
+                messages = await asyncio.to_thread(_drain_consumer_messages, consumer)
             except Exception as exc:
                 logger.warning(
                     "country_risk_ws_consumer_failed",
@@ -4966,6 +5073,7 @@ async def websocket_country_risk_map(
             except Exception:
                 pass
 
+
 @app.websocket("/ws/sentinel")
 async def websocket_sentinel(
     websocket: WebSocket,
@@ -4975,8 +5083,8 @@ async def websocket_sentinel(
     token: str = Query(None),
 ):
     """
-    WebSocket endpoint for Sentinel AI real-time updates.
-    Provides risk score, analysis, and alerts to connected clients.
+    WebSocket endpoint for Sentinel AI event-driven updates.
+    Pushes analysis as soon as country risk events land instead of on a fixed timer.
     """
     identity = _identity_from_ws_credentials(
         x_api_key=x_api_key,
@@ -4988,59 +5096,68 @@ async def websocket_sentinel(
         await websocket.close(code=1008)
         return
 
-    # --- Connect client ---
     await websocket.accept()
     logger.info("Sentinel WebSocket client connected")
+    consumer = None
+    last_keepalive = time.monotonic()
 
     try:
-        while True:
-            # Fetch latest sentinel analysis
-            try:
-                analysis = compute_sentinel_analysis()
-                
-                # Send sentinel update message
-                message = {
-                    "type": "sentinel_update",
-                    "data": analysis,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-                await websocket.send_json(message)
-                
-                # Also check for alerts and send if triggered
-                risk_score = analysis.get("risk_score", 50)
-                if risk_score >= 75:
-                    alert_message = {
-                        "type": "alert",
-                        "alert": {
-                            "id": f"alert-{int(time.time())}",
-                            "threshold": 75,
-                            "condition": "above",
-                            "enabled": True,
-                            "triggered": True,
-                            "lastTriggered": datetime.utcnow().isoformat(),
-                            "risk_score": risk_score,
-                            "message": f"Critical risk level detected: {risk_score}"
-                        }
-                    }
-                    await websocket.send_json(alert_message)
-                    
-            except Exception as e:
-                logger.error(f"Error computing sentinel analysis: {e}")
-                # Send error message but don't disconnect
-                await websocket.send_json({
-                    "type": "error",
-                    "message": str(e),
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-            
-            # Repeat every 5 seconds
-            await asyncio.sleep(5)
+        for outbound in _build_sentinel_stream_messages():
+            await websocket.send_json(outbound)
 
+        while True:
+            if consumer is None:
+                try:
+                    consumer = await asyncio.to_thread(_connect_live_consumer, LIVE_UPDATE_TOPIC, "dashboard-sentinel")
+                except Exception as exc:
+                    logger.warning("sentinel_ws_consumer_unavailable", extra={"event": {"error": str(exc)}})
+                    await asyncio.sleep(3)
+                    continue
+
+            try:
+                messages = await asyncio.to_thread(_drain_consumer_messages, consumer)
+            except Exception as exc:
+                logger.warning("sentinel_ws_consumer_failed", extra={"event": {"error": str(exc)}})
+                try:
+                    await asyncio.to_thread(consumer.close)
+                except Exception:
+                    pass
+                consumer = None
+                await asyncio.sleep(1)
+                continue
+
+            if messages:
+                trigger = messages[-1]
+                try:
+                    for outbound in _build_sentinel_stream_messages(trigger=trigger):
+                        await websocket.send_json(outbound)
+                    last_keepalive = time.monotonic()
+                except Exception as exc:
+                    logger.error(f"Error computing sentinel analysis: {exc}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": str(exc),
+                        "timestamp": datetime.utcnow().isoformat(),
+                    })
+                continue
+
+            if time.monotonic() - last_keepalive >= WS_IDLE_KEEPALIVE_SECONDS:
+                await websocket.send_json(_heartbeat_message("sentinel"))
+                last_keepalive = time.monotonic()
+
+            await asyncio.sleep(0.1)
     except WebSocketDisconnect:
         logger.info("Sentinel WebSocket client disconnected")
     except Exception as e:
         logger.error(f"Sentinel WebSocket error: {e}")
         await websocket.close()
+    finally:
+        if consumer is not None:
+            try:
+                await asyncio.to_thread(consumer.close)
+            except Exception:
+                pass
+
 
 
 # =====================================================

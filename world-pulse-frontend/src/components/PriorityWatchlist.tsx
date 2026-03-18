@@ -1,8 +1,9 @@
-import type { RiskMapPoint } from "../services/api";
+import type { IntelligenceFeedItem, RiskMapPoint } from "../services/api";
 
 type Props = {
   rows: RiskMapPoint[];
   incidents: string[];
+  feedItems: IntelligenceFeedItem[];
   selectedCountry: string | null;
   onSelectCountry: (country: string) => void;
 };
@@ -14,6 +15,7 @@ type WatchRow = {
   confidence: string;
   driver: string;
   incidentFlag: boolean;
+  incidentText: string;
 };
 
 function safeNumber(value: unknown, fallback = 0): number {
@@ -53,7 +55,103 @@ function toneClass(risk: number): string {
   return "tone-stable";
 }
 
-export default function PriorityWatchlist({ rows, incidents, selectedCountry, onSelectCountry }: Props) {
+
+const COUNTRY_NAMES: Record<string, string> = {
+  USA: "United States",
+  CAN: "Canada",
+  MEX: "Mexico",
+  BRA: "Brazil",
+  ARG: "Argentina",
+  GBR: "United Kingdom",
+  FRA: "France",
+  DEU: "Germany",
+  ESP: "Spain",
+  ITA: "Italy",
+  RUS: "Russia",
+  CHN: "China",
+  IND: "India",
+  JPN: "Japan",
+  KOR: "South Korea",
+  AUS: "Australia",
+  ZAF: "South Africa",
+  EGY: "Egypt",
+  NGA: "Nigeria",
+  TUR: "Turkey",
+  SAU: "Saudi Arabia",
+  IDN: "Indonesia",
+  PAK: "Pakistan",
+  UKR: "Ukraine",
+  LKA: "Sri Lanka",
+  DZA: "Algeria",
+  IRN: "Iran",
+  AFG: "Afghanistan",
+  BGD: "Bangladesh",
+  NPL: "Nepal",
+  MMR: "Myanmar",
+  THA: "Thailand",
+  VNM: "Vietnam",
+  MYS: "Malaysia",
+  PHL: "Philippines",
+  NZL: "New Zealand",
+  NOR: "Norway",
+  SWE: "Sweden",
+  FIN: "Finland",
+  POL: "Poland",
+  NLD: "Netherlands",
+  BEL: "Belgium",
+  CHE: "Switzerland",
+  AUT: "Austria",
+  ISR: "Israel",
+  IRQ: "Iraq",
+  QAT: "Qatar",
+  ARE: "United Arab Emirates",
+  KWT: "Kuwait",
+  KEN: "Kenya",
+  ETH: "Ethiopia",
+  GHA: "Ghana",
+  MAR: "Morocco",
+  TUN: "Tunisia",
+  SGP: "Singapore",
+  URY: "Uruguay",
+  BOL: "Bolivia",
+  CMR: "Cameroon",
+};
+
+function countryLabel(code: string): string {
+  return COUNTRY_NAMES[code] ?? code;
+}
+
+function generateIncidentHeadline(country: string, driver: string, status: string, incidentText?: string): string {
+  if (incidentText?.trim()) return incidentText;
+  const name = countryLabel(country);
+  switch (driver) {
+    case "Social unrest":
+      return `Major unrest reported in ${name}`;
+    case "Weather stress":
+      return `Weather stress intensifies across ${name}`;
+    case "Narrative pressure":
+      return `Narrative pressure rising across ${name}`;
+    case "Signal freshness":
+      return `Fresh escalation signals detected in ${name}`;
+    default:
+      return `${status} pressure building in ${name}`;
+  }
+}
+
+function findIncidentHeadline(country: string, incidents: string[]): string | undefined {
+  const name = countryLabel(country).toLowerCase();
+  const code = country.toLowerCase();
+  return incidents.find((item) => {
+    const normalized = item.toLowerCase();
+    return normalized.includes(name) || normalized.includes(code);
+  });
+}
+
+function findFeedHeadline(country: string, feedItems: IntelligenceFeedItem[]): string | undefined {
+  return feedItems.find((item) => item.country === country)?.headline;
+}
+
+export default function PriorityWatchlist({ rows, incidents, feedItems, selectedCountry, onSelectCountry }: Props) {
   const incidentCountries = new Set(
     incidents
       .map((item) => item.match(/\b[A-Z]{3}\b/)?.[0] ?? "")
@@ -63,7 +161,9 @@ export default function PriorityWatchlist({ rows, incidents, selectedCountry, on
   const rankedRows: WatchRow[] = rows
     .filter((row): row is RiskMapPoint & { risk: number } => typeof row.risk === "number")
     .map((row) => {
-      const incidentFlag = incidentCountries.has(row.country);
+      const matchedFeedHeadline = findFeedHeadline(row.country, feedItems);
+      const matchedIncident = findIncidentHeadline(row.country, incidents);
+      const incidentFlag = incidentCountries.has(row.country) || Boolean(matchedIncident) || Boolean(matchedFeedHeadline);
       const risk = safeNumber(row.risk);
       const momentum =
         safeNumber(row.social_unrest_score) * 18 +
@@ -77,6 +177,7 @@ export default function PriorityWatchlist({ rows, incidents, selectedCountry, on
         confidence: deriveConfidence(row),
         driver: deriveDriver(row),
         incidentFlag,
+        incidentText: matchedFeedHeadline ?? generateIncidentHeadline(row.country, deriveDriver(row), deriveStatus(risk), matchedIncident),
         rankingScore,
       };
     })
@@ -117,7 +218,7 @@ export default function PriorityWatchlist({ rows, incidents, selectedCountry, on
               </div>
               <div className="watchlist-chart-foot">
                 <span>{row.confidence}</span>
-                <span>{row.incidentFlag ? "Live incident" : "No active incident"}</span>
+                <span>{row.incidentText}</span>
               </div>
             </button>
           ))}
