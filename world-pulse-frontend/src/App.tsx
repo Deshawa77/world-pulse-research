@@ -17,6 +17,7 @@ import IntroSplash from "./components/IntroSplash";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const TrendPrediction = lazy(() => import("./pages/TrendPrediction"));
+const ResponseConsole = lazy(() => import("./pages/ResponseConsole"));
 
 const INTRO_SEEN_KEY = "wp_intro_seen_v3";
 
@@ -174,6 +175,16 @@ function App() {
 
         <Route path="/historical-trends" element={<ProtectedRoute><HistoricalTrends /></ProtectedRoute>} />
         <Route path="/scenario" element={<ProtectedRoute><ScenarioStudio /></ProtectedRoute>} />
+        <Route
+          path="/response-console"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<main className="wp-loading"><section className="wp-loading-card"><div className="wp-loading-spinner" /><p>Loading response console...</p></section></main>}>
+                <ResponseConsole />
+              </Suspense>
+            </ProtectedRoute>
+          }
+        />
         <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
         <Route path="/admin" element={<AdminRoute><AdminConsole /></AdminRoute>} />
         <Route path="/admin/system-monitoring" element={<AdminRoute><SystemMonitoring /></AdminRoute>} />

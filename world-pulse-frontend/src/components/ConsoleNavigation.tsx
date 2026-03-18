@@ -14,6 +14,7 @@ const BASE_DASHBOARD_NAV_ITEMS: DashboardNavItem[] = [
   { label: "Predictions", path: "/trend-prediction" },
   { label: "Historical", path: "/historical-trends" },
   { label: "Scenario Studio", path: "/scenario" },
+  { label: "Response Console", path: "/response-console" },
   { label: "About", path: "/about" },
   { label: "Contact", path: "/contact" },
   { label: "Logout", logout: true },

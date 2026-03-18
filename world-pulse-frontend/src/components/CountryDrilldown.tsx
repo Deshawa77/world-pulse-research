@@ -10,7 +10,7 @@ type Props = {
   open: boolean;
   loading: boolean;
   data: CountryDrilldownData | null;
-  events: OperatorEvent[];
+  events?: OperatorEvent[];
   countryNews: IntelligenceFeedItem[];
   liveIncidents: string[];
   threatLabel: string;
@@ -35,9 +35,10 @@ type Props = {
   weatherLoading: boolean;
   weatherError: string;
   onClose: () => void;
-  onAcknowledge: (comment: string) => void;
-  onSnooze: (comment: string) => void;
-  onAssign: (owner: string, comment: string) => void;
+  onAcknowledge?: (comment: string) => void;
+  onSnooze?: (comment: string) => void;
+  onAssign?: (owner: string, comment: string) => void;
+  workflowEnabled?: boolean;
 };
 
 function trendTone(value: number): "up" | "down" | "stable" {
@@ -96,12 +97,14 @@ export default function CountryDrilldown({
   onAcknowledge,
   onSnooze,
   onAssign,
+  workflowEnabled = true,
 }: Props) {
   if (!open) return null;
 
   const trend = Array.isArray(data?.trend) ? data.trend : [];
   const countryEvents = Array.isArray(data?.events) ? data.events : [];
   const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
+  const safeEvents = Array.isArray(events) ? events : [];
 
   const anomalies = countryEvents.slice(0, 3).map((event, index) => ({
     timestamp: event.timestamp,
@@ -381,9 +384,18 @@ export default function CountryDrilldown({
           </section>
 
           <section className="drilldown-section-card">
-            <h4>Operator Actions</h4>
-            <AlertControls onAcknowledge={onAcknowledge} onSnooze={onSnooze} onAssign={onAssign} />
-            <EventLog events={events} />
+            {workflowEnabled ? (<>
+              <h4>Operator Actions</h4>
+              <AlertControls
+                onAcknowledge={onAcknowledge ?? (() => {})}
+                onSnooze={onSnooze ?? (() => {})}
+                onAssign={onAssign ?? (() => {})}
+              />
+              <EventLog events={safeEvents} />
+            </>) : (<>
+              <h4>Response Workflow</h4>
+              <p>This drilldown is analytics-only on the dashboard. Use the Response Console for acknowledgements, assignments, and action tracking.</p>
+            </>)}
           </section>
         </>
       ) : null}

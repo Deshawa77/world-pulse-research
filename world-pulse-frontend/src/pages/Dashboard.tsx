@@ -1,8 +1,8 @@
 ﻿import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
 import ConsoleNavigation from "../components/ConsoleNavigation";
-import type { OperatorEvent } from "../components/EventLog";
 import {
   buildWebSocketAuthUrl,
   getCountryDrilldown,
@@ -11,7 +11,6 @@ import {
   getRiskMap,
   getRiskMapCoverage,
   getTrustReliability,
-  postAlertAction,
   refreshRiskMapBatch,
   type CountryDrilldownData,
   type LiveCommandFeed,
@@ -28,7 +27,7 @@ const GlobalIntelligenceFeed = lazy(() => import("../components/GlobalIntelligen
 const PriorityWatchlist = lazy(() => import("../components/PriorityWatchlist"));
 const SignalIntegrityBoard = lazy(() => import("../components/SignalIntegrityBoard"));
 const BehavioralAnalyticsPanel = lazy(() => import("../components/BehavioralAnalyticsPanel"));
-const OperatorResponseQueue = lazy(() => import("../components/OperatorResponseQueue"));
+const SystemEventStream = lazy(() => import("../components/SystemEventStream"));
 
 type Features = {
   news_sentiment: number;
@@ -78,10 +77,9 @@ type Snapshot = {
 };
 
 type ConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
-type PanelKey = "risk" | "map" | "stream" | "ops";
+type PanelKey = "risk" | "map" | "stream";
 
 const HISTORY_KEY = "wp_v3_history";
-const EVENTS_KEY = "wp_v3_events";
 const MAX_HISTORY = 1200;
 
 const DRIVER_LABELS: Record<string, string> = {
@@ -361,7 +359,6 @@ export default function Dashboard() {
   const [countryData, setCountryData] = useState<CountryDrilldownData | null>(null);
 
   const [countryLoading, setCountryLoading] = useState(false);
-  const [operatorEvents, setOperatorEvents] = useState<OperatorEvent[]>(() => readJson(EVENTS_KEY, [] as OperatorEvent[]));
   const [mapHover, setMapHover] = useState<{ country: string; risk: number; quality: string } | null>(null);
   const [selectedCountryNews, setSelectedCountryNews] = useState<IntelligenceFeedItem[]>([]);
   const [selectedCountryFocus, setSelectedCountryFocus] = useState<{ lat: number; lon: number } | null>(null);
@@ -372,9 +369,9 @@ export default function Dashboard() {
   const [refreshingMap, setRefreshingMap] = useState(false);
 
   const [retries, setRetries] = useState(0);
-  const [activePreset, setActivePreset] = useState<"analyst" | "ops" | "executive">("analyst");
   const [sentinelEnabled, setSentinelEnabled] = useState(true);
   const [showDeferredPanels, setShowDeferredPanels] = useState(false);
+  const [recentSocketUpdates, setRecentSocketUpdates] = useState<Array<{ country: string; risk: number | null; timestamp: string; quality: string }>>([]);
 
   const cacheRef = useRef<{
     liveFeed: { data: LiveCommandFeed | null; timestamp: number; ttl: number };
@@ -396,7 +393,6 @@ export default function Dashboard() {
     risk: Date.now(),
     map: Date.now(),
     stream: Date.now(),
-    ops: Date.now(),
   });
   
   const retriesRef = useRef(0);
@@ -441,6 +437,12 @@ export default function Dashboard() {
 
   const queueRiskMapUpdate = (update: RiskMapPoint) => {
     pendingRiskMapUpdatesRef.current.set(update.country, update);
+    setRecentSocketUpdates((prev) => [{
+      country: update.country,
+      risk: typeof update.risk === "number" ? update.risk : null,
+      timestamp: update.timestamp || update.feature_timestamp || new Date().toISOString(),
+      quality: update.data_quality || (update.validated_today ? "verified" : "unknown"),
+    }, ...prev].slice(0, 8));
     if (!initialRiskMapLoadedRef.current || pendingRiskMapFlushTimerRef.current) return;
     pendingRiskMapFlushTimerRef.current = window.setTimeout(flushQueuedRiskMapUpdates, 150);
   };
@@ -555,6 +557,97 @@ export default function Dashboard() {
   const reliabilityStatus = staleSources > 0 ? "Degraded" : "Healthy";
   const moodUncertaintyDisplay = safeN(trustConfidence.global_mood_uncertainty, globalMoodUncertainty);
   const forecastConfidenceDisplay = Math.max(0, Math.min(1, safeN(trustConfidence.forecast_confidence, forecastConfidence)));
+  const systemEventPackets = useMemo(() => {
+    const packets: Array<{ id: string; timestamp: string; category: string; source: string; detail: string; status: string }> = [];
+    const pushPacket = (packet: { id: string; timestamp?: string | null; category: string; source: string; detail: string; status: string }) => {
+      packets.push({
+        ...packet,
+        timestamp: packet.timestamp || new Date().toISOString(),
+      });
+    };
+
+    pushPacket({
+      id: `ingestion-${liveFeedState.lastUpdated}`,
+      timestamp: liveFeedState.lastUpdated,
+      category: "Ingestion event",
+      source: "Global node",
+      detail: `${liveFeedState.incidents?.length ?? 0} incidents ingested, heartbeat ${liveFeedState.ingestionHeartbeatSec.toFixed(1)}s`,
+      status: connectionState,
+    });
+
+    pushPacket({
+      id: `model-${active?.timestamp ?? liveFeedState.lastUpdated}`,
+      timestamp: active?.timestamp ?? liveFeedState.lastUpdated,
+      category: "Model refresh",
+      source: "Behavior model",
+      detail: `Global risk ${globalRiskScore.toFixed(1)} / 100, forecast ${forecastRiskScore.toFixed(1)} / 100`,
+      status: "Updated",
+    });
+
+    pushPacket({
+      id: `validation-${validationSummary?.status ?? "pending"}`,
+      timestamp: liveFeedState.lastUpdated,
+      category: "Validation checkpoint",
+      source: "Validation pipeline",
+      detail: validationSummary?.sample_count
+        ? `${validationSummary.status ?? "pending"} across ${validationSummary.sample_count} benchmark rows`
+        : `Validation ${validationSummary?.status ?? "pending"}`,
+      status: validationSummary?.status ?? "pending",
+    });
+
+    pushPacket({
+      id: `pipeline-${qualityGateMessage}`,
+      timestamp: trustSnapshot?.generated_at ?? liveFeedState.lastUpdated,
+      category: "Pipeline status packet",
+      source: "Reliability gate",
+      detail: `${qualityGateMessage}. Fresh ${freshSources} / stale ${staleSources}.`,
+      status: reliabilityStatus,
+    });
+
+    Object.entries((trustSnapshot?.latest_ingestion ?? {}) as Record<string, unknown>)
+      .slice(0, 4)
+      .forEach(([source, value], index) => {
+        pushPacket({
+          id: `source-${source}-${index}`,
+          timestamp: trustSnapshot?.generated_at ?? liveFeedState.lastUpdated,
+          category: "Feed source update",
+          source,
+          detail: typeof value === "string" ? value : JSON.stringify(value),
+          status: "Refreshed",
+        });
+      });
+
+    recentSocketUpdates.slice(0, 4).forEach((update, index) => {
+      pushPacket({
+        id: `socket-${update.country}-${update.timestamp}-${index}`,
+        timestamp: update.timestamp,
+        category: "Websocket country update",
+        source: update.country,
+        detail: `Risk ${typeof update.risk === "number" ? update.risk.toFixed(1) : "n/a"} (${update.quality})`,
+        status: "Streaming",
+      });
+    });
+
+    return packets
+      .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+      .slice(0, 12);
+  }, [
+    active?.timestamp,
+    connectionState,
+    forecastRiskScore,
+    freshSources,
+    globalRiskScore,
+    liveFeedState.incidents,
+    liveFeedState.ingestionHeartbeatSec,
+    liveFeedState.lastUpdated,
+    qualityGateMessage,
+    recentSocketUpdates,
+    reliabilityStatus,
+    staleSources,
+    trustSnapshot?.generated_at,
+    trustSnapshot?.latest_ingestion,
+    validationSummary,
+  ]);
   
   const panelStale = useMemo(() => {
     const now = Date.now();
@@ -562,17 +655,12 @@ export default function Dashboard() {
       risk: staleFor(now - panelUpdated.current.risk, 12000),
       map: staleFor(now - panelUpdated.current.map, 12000),
       stream: staleFor(now - panelUpdated.current.stream, 12000),
-      ops: staleFor(now - panelUpdated.current.ops, 30000),
     };
-  }, [history.length, operatorEvents.length, riskMapRows.length, coverageState.verified]);
+  }, [history.length, riskMapRows.length, coverageState.verified, recentSocketUpdates.length]);
 
   useEffect(() => {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-MAX_HISTORY)));
   }, [history]);
-
-  useEffect(() => {
-    localStorage.setItem(EVENTS_KEY, JSON.stringify(operatorEvents.slice(0, 200)));
-  }, [operatorEvents]);
 
   useEffect(() => {
     let raf = 0;
@@ -1107,25 +1195,7 @@ export default function Dashboard() {
     }
   };
 
-  const addEvent = async (action: OperatorEvent["action"], comment?: string, owner = "ops-team") => {
-    const evt: OperatorEvent = {
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      timestamp: new Date().toISOString(),
-      actor: owner,
-      action,
-      comment,
-    };
-    setOperatorEvents((prev) => [evt, ...prev].slice(0, 200));
-    panelUpdated.current.ops = Date.now();
-    if (selectedCountry) {
-      await postAlertAction({
-        country: selectedCountry,
-        action: action === "assign" ? "assign" : action,
-        owner,
-        comment,
-      });
-    }
-  };
+  const navigate = useNavigate();
 
   return (
     <main className={`wp-shell dashboard-v2 ${fpsLow ? "motion-low" : "motion-rich"}`}>
@@ -1144,7 +1214,7 @@ export default function Dashboard() {
           { label: "Overview", targetId: "dashboard-overview" },
           { label: "Global Behavior", targetId: "dashboard-global-behavior" },
           { label: "Analytics", targetId: "dashboard-operational-analytics" },
-          { label: "Operator Queue", targetId: "dashboard-operator-queue" },
+          { label: "Telemetry", targetId: "dashboard-system-events" },
         ]}
       />
 
@@ -1213,19 +1283,16 @@ export default function Dashboard() {
 
       <section className="wp-ops-strip wp-ops-strip-flat">
         <div className="wp-ops-inline-block">
-          <span className="wp-ops-label">Preset</span>
-          <div className="wp-preset-group">
-            <button className={activePreset === "analyst" ? "is-active" : ""} onClick={() => setActivePreset("analyst")}>Analyst</button>
-            <button className={activePreset === "ops" ? "is-active" : ""} onClick={() => setActivePreset("ops")}>Ops</button>
-            <button className={activePreset === "executive" ? "is-active" : ""} onClick={() => setActivePreset("executive")}>Executive</button>
+          <span className="wp-ops-label">Mode</span>
+          <div className="wp-ops-status-line">
+            <span>Analytics-first dashboard</span>
+            <span>Workflow moved to Response Console</span>
           </div>
         </div>
         <div className="wp-ops-inline-block">
-          <span className="wp-ops-label">Actions</span>
+          <span className="wp-ops-label">Response</span>
           <div className="wp-command-row">
-            <button onClick={() => addEvent("acknowledge", "global acknowledge")}>Acknowledge</button>
-            <button onClick={() => addEvent("snooze", "15m snooze")}>Snooze</button>
-            <button onClick={() => addEvent("assign", "escalated", "analyst-1")}>Assign</button>
+            <button onClick={() => navigate("/response-console")}>Open Response Console</button>
           </div>
         </div>
         <div className="wp-ops-inline-block wp-ops-inline-status">
@@ -1453,24 +1520,18 @@ export default function Dashboard() {
         )}
       </section>
 
-      <section id="dashboard-operator-queue" className="operator-queue-section">
+      <section id="dashboard-system-events" className="operator-queue-section">
         {showDeferredPanels ? (
-          <Suspense fallback={<DeferredPanelPlaceholder label="Loading operator response queue..." />}>
-            <OperatorResponseQueue
-              events={operatorEvents}
-              incidents={liveFeedState.incidents ?? []}
-              selectedCountry={selectedCountry}
-              onSelectCountry={setSelectedCountry}
-              onAction={(action, comment, owner) => {
-                void addEvent(action, comment, owner);
-              }}
-              stale={panelStale.ops}
+          <Suspense fallback={<DeferredPanelPlaceholder label="Loading system event stream..." />}>
+            <SystemEventStream
+              packets={systemEventPackets}
+              stale={panelStale.stream}
             />
           </Suspense>
         ) : (
           <article className="wp-card panel-frame operator-response-panel">
             <div className="panel-content operational-panel-content">
-              <DeferredPanelPlaceholder label="Preparing operator response queue..." />
+              <DeferredPanelPlaceholder label="Preparing system event stream..." />
             </div>
           </article>
         )}
@@ -1482,7 +1543,6 @@ export default function Dashboard() {
             open={Boolean(selectedCountry)}
             loading={countryLoading}
             data={countryData}
-            events={operatorEvents}
             countryNews={selectedCountryFeedItems}
             liveIncidents={liveFeedState.incidents ?? []}
             threatLabel={deriveThreatMeta(safeN(countryData?.risk, globalRiskScore)).label}
@@ -1530,15 +1590,7 @@ export default function Dashboard() {
             weatherLoading={countryWeatherLoading}
             weatherError={countryWeatherError}
             onClose={() => setSelectedCountry(null)}
-            onAcknowledge={(comment) => {
-              void addEvent("acknowledge", comment);
-            }}
-            onSnooze={(comment) => {
-              void addEvent("snooze", comment);
-            }}
-            onAssign={(owner, comment) => {
-              void addEvent("assign", comment, owner);
-            }}
+            workflowEnabled={false}
           />
         </Suspense>
       ) : null}
