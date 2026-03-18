@@ -4463,6 +4463,16 @@ INGESTION_SLA_HOURS = {
     "trends": 24.0,
 }
 
+CORE_INGESTION_SOURCES = {
+    "country_features",
+    "global_features",
+    "dashboard_features",
+}
+
+
+def _ingestion_source_tier(source: str) -> str:
+    return "core" if source in CORE_INGESTION_SOURCES else "supporting"
+
 
 def _build_latest_ingestion() -> dict:
     return {
@@ -4485,24 +4495,49 @@ def _build_freshness_snapshot(latest_ingestion: dict) -> dict:
         status = "unknown"
         if age_hours is not None:
             status = "fresh" if age_hours <= sla_hours else "stale"
+        tier = _ingestion_source_tier(source)
         rows.append({
             "source": source,
+            "tier": tier,
             "last_updated": stamp,
             "age_hours": round(age_hours, 3) if age_hours is not None else None,
             "sla_hours": sla_hours,
             "status": status,
         })
 
+    known_rows = [r for r in rows if r.get("status") in {"fresh", "stale"}]
+    core_rows = [r for r in known_rows if r.get("tier") == "core"]
+    supporting_rows = [r for r in known_rows if r.get("tier") != "core"]
     known_ages = [float(r["age_hours"]) for r in rows if isinstance(r.get("age_hours"), (int, float))]
+    fresh_count = len([r for r in rows if r.get("status") == "fresh"])
     stale_count = len([r for r in rows if r.get("status") == "stale"])
+    fresh_core_count = len([r for r in core_rows if r.get("status") == "fresh"])
+    stale_core_count = len([r for r in core_rows if r.get("status") == "stale"])
+    fresh_supporting_count = len([r for r in supporting_rows if r.get("status") == "fresh"])
+    stale_supporting_count = len([r for r in supporting_rows if r.get("status") == "stale"])
+    known_total = max(fresh_count + stale_count, 1)
+    core_total = max(fresh_core_count + stale_core_count, 1)
+
+    overall_status = "healthy"
+    if stale_core_count > 0:
+        overall_status = "stale"
+    elif stale_count > 0:
+        overall_status = "degraded"
+
     return {
         "sources": rows,
-        "fresh_count": len([r for r in rows if r.get("status") == "fresh"]),
+        "fresh_count": fresh_count,
         "stale_count": stale_count,
         "unknown_count": len([r for r in rows if r.get("status") == "unknown"]),
+        "fresh_core_count": fresh_core_count,
+        "stale_core_count": stale_core_count,
+        "fresh_supporting_count": fresh_supporting_count,
+        "stale_supporting_count": stale_supporting_count,
+        "freshness_ratio": round(float(fresh_count) / float(known_total), 4),
+        "core_freshness_ratio": round(float(fresh_core_count) / float(core_total), 4),
         "oldest_age_hours": round(max(known_ages), 3) if known_ages else None,
         "newest_age_hours": round(min(known_ages), 3) if known_ages else None,
-        "overall_status": "stale" if stale_count > 0 else "healthy",
+        "overall_status": overall_status,
     }
 
 
@@ -5572,8 +5607,8 @@ def _build_source_health_snapshot() -> dict:
 def _build_quality_gate_snapshot(coverage: dict, freshness: dict, source_health: dict) -> dict:
     verified = int(coverage.get("verified", 0) or 0)
     total = int(coverage.get("total", 0) or 0)
-    fresh = int(freshness.get("fresh_count", 0) or 0)
-    stale = int(freshness.get("stale_count", 0) or 0)
+    fresh = int(freshness.get("fresh_core_count", freshness.get("fresh_count", 0)) or 0)
+    stale = int(freshness.get("stale_core_count", freshness.get("stale_count", 0)) or 0)
     known = max(fresh + stale, 1)
     freshness_ratio = float(fresh) / float(known)
     critical_down = int(source_health.get("critical_down_live", source_health.get("critical_down", 0)) or 0)

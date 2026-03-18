@@ -50,8 +50,13 @@ export default function SignalIntegrityBoard({
   const freshness = (trustSnapshot?.data_freshness ?? {}) as Record<string, unknown>;
   const qualityGate = (trustSnapshot?.quality_gate ?? {}) as Record<string, unknown>;
   const qualityGateMetrics = (qualityGate.metrics ?? {}) as Record<string, unknown>;
-  const freshnessRatio = safeNumber(qualityGateMetrics.freshness_ratio, coverage.coverage_pct / 100);
+  const freshnessRatio = safeNumber(qualityGateMetrics.freshness_ratio, safeNumber(freshness.core_freshness_ratio, coverage.coverage_pct / 100));
   const latestIngestion = String((trustSnapshot?.latest_ingestion as Record<string, unknown> | undefined)?.latest_success ?? "Live");
+  const staleCoreSources = safeNumber(freshness.stale_core_count);
+  const staleSupportingSources = safeNumber(freshness.stale_supporting_count, Math.max(staleSources - staleCoreSources, 0));
+  const freshnessDetail = staleSupportingSources > 0 && staleCoreSources === 0
+    ? `${freshSources} fresh / ${staleSupportingSources} supporting stale`
+    : `${freshSources} fresh / ${staleSources} stale`;
 
   const radialMetrics = [
     {
@@ -64,7 +69,7 @@ export default function SignalIntegrityBoard({
       label: "Freshness",
       value: clampPercent(freshnessRatio * 100),
       display: `${(freshnessRatio * 100).toFixed(0)}%`,
-      detail: `${freshSources} fresh / ${staleSources} stale`,
+      detail: freshnessDetail,
     },
     {
       label: "Forecast",

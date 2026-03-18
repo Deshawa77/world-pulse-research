@@ -81,6 +81,8 @@ type PanelKey = "risk" | "map" | "stream";
 
 const HISTORY_KEY = "wp_v3_history";
 const MAX_HISTORY = 1200;
+const GLOBAL_MAP_WORLD_SCALE = 1.12;
+const GLOBAL_MAP_ROTATION_DEG_PER_SEC = 4;
 
 const DRIVER_LABELS: Record<string, string> = {
   news_sentiment: "News Sentiment",
@@ -557,7 +559,14 @@ export default function Dashboard() {
     : "All quality thresholds are currently passing.";
   const staleSources = safeN(trustFreshness.stale_count, 0);
   const freshSources = safeN(trustFreshness.fresh_count, 0);
-  const reliabilityStatus = staleSources > 0 ? "Degraded" : "Healthy";
+  const staleCoreSources = safeN(trustFreshness.stale_core_count, 0);
+  const staleSupportingSources = safeN(trustFreshness.stale_supporting_count, Math.max(staleSources - staleCoreSources, 0));
+  const freshnessOverallStatus = String(trustFreshness.overall_status ?? "healthy").toLowerCase();
+  const reliabilityStatus = qualityGateActive
+    ? "Degraded"
+    : freshnessOverallStatus === "degraded"
+      ? "Monitoring"
+      : "Healthy";
   const moodUncertaintyDisplay = safeN(trustConfidence.global_mood_uncertainty, globalMoodUncertainty);
   const forecastConfidenceDisplay = Math.max(0, Math.min(1, safeN(trustConfidence.forecast_confidence, forecastConfidence)));
   const systemEventPackets = useMemo(() => {
@@ -603,7 +612,7 @@ export default function Dashboard() {
       timestamp: trustSnapshot?.generated_at ?? liveFeedState.lastUpdated,
       category: "Pipeline status packet",
       source: "Reliability gate",
-      detail: `${qualityGateMessage}. Fresh ${freshSources} / stale ${staleSources}.`,
+      detail: `${qualityGateMessage}. Fresh ${freshSources} / stale ${staleSources}${staleSupportingSources > 0 && staleCoreSources === 0 ? ` (${staleSupportingSources} supporting)` : ""}.`,
       status: reliabilityStatus,
     });
 
@@ -1047,8 +1056,16 @@ export default function Dashboard() {
             margin: { l: 0, r: 0, b: 0, t: 0 },
             paper_bgcolor: "rgba(0,0,0,0)",
             plot_bgcolor: "rgba(0,0,0,0)",
+            uirevision: selectedCountry ? `country-focus-${selectedCountry}` : "global-behavior-map",
             geo: {
-              projection: { type: selectedCountry ? "mercator" : "natural earth", scale: 1 },
+              domain: { x: [0, 1], y: [0, 1] },
+              projection: selectedCountry
+                ? { type: "mercator", scale: 1 }
+                : {
+                    type: "natural earth",
+                    scale: GLOBAL_MAP_WORLD_SCALE,
+                    rotation: { lon: rotationRef.current, lat: 0, roll: 0 },
+                  },
               fitbounds: selectedCountry ? "locations" : false,
               center: effectiveCountryFocus ? { lon: effectiveCountryFocus.lon, lat: effectiveCountryFocus.lat } : undefined,
               lonaxis: effectiveCountryFocus ? { range: [effectiveCountryFocus.lon - 18, effectiveCountryFocus.lon + 18] } : undefined,
@@ -1112,13 +1129,20 @@ export default function Dashboard() {
   const startAutoRotation = (Plotly: any) => {
     if (isRotatingRef.current || !mapRef.current) return;
     isRotatingRef.current = true;
-    
-    const rotate = () => {
+    let lastTick: number | null = null;
+
+    const rotate = (timestamp: number) => {
       if (!isRotatingRef.current || !mapRef.current || selectedCountryRef.current) return;
-      rotationRef.current = rotationRef.current + 0.5;
+      if (lastTick === null) {
+        lastTick = timestamp;
+      }
+      const elapsedMs = Math.min(timestamp - lastTick, 64);
+      lastTick = timestamp;
+      rotationRef.current = (rotationRef.current + ((elapsedMs / 1000) * GLOBAL_MAP_ROTATION_DEG_PER_SEC)) % 360;
 
       Plotly.relayout(mapRef.current, {
         "geo.projection.rotation.lon": rotationRef.current,
+        "geo.projection.scale": GLOBAL_MAP_WORLD_SCALE,
       }).catch(() => {});
       rotationRafRef.current = requestAnimationFrame(rotate);
     };
