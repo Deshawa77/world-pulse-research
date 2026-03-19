@@ -20,13 +20,20 @@ if (-not (Test-Path $logsDir)) {
 }
 
 function Get-PythonExecutable {
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        return 'python'
+    # Prefer project-local virtual environments first.
+    $localVenvCandidates = @(
+        (Join-Path $repoRoot '.venv\Scripts\python.exe'),
+        (Join-Path $repoRoot 'venv\Scripts\python.exe')
+    )
+
+    foreach ($candidate in $localVenvCandidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
     }
 
-    $venvPython = Join-Path $repoRoot 'venv\Scripts\python.exe'
-    if (Test-Path $venvPython) {
-        return $venvPython
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        return 'python'
     }
 
     throw 'No Python executable found for backend startup.'

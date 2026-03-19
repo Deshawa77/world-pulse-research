@@ -86,33 +86,39 @@ export default function HistoricalPlayback({
     const chart = chartInstanceRef.current;
 
     const option: echarts.EChartsOption = {
+      backgroundColor: "#13233f",
+      textStyle: { color: "#d6e4ff" },
       tooltip: {
         trigger: "axis",
+        backgroundColor: "rgba(12, 31, 56, 0.96)",
+        borderColor: "rgba(96, 165, 250, 0.45)",
+        borderWidth: 1,
+        textStyle: { color: "#eaf3ff" },
         formatter: (params: any) => {
           const point = params[0];
           return `<strong>${new Date(point.axisValue).toLocaleString()}</strong><br/>Risk Score: ${point.value.toFixed(2)}`;
         },
       },
       grid: {
-        left: "50px",
-        right: "20px",
-        top: "40px",
-        bottom: "60px",
+        left: "58px",
+        right: "26px",
+        top: "42px",
+        bottom: "64px",
       },
       xAxis: {
         type: "category",
         data: data.map((d) => d.timestamp),
         axisLabel: {
           rotate: 45,
-          color: "#888",
-          fontSize: 10,
+          color: "#d6e4ff",
+          fontSize: 11,
           formatter: (value: string) => {
             const date = new Date(value);
             return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours()}:00`;
           },
         },
         axisLine: {
-          lineStyle: { color: "#333" },
+          lineStyle: { color: "rgba(148, 163, 184, 0.45)" },
         },
       },
       yAxis: {
@@ -120,10 +126,14 @@ export default function HistoricalPlayback({
         min: 0,
         max: 100,
         axisLabel: {
-          color: "#888",
+          color: "#d6e4ff",
+          fontSize: 11,
+        },
+        axisLine: {
+          lineStyle: { color: "rgba(148, 163, 184, 0.45)" },
         },
         splitLine: {
-          lineStyle: { color: "rgba(255,255,255,0.1)" },
+          lineStyle: { color: "rgba(148,163,184,0.24)" },
         },
       },
       visualMap: {
@@ -142,10 +152,17 @@ export default function HistoricalPlayback({
           smooth: true,
           symbol: "circle",
           symbolSize: (_value: number, param: any) => {
-            return param.dataIndex === currentIndex ? 12 : 4;
+            return param.dataIndex === currentIndex ? 13 : 6;
           },
           lineStyle: {
-            width: 2,
+            width: 3,
+            color: "#60a5fa",
+          },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: "rgba(96, 165, 250, 0.34)" },
+              { offset: 1, color: "rgba(30, 64, 175, 0.06)" },
+            ]),
           },
           itemStyle: {
             color: (params: any) => {
@@ -170,6 +187,10 @@ export default function HistoricalPlayback({
                 value: currentData.score.toFixed(1),
                 itemStyle: {
                   color: "#00d4ff",
+                },
+                label: {
+                  color: "#eaf3ff",
+                  fontWeight: "bold",
                 },
               },
             ],
@@ -216,8 +237,9 @@ export default function HistoricalPlayback({
         display: "flex", 
         alignItems: "center", 
         justifyContent: "center",
-        color: "#888",
-        background: "rgba(0,0,0,0.3)",
+        color: "#d6e4ff",
+        background: "rgba(19, 30, 49, 0.72)",
+        border: "1px solid rgba(96, 165, 250, 0.28)",
         borderRadius: "8px"
       }}>
         No historical data available
@@ -234,7 +256,8 @@ export default function HistoricalPlayback({
         gap: "12px", 
         marginBottom: "16px",
         padding: "12px",
-        background: "rgba(0,0,0,0.3)",
+        background: "rgba(19, 30, 49, 0.72)",
+        border: "1px solid rgba(96, 165, 250, 0.22)",
         borderRadius: "8px",
       }}>
         {/* Play/Pause Button */}
@@ -251,53 +274,53 @@ export default function HistoricalPlayback({
             fontWeight: "bold",
           }}
         >
-          {isPlaying ? "⏸ Pause" : "▶ Play"}
+          {isPlaying ? "Pause" : "Play"}
         </button>
 
         {/* Skip Buttons */}
         <button
           onClick={skipToStart}
           style={{
-            background: "rgba(100,100,100,0.3)",
-            border: "1px solid rgba(100,100,100,0.5)",
-            color: "#aaa",
+            background: "rgba(30,41,59,0.74)",
+            border: "1px solid rgba(148,163,184,0.35)",
+            color: "#d6e4ff",
             padding: "8px 12px",
             borderRadius: "6px",
             cursor: "pointer",
           }}
         >
-          ⏮
+          {"<<"}
         </button>
         <button
           onClick={handleReset}
           style={{
-            background: "rgba(100,100,100,0.3)",
-            border: "1px solid rgba(100,100,100,0.5)",
-            color: "#aaa",
+            background: "rgba(30,41,59,0.74)",
+            border: "1px solid rgba(148,163,184,0.35)",
+            color: "#d6e4ff",
             padding: "8px 12px",
             borderRadius: "6px",
             cursor: "pointer",
           }}
         >
-          ↺
+          Reset
         </button>
         <button
           onClick={skipToEnd}
           style={{
-            background: "rgba(100,100,100,0.3)",
-            border: "1px solid rgba(100,100,100,0.5)",
-            color: "#aaa",
+            background: "rgba(30,41,59,0.74)",
+            border: "1px solid rgba(148,163,184,0.35)",
+            color: "#d6e4ff",
             padding: "8px 12px",
             borderRadius: "6px",
             cursor: "pointer",
           }}
         >
-          ⏭
+          {">>"}
         </button>
 
         {/* Timeline Slider */}
         <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "12px" }}>
-          <span style={{ color: "#888", fontSize: "12px", whiteSpace: "nowrap" }}>
+          <span style={{ color: "#c4d7ff", fontSize: "12px", whiteSpace: "nowrap" }}>
             {timeRange.start}
           </span>
           <input
@@ -314,7 +337,7 @@ export default function HistoricalPlayback({
               cursor: "pointer",
             }}
           />
-          <span style={{ color: "#888", fontSize: "12px", whiteSpace: "nowrap" }}>
+          <span style={{ color: "#c4d7ff", fontSize: "12px", whiteSpace: "nowrap" }}>
             {timeRange.end}
           </span>
         </div>
@@ -324,9 +347,9 @@ export default function HistoricalPlayback({
           value={playbackSpeed}
           onChange={(e) => setPlaybackSpeed(parseInt(e.target.value, 10))}
           style={{
-            background: "rgba(0,0,0,0.5)",
-            border: "1px solid #333",
-            color: "#aaa",
+            background: "rgba(19, 30, 49, 0.82)",
+            border: "1px solid rgba(96, 165, 250, 0.35)",
+            color: "#d6e4ff",
             padding: "6px 10px",
             borderRadius: "4px",
             cursor: "pointer",
@@ -345,17 +368,18 @@ export default function HistoricalPlayback({
         gap: "16px", 
         marginBottom: "12px",
         padding: "12px",
-        background: "rgba(0,0,0,0.2)",
+        background: "rgba(19, 30, 49, 0.6)",
+        border: "1px solid rgba(96, 165, 250, 0.2)",
         borderRadius: "8px",
       }}>
         <div>
-          <div style={{ color: "#888", fontSize: "11px", marginBottom: "4px" }}>Current Time</div>
+          <div style={{ color: "#b8cff4", fontSize: "11px", marginBottom: "4px" }}>Current Time</div>
           <div style={{ color: "#00d4ff", fontWeight: "bold" }}>
             {currentData ? new Date(currentData.timestamp).toLocaleString() : "N/A"}
           </div>
         </div>
         <div>
-          <div style={{ color: "#888", fontSize: "11px", marginBottom: "4px" }}>Risk Score</div>
+          <div style={{ color: "#b8cff4", fontSize: "11px", marginBottom: "4px" }}>Risk Score</div>
           <div style={{ 
             color: currentData && currentData.score > 70 ? "#ef4444" : currentData && currentData.score > 40 ? "#facc15" : "#22c55e",
             fontWeight: "bold",
@@ -365,14 +389,14 @@ export default function HistoricalPlayback({
           </div>
         </div>
         <div>
-          <div style={{ color: "#888", fontSize: "11px", marginBottom: "4px" }}>Period Average</div>
-          <div style={{ color: "#aaa", fontWeight: "bold" }}>
+          <div style={{ color: "#b8cff4", fontSize: "11px", marginBottom: "4px" }}>Period Average</div>
+          <div style={{ color: "#d6e4ff", fontWeight: "bold" }}>
             {(data.slice(0, currentIndex + 1).reduce((sum, d) => sum + d.score, 0) / (currentIndex + 1)).toFixed(1)}
           </div>
         </div>
         <div>
-          <div style={{ color: "#888", fontSize: "11px", marginBottom: "4px" }}>Data Points</div>
-          <div style={{ color: "#aaa", fontWeight: "bold" }}>
+          <div style={{ color: "#b8cff4", fontSize: "11px", marginBottom: "4px" }}>Data Points</div>
+          <div style={{ color: "#d6e4ff", fontWeight: "bold" }}>
             {currentIndex + 1} / {data.length}
           </div>
         </div>
@@ -391,17 +415,19 @@ export default function HistoricalPlayback({
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
           <div style={{ width: "12px", height: "12px", background: "#22c55e", borderRadius: "2px" }} />
-          <span style={{ color: "#888" }}>Low Risk (0-40)</span>
+          <span style={{ color: "#c4d7ff" }}>Low Risk (0-40)</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
           <div style={{ width: "12px", height: "12px", background: "#facc15", borderRadius: "2px" }} />
-          <span style={{ color: "#888" }}>Medium Risk (40-70)</span>
+          <span style={{ color: "#c4d7ff" }}>Medium Risk (40-70)</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
           <div style={{ width: "12px", height: "12px", background: "#ef4444", borderRadius: "2px" }} />
-          <span style={{ color: "#888" }}>High Risk (70-100)</span>
+          <span style={{ color: "#c4d7ff" }}>High Risk (70-100)</span>
         </div>
       </div>
     </div>
   );
 }
+
+

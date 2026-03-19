@@ -31,6 +31,7 @@ from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel
 from pymongo import MongoClient, ASCENDING, DESCENDING
 import joblib
+import numpy as np
 from passlib.context import CryptContext
 import jwt
 from datetime import timedelta
@@ -54,8 +55,10 @@ def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
 
-def hash_password(password: str):
-    return pwd_context.hash(password[:72])
+def hash_password(password: str) -> str:
+    password_bytes = password.encode("utf-8")[:72]
+    safe_password = password_bytes.decode("utf-8", errors="ignore")
+    return pwd_context.hash(safe_password)
 
 
 from processing.global_risk import compute_global_risk
@@ -122,6 +125,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(
 
 API_KEY = (os.environ.get("API_KEY") or "").strip().strip('"').strip("'")
 ADMIN_KEY = (os.environ.get("ADMIN_KEY") or "").strip().strip('"').strip("'")
+LEGACY_DEV_API_KEY = (os.environ.get("LEGACY_DEV_API_KEY") or "super_secure_api_key").strip().strip('"').strip("'")
 USER_API_KEYS = {
     k.strip().strip('"').strip("'")
     for k in (os.environ.get("USER_API_KEYS") or "").split(",")
@@ -134,6 +138,8 @@ ADMIN_API_KEYS = {
 }
 if API_KEY:
     USER_API_KEYS.add(API_KEY)
+if LEGACY_DEV_API_KEY:
+    USER_API_KEYS.add(LEGACY_DEV_API_KEY)
 if ADMIN_KEY:
     ADMIN_API_KEYS.add(ADMIN_KEY)
 
@@ -1470,38 +1476,469 @@ def _aggregate_global_history_from_country_features(
     return history_rows
 
 
+def _derive_global_history_from_raw_mongo(
+    mode: str = "online",
+    limit: int = 200,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+) -> list[dict]:
+    # Build hourly snapshots from live raw collections when feature tables are sparse.
+    now_dt = datetime.utcnow()
+    end_dt = end_date or now_dt
+    lookback_hours = max(24, min(limit * 3, 24 * 14))
+    start_dt = start_date or (end_dt - timedelta(hours=lookback_hours))
+
+    news_docs = list(
+        db.country_news.find(
+            {"timestamp": {"$gte": start_dt, "$lte": end_dt}},
+            {"timestamp": 1, "data.sentiment.vader.compound": 1, "data.sentiment.compound": 1, "country": 1},
+        ).sort("timestamp", DESCENDING).limit(60000)
+    )
+    gdelt_docs = list(
+        db.gdelt.find(
+            {"collected_at": {"$gte": start_dt, "$lte": end_dt}},
+            {"collected_at": 1, "data.sentiment.vader.compound": 1, "data.sentiment.compound": 1},
+        ).sort("collected_at", DESCENDING).limit(60000)
+    )
+    crypto_docs = list(
+        db.crypto.find(
+            {"collected_at": {"$gte": start_dt, "$lte": end_dt}},
+            {"collected_at": 1, "data_price": 1, "data.price": 1, "price": 1},
+        ).sort("collected_at", DESCENDING).limit(30000)
+    )
+    stock_docs = list(
+        db.stocks.find(
+            {"collected_at": {"$gte": start_dt, "$lte": end_dt}},
+            {"collected_at": 1, "close": 1, "data.close": 1, "price": 1, "data.price": 1},
+        ).sort("collected_at", DESCENDING).limit(30000)
+    )
+    weather_docs = list(
+        db.weather.find(
+            {"collected_at": {"$gte": start_dt, "$lte": end_dt}},
+            {"collected_at": 1, "data_temperature": 1, "data.temperature": 1, "temperature": 1},
+        ).sort("collected_at", DESCENDING).limit(30000)
+    )
+
+    buckets: dict[str, dict[str, Any]] = {}
+
+    def _bucket_key(ts: datetime) -> str:
+        return ts.replace(minute=0, second=0, microsecond=0).isoformat()
+
+    def _ensure_bucket(ts: datetime) -> dict[str, Any]:
+        key = _bucket_key(ts)
+        if key not in buckets:
+            buckets[key] = {
+                "timestamp": ts.replace(minute=0, second=0, microsecond=0),
+                "news_vals": [],
+                "gdelt_vals": [],
+                "crypto_prices": [],
+                "stock_prices": [],
+                "temps": [],
+                "countries": set(),
+            }
+        return buckets[key]
+
+    for doc in news_docs:
+        ts = _coerce_utc_datetime(doc.get("timestamp")) or _coerce_utc_datetime(doc.get("collected_at"))
+        if ts is None:
+            continue
+        b = _ensure_bucket(ts)
+        sent = _parse_float_maybe(_extract_nested_value(doc, "data.sentiment.vader.compound", "data.sentiment.compound"))
+        if sent is not None and np.isfinite(sent):
+            b["news_vals"].append(float(sent))
+        country = str(doc.get("country") or "").strip().upper()
+        if country:
+            b["countries"].add(country)
+
+    for doc in gdelt_docs:
+        ts = _coerce_utc_datetime(doc.get("collected_at")) or _coerce_utc_datetime(doc.get("timestamp"))
+        if ts is None:
+            continue
+        b = _ensure_bucket(ts)
+        sent = _parse_float_maybe(_extract_nested_value(doc, "data.sentiment.vader.compound", "data.sentiment.compound"))
+        if sent is not None and np.isfinite(sent):
+            b["gdelt_vals"].append(float(sent))
+
+    for doc in crypto_docs:
+        ts = _coerce_utc_datetime(doc.get("collected_at")) or _coerce_utc_datetime(doc.get("data_timestamp"))
+        if ts is None:
+            continue
+        b = _ensure_bucket(ts)
+        p = _parse_float_maybe(_extract_nested_value(doc, "data_price", "data.price", "price"))
+        if p is not None and np.isfinite(p):
+            b["crypto_prices"].append(float(p))
+
+    for doc in stock_docs:
+        ts = _coerce_utc_datetime(doc.get("collected_at")) or _coerce_utc_datetime(doc.get("timestamp"))
+        if ts is None:
+            continue
+        b = _ensure_bucket(ts)
+        p = _parse_float_maybe(_extract_nested_value(doc, "close", "data.close", "price", "data.price"))
+        if p is not None and np.isfinite(p):
+            b["stock_prices"].append(float(p))
+
+    for doc in weather_docs:
+        ts = _coerce_utc_datetime(doc.get("collected_at")) or _coerce_utc_datetime(doc.get("data_timestamp"))
+        if ts is None:
+            continue
+        b = _ensure_bucket(ts)
+        t = _parse_float_maybe(_extract_nested_value(doc, "data_temperature", "data.temperature", "temperature", "temp"))
+        if t is not None and np.isfinite(t):
+            b["temps"].append(float(t))
+
+    ordered_keys = sorted(buckets.keys())
+    if not ordered_keys:
+        return []
+
+    rows: list[dict] = []
+    prev_crypto_mean: float | None = None
+    prev_stock_mean: float | None = None
+    prev_temp_mean: float | None = None
+    prev_volume: float | None = None
+
+    for key in ordered_keys:
+        b = buckets[key]
+        ts = b["timestamp"]
+        news_mean = float(np.mean(b["news_vals"])) if b["news_vals"] else 0.0
+        gdelt_mean = float(np.mean(b["gdelt_vals"])) if b["gdelt_vals"] else 0.0
+        crypto_mean = float(np.mean(b["crypto_prices"])) if b["crypto_prices"] else (prev_crypto_mean or 0.0)
+        stock_mean = float(np.mean(b["stock_prices"])) if b["stock_prices"] else (prev_stock_mean or 0.0)
+        temp_mean = float(np.mean(b["temps"])) if b["temps"] else (prev_temp_mean or 0.0)
+
+        crypto_return = ((crypto_mean - prev_crypto_mean) / prev_crypto_mean) if (prev_crypto_mean and abs(prev_crypto_mean) > 1e-12) else 0.0
+        stock_return = ((stock_mean - prev_stock_mean) / prev_stock_mean) if (prev_stock_mean and abs(prev_stock_mean) > 1e-12) else 0.0
+        weather_anomaly = (temp_mean - prev_temp_mean) if prev_temp_mean is not None else 0.0
+
+        volume = float(len(b["news_vals"]) + len(b["gdelt_vals"]))
+        volume_delta = (volume - prev_volume) if prev_volume is not None else 0.0
+        crypto_volatility = abs(float(crypto_return))
+        stock_volatility = abs(float(stock_return))
+        volume_pressure = min(16.0, max(0.0, volume / 15.0) + max(0.0, volume_delta / 20.0))
+        risk = 50.0 - (20.0 * ((0.6 * news_mean) + (0.4 * gdelt_mean))) + (110.0 * min(crypto_volatility, 0.25)) + (90.0 * min(stock_volatility, 0.25)) + (10.0 * min(abs(weather_anomaly), 2.0)) + volume_pressure
+        risk = max(0.0, min(100.0, float(risk)))
+
+        features = {
+            "timestamp": ts.isoformat(),
+            "news_sentiment": round(news_mean, 6),
+            "gdelt_sentiment": round(gdelt_mean, 6),
+            "crypto_return": round(float(crypto_return), 6),
+            "crypto_volatility": round(float(crypto_volatility), 6),
+            "stock_return": round(float(stock_return), 6),
+            "stock_volatility": round(float(stock_volatility), 6),
+            "weather_anomaly": round(float(weather_anomaly), 6),
+            "global_risk_score": round(risk, 2),
+            "source_count": int(len(b["countries"])),
+            "top_topics": ["live-signals"],
+        }
+        rows.append({"mode": mode, "timestamp": ts.isoformat(), "features": features})
+
+        prev_crypto_mean = crypto_mean
+        prev_stock_mean = stock_mean
+        prev_temp_mean = temp_mean
+        prev_volume = volume
+
+    if len(rows) > limit:
+        rows = rows[-limit:]
+    return rows
+
+
+def _derive_country_risk_map_from_country_news(mode: str = "online") -> list[dict]:
+    now_dt = datetime.utcnow()
+    since = now_dt - timedelta(hours=72)
+    docs = list(
+        db.country_news.find(
+            {"timestamp": {"$gte": since}},
+            {"country": 1, "timestamp": 1, "data.sentiment.vader.compound": 1, "data.sentiment.compound": 1, "data.title": 1},
+        ).sort("timestamp", DESCENDING).limit(80000)
+    )
+    if not docs:
+        return []
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for doc in docs:
+        country = convert_country_code(str(doc.get("country") or "").upper().strip())
+        if not country:
+            continue
+        g = grouped.setdefault(country, {"sentiments": [], "count": 0, "latest_ts": None, "tokens": defaultdict(int)})
+        g["count"] += 1
+        ts = _coerce_utc_datetime(doc.get("timestamp")) or _coerce_utc_datetime(doc.get("collected_at"))
+        if ts and (g["latest_ts"] is None or ts > g["latest_ts"]):
+            g["latest_ts"] = ts
+        sent = _parse_float_maybe(_extract_nested_value(doc, "data.sentiment.vader.compound", "data.sentiment.compound"))
+        if sent is not None and np.isfinite(sent):
+            g["sentiments"].append(float(sent))
+        title = str(_extract_nested_value(doc, "data.title", "title") or "").lower()
+        for token in re.findall(r"[a-zA-Z]{4,}", title):
+            if token in {"with", "from", "after", "amid", "global", "country", "update", "latest"}:
+                continue
+            g["tokens"][token] += 1
+
+    response_docs = []
+    for country, g in grouped.items():
+        sent_mean = float(np.mean(g["sentiments"])) if g["sentiments"] else 0.0
+        volume = float(g["count"])
+        volume_boost = min(18.0, volume / 12.0)
+        risk = max(0.0, min(100.0, 50.0 - (28.0 * sent_mean) + volume_boost))
+        top_topics = [t for t, _ in sorted(g["tokens"].items(), key=lambda kv: kv[1], reverse=True)[:3]]
+        ts = g["latest_ts"] or now_dt
+        quality = assess_country_risk_quality(top_topics, ts.isoformat())
+        response_docs.append(
+            {
+                "country": country,
+                "risk": round(float(risk), 2),
+                "timestamp": ts.isoformat(),
+                "feature_timestamp": ts.isoformat(),
+                "source_count": int(volume),
+                "social_unrest_score": 0.0,
+                "google_trends_pressure": 0.0,
+                "weather_stress": 0.0,
+                "external_signal_freshness": 0.0,
+                "war_state_rules": [],
+                **quality,
+                "data_quality": "derived_live",
+            }
+        )
+
+    return sorted(response_docs, key=lambda d: (_coerce_utc_datetime(d.get("timestamp")) or now_dt), reverse=True)
+
+
+def _extract_nested_value(doc: dict, *paths: str):
+    for path in paths:
+        current = doc
+        ok = True
+        for part in path.split("."):
+            if isinstance(current, dict) and part in current:
+                current = current.get(part)
+            else:
+                ok = False
+                break
+        if ok and current not in (None, ""):
+            return current
+    return None
+
+
+def _parse_float_maybe(value) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        match = re.search(r"-?\d+(?:\.\d+)?", str(value))
+        if not match:
+            return None
+        try:
+            return float(match.group(0))
+        except (TypeError, ValueError):
+            return None
+
+
+def _compute_series_return_and_vol(series: list[float]) -> tuple[float, float]:
+    clean = [float(v) for v in series if v is not None]
+    if len(clean) < 2:
+        return 0.0, 0.0
+    first = clean[-1]
+    last = clean[0]
+    if abs(first) < 1e-12:
+        ret = 0.0
+    else:
+        ret = (last - first) / first
+    steps = []
+    for i in range(len(clean) - 1):
+        base = clean[i + 1]
+        if abs(base) < 1e-12:
+            continue
+        steps.append((clean[i] - base) / base)
+    vol = float(np.std(steps)) if steps else 0.0
+    return float(ret), float(vol)
+
+
+def _derive_live_global_from_raw_mongo(mode: str = "online") -> dict | None:
+    now_dt = datetime.utcnow()
+    now_iso = now_dt.isoformat()
+
+    # Sentiment signals from raw collections (live Mongo data only).
+    news_docs = list(db.news.find({}, {"data": 1, "sentiment": 1, "timestamp": 1, "collected_at": 1}).sort("_id", -1).limit(600))
+    gdelt_docs = list(db.gdelt.find({}, {"data": 1, "sentiment": 1, "timestamp": 1, "collected_at": 1}).sort("_id", -1).limit(900))
+    country_news_docs = list(db.country_news.find({}, {"data": 1, "timestamp": 1, "collected_at": 1, "source": 1}).sort("_id", -1).limit(1200))
+
+    def _collect_sentiments(docs: list[dict]) -> list[float]:
+        out = []
+        for doc in docs:
+            value = _extract_nested_value(
+                doc,
+                "data.sentiment.vader.compound",
+                "data.sentiment.compound",
+                "sentiment.vader.compound",
+                "sentiment.compound",
+                "data.vader.compound",
+                "data.sentiment",
+                "sentiment",
+            )
+            parsed = _parse_float_maybe(value)
+            if parsed is None:
+                continue
+            if np.isfinite(parsed):
+                out.append(float(parsed))
+        return out
+
+    news_sentiments = _collect_sentiments(news_docs) + _collect_sentiments(country_news_docs)
+    gdelt_sentiments = _collect_sentiments(gdelt_docs)
+    news_sentiment = float(np.mean(news_sentiments)) if news_sentiments else 0.0
+    gdelt_sentiment = float(np.mean(gdelt_sentiments)) if gdelt_sentiments else 0.0
+
+    # Market signals.
+    crypto_docs = list(db.crypto.find({}, {"data": 1, "data_price": 1, "price": 1, "data_timestamp": 1, "collected_at": 1}).sort("_id", -1).limit(220))
+    crypto_prices = []
+    for doc in crypto_docs:
+        parsed = _parse_float_maybe(_extract_nested_value(doc, "data_price", "data.price", "price"))
+        if parsed is not None and np.isfinite(parsed):
+            crypto_prices.append(float(parsed))
+    crypto_return, crypto_volatility = _compute_series_return_and_vol(crypto_prices)
+
+    stocks_docs = list(db.stocks.find({}, {"data": 1, "close": 1, "price": 1, "timestamp": 1, "collected_at": 1}).sort("_id", -1).limit(260))
+    stock_prices = []
+    for doc in stocks_docs:
+        parsed = _parse_float_maybe(_extract_nested_value(doc, "close", "data.close", "price", "data.price"))
+        if parsed is not None and np.isfinite(parsed):
+            stock_prices.append(float(parsed))
+    stock_return, stock_volatility = _compute_series_return_and_vol(stock_prices)
+
+    # Weather stress from temperature changes.
+    weather_docs = list(db.weather.find({}, {"data": 1, "data_temperature": 1, "temperature": 1, "data_timestamp": 1, "collected_at": 1}).sort("_id", -1).limit(180))
+    temps = []
+    for doc in weather_docs:
+        parsed = _parse_float_maybe(_extract_nested_value(doc, "data_temperature", "data.temperature", "temperature", "temp"))
+        if parsed is not None and np.isfinite(parsed):
+            temps.append(float(parsed))
+    weather_anomaly = float(np.mean(np.diff(list(reversed(temps))))) if len(temps) >= 3 else 0.0
+
+    # Pressure from current ingestion volumes (last 6h).
+    six_hours_ago = now_dt - timedelta(hours=6)
+    pressure_count = (
+        db.gdelt.count_documents({"collected_at": {"$gte": six_hours_ago}})
+        + db.country_news.count_documents({"timestamp": {"$gte": six_hours_ago}})
+        + db.world_state_signals.count_documents({"timestamp_utc": {"$gte": six_hours_ago}})
+    )
+    volume_pressure = min(18.0, pressure_count / 90.0)
+
+    # Dynamic risk from live signals (centered at 50 but moves with real ingestion data).
+    sentiment_blend = (0.6 * news_sentiment) + (0.4 * gdelt_sentiment)
+    risk_score = (
+        50.0
+        - (22.0 * sentiment_blend)
+        + (120.0 * min(abs(crypto_volatility), 0.25))
+        + (100.0 * min(abs(stock_volatility), 0.25))
+        + (12.0 * min(abs(weather_anomaly), 2.0))
+        + (12.0 * min(abs(crypto_return), 0.25))
+        + (8.0 * min(abs(stock_return), 0.25))
+        + volume_pressure
+    )
+    risk_score = max(0.0, min(100.0, float(risk_score)))
+
+    # Lightweight live topics from recent country/news titles.
+    token_counts: dict[str, int] = defaultdict(int)
+    stop = {"the", "and", "from", "with", "that", "this", "into", "over", "after", "amid", "about", "global", "country", "update", "latest"}
+    for doc in (country_news_docs[:350] + gdelt_docs[:350]):
+        title = str(_extract_nested_value(doc, "data.title", "title", "data.headline") or "").strip().lower()
+        if not title:
+            continue
+        for token in re.findall(r"[a-zA-Z]{4,}", title):
+            if token in stop:
+                continue
+            token_counts[token] += 1
+    top_topics = [word for word, _ in sorted(token_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]] or ["live-signals"]
+
+    features = {
+        "timestamp": now_iso,
+        "news_sentiment": round(news_sentiment, 6),
+        "gdelt_sentiment": round(gdelt_sentiment, 6),
+        "crypto_return": round(float(crypto_return), 6),
+        "crypto_volatility": round(float(crypto_volatility), 6),
+        "stock_return": round(float(stock_return), 6),
+        "stock_volatility": round(float(stock_volatility), 6),
+        "weather_anomaly": round(float(weather_anomaly), 6),
+        "global_risk_score": round(risk_score, 2),
+        "top_topics": top_topics,
+        "source_mode": "mongo_live_derived",
+    }
+    features.update(
+        compute_global_operational_features(
+            current_risk_score=features["global_risk_score"],
+            mode=mode,
+            current_timestamp=now_iso,
+            use_cache=False,
+        )
+    )
+
+    return {
+        "timestamp": now_dt,
+        "mode": mode,
+        "version": int(time.time()),
+        "features": features,
+        "source": "mongo_live_derived",
+    }
+
+
+def _is_flat_neutral_global_series(mode: str = "online", sample: int = 6) -> bool:
+    rows = list(
+        db.global_features.find({"mode": mode}, {"features.global_risk_score": 1})
+        .sort("timestamp", DESCENDING)
+        .limit(max(sample, 3))
+    )
+    values = []
+    for row in rows:
+        features = row.get("features") if isinstance(row.get("features"), dict) else {}
+        score = _parse_float_maybe(features.get("global_risk_score"))
+        if score is None:
+            continue
+        values.append(float(score))
+    if len(values) < 3:
+        return False
+    return max(values) - min(values) <= 0.1 and all(abs(v - 50.0) <= 0.1 for v in values)
+
+
 def get_latest_global_doc(mode: str = "online") -> dict:
     # Primary source: feature store collection.
-    doc = db.global_features.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
+    doc = db.global_features.find_one({"mode": mode}, sort=[("timestamp", DESCENDING), ("_id", DESCENDING)])
 
     # Fallback source used by orchestrator dashboard sync.
     if not doc:
-        doc = db.dashboard_features.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
+        doc = db.dashboard_features.find_one({"mode": mode}, sort=[("timestamp", DESCENDING), ("_id", DESCENDING)])
 
     # Real-data fallback: derive global snapshot from latest country-level features.
     if not doc:
         doc = _aggregate_latest_global_from_country_features(mode=mode)
 
-    # Final safety fallback keeps frontend booting even before data arrives.
+    # If global risk is missing/flat-neutral, derive from live source collections.
+    needs_live_repair = False
     if not doc:
-        now = datetime.utcnow().isoformat()
-        doc = {
-            "mode": mode,
-            "version": 0,
-            "timestamp": now,
-            "features": {
-                "timestamp": now,
-                "news_sentiment": 0.0,
-                "gdelt_sentiment": 0.0,
-                "crypto_return": 0.0,
-                "crypto_volatility": 0.0,
-                "stock_return": 0.0,
-                "stock_volatility": 0.0,
-                "weather_anomaly": 0.0,
-                "global_risk_score": 50.0,
-                "top_topics": ["no data"],
-            },
-        }
+        needs_live_repair = True
+    else:
+        features = doc.get("features") if isinstance(doc.get("features"), dict) else {}
+        score = _parse_float_maybe(features.get("global_risk_score"))
+        if score is None:
+            needs_live_repair = True
+        elif abs(float(score) - 50.0) <= 0.1 and _is_flat_neutral_global_series(mode=mode):
+            needs_live_repair = True
+
+    if needs_live_repair:
+        derived_doc = _derive_live_global_from_raw_mongo(mode=mode)
+        if derived_doc:
+            doc = derived_doc
+            try:
+                recent = db.global_features.find_one(
+                    {"mode": mode, "source": "mongo_live_derived"},
+                    sort=[("timestamp", DESCENDING), ("_id", DESCENDING)],
+                )
+                recent_ts = _coerce_utc_datetime((recent or {}).get("timestamp"))
+                if recent_ts is None or (datetime.utcnow().replace(tzinfo=timezone.utc) - recent_ts).total_seconds() > 60:
+                    db.global_features.insert_one(derived_doc)
+            except Exception:
+                pass
+
+    # No synthetic payloads: require live data from Mongo-backed sources.
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"No live global features found for mode={mode}")
 
     doc = serialize_doc(doc)
     features = dict(doc.get("features") or {})
@@ -1559,13 +1996,52 @@ def get_global_history(mode: str = "online", limit: int = 1000, start_date: date
     if not cursor:
         cursor = list(db.dashboard_features.find(query).sort("timestamp", DESCENDING).limit(limit))
     if not cursor:
-        return _aggregate_global_history_from_country_features(
+        rows = _aggregate_global_history_from_country_features(
             mode=mode,
             limit=limit,
             start_date=start_date,
             end_date=end_date,
         )
-    return [serialize_doc(d) for d in reversed(cursor)]
+        if rows:
+            return rows
+        return _derive_global_history_from_raw_mongo(
+            mode=mode,
+            limit=limit,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    rows = [serialize_doc(d) for d in reversed(cursor)]
+    if len(rows) >= 2:
+        return rows
+
+    # Augment sparse stored history with live-derived raw Mongo snapshots.
+    derived_rows = _derive_global_history_from_raw_mongo(
+        mode=mode,
+        limit=max(limit, 72),
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if not derived_rows:
+        return rows
+
+    merged: dict[str, dict] = {}
+    for row in rows:
+        ts = str((row.get("features") or {}).get("timestamp") or row.get("timestamp") or "")
+        if ts:
+            merged[ts] = row
+    for row in derived_rows:
+        ts = str((row.get("features") or {}).get("timestamp") or row.get("timestamp") or "")
+        if ts and ts not in merged:
+            merged[ts] = row
+
+    merged_rows = sorted(
+        merged.values(),
+        key=lambda d: _coerce_utc_datetime((d.get("features") or {}).get("timestamp") or d.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    if len(merged_rows) > limit:
+        merged_rows = merged_rows[-limit:]
+    return merged_rows
 
 
 
@@ -2124,6 +2600,8 @@ def dashboard_risk_map(
     docs = list(db.country_features.aggregate(pipeline))
 
     if not docs:
+        docs = _derive_country_risk_map_from_country_news(mode=mode)
+    if not docs:
         placeholder_codes = sorted(set(ISO2_TO_ISO3.values()))
         docs = [
             {
@@ -2245,236 +2723,109 @@ def dashboard_risk_map_refresh(request: Request, payload: CountryRefreshRequest,
 @limiter.limit("60/minute")
 def dashboard_global_intelligence_feed(request: Request, role: str = Depends(check_role), mode: str = Query("online"), limit: int = Query(50, ge=1, le=200)):
     """
-    Returns detailed trending news intelligence feed from all countries (233 countries).
-    Fetches latest country features with detailed news headlines, summaries, and source URLs.
+    Returns a live MongoDB-backed intelligence feed.
+    No mock/template content is generated.
     """
-    # Country name mapping for display
-    country_names = {
-        "USA": "United States", "GBR": "United Kingdom", "DEU": "Germany", "FRA": "France",
-        "JPN": "Japan", "CHN": "China", "IND": "India", "BRA": "Brazil", "CAN": "Canada",
-        "AUS": "Australia", "RUS": "Russia", "KOR": "South Korea", "ITA": "Italy", "ESP": "Spain",
-        "MEX": "Mexico", "IDN": "Indonesia", "TUR": "Turkey", "SAU": "Saudi Arabia", "ZAF": "South Africa",
-        "ARG": "Argentina", "EGY": "Egypt", "NGA": "Nigeria", "PAK": "Pakistan", "VNM": "Vietnam",
-        "PHL": "Philippines", "BGD": "Bangladesh", "ETH": "Ethiopia", "COL": "Colombia", "UKR": "Ukraine",
-        "POL": "Poland", "MYS": "Malaysia", "PER": "Peru", "CHL": "Chile", "CZE": "Czech Republic",
-        "ROU": "Romania", "PRT": "Portugal", "GRC": "Greece", "QAT": "Qatar", "HUN": "Hungary",
-        "KAZ": "Kazakhstan", "KWT": "Kuwait", "MAR": "Morocco", "SVK": "Slovakia", "ECU": "Ecuador",
-        "KEN": "Kenya", "PRI": "Puerto Rico", "ETH": "Ethiopia", "VNM": "Vietnam", "GTM": "Guatemala",
-        "BGR": "Bulgaria", "HRV": "Croatia", "UZB": "Uzbekistan", "LUX": "Luxembourg", "PAN": "Panama",
-        "CRI": "Costa Rica", "URY": "Uruguay", "LTU": "Lithuania", "SVN": "Slovenia", "SRB": "Serbia",
-        "AZE": "Azerbaijan", "TUN": "Tunisia", "NPL": "Nepal", "LBN": "Lebanon", "LKA": "Sri Lanka",
-        "BOL": "Bolivia", "HND": "Honduras", "PNG": "Papua New Guinea", "JAM": "Jamaica", "ARM": "Armenia",
-        "ALB": "Albania", "CIV": "Ivory Coast", "SEN": "Senegal", "BIH": "Bosnia", "GEO": "Georgia",
-        "GHA": "Ghana", "MNG": "Mongolia", "YEM": "Yemen", "MKD": "North Macedonia", "MDA": "Moldova",
-        "NER": "Niger", "KGZ": "Kyrgyzstan", "TJK": "Tajikistan", "TGO": "Togo", "MLI": "Mali",
-        "RWA": "Rwanda", "SOM": "Somalia", "BDI": "Burundi", "TCD": "Chad", "GNB": "Guinea-Bissau",
-        "BFA": "Burkina Faso", "LBR": "Liberia", "SLE": "Sierra Leone", "CAF": "Central African Republic",
-        "LSO": "Lesotho", "GMB": "Gambia", "SWZ": "Eswatini", "DJI": "Djibouti", "COM": "Comoros",
-        "CPV": "Cape Verde", "STP": "Sao Tome", "SYC": "Seychelles", "MDV": "Maldives", "MUS": "Mauritius",
-        "BHS": "Bahamas", "BRB": "Barbados", "GRD": "Grenada", "VCT": "St Vincent", "LCA": "St Lucia",
-        "DMA": "Dominica", "ATG": "Antigua", "KNA": "St Kitts", "VUT": "Vanuatu", "WSM": "Samoa",
-        "TON": "Tonga", "FSM": "Micronesia", "KIR": "Kiribati", "SLB": "Solomon Islands", "PLW": "Palau",
-        "NRU": "Nauru", "TUV": "Tuvalu", "COK": "Cook Islands", "NIU": "Niue", "TKL": "Tokelau",
-        "PSE": "Palestine", "TLS": "Timor-Leste", "XKX": "Kosovo", "ABW": "Aruba", "CUW": "Curacao",
-        "SXM": "Sint Maarten", "MAF": "St Martin", "BLM": "St Barthelemy", "GIB": "Gibraltar", "GGY": "Guernsey",
-        "JEY": "Jersey", "IMN": "Isle of Man", "FRO": "Faroe Islands", "GRL": "Greenland", "GUM": "Guam",
-        "VIR": "US Virgin Islands", "CYM": "Cayman Islands", "BMU": "Bermuda", "TCA": "Turks and Caicos",
-        "AIA": "Anguilla", "MSR": "Montserrat", "FLK": "Falkland Islands", "SGS": "South Georgia", "PCN": "Pitcairn",
-        "SHN": "St Helena", "ASC": "Ascension", "TAA": "Tristan da Cunha", "IOT": "Chagos", "VGB": "British Virgin Islands",
-        "NFK": "Norfolk Island", "CXR": "Christmas Island", "CCK": "Cocos Islands", "HMD": "Heard Island",
-        "ATA": "Antarctica", "ATF": "French Southern", "BVT": "Bouvet Island", "SGP": "Singapore", "NZL": "New Zealand",
-        "THA": "Thailand", "IDN": "Indonesia", "MYS": "Malaysia", "PHL": "Philippines", "MMR": "Myanmar",
-        "KHM": "Cambodia", "LAO": "Laos", "BRN": "Brunei", "TLS": "Timor-Leste", "AFG": "Afghanistan",
-        "IRN": "Iran", "IRQ": "Iraq", "SYR": "Syria", "JOR": "Jordan", "ISR": "Israel",
-        "LBN": "Lebanon", "CYP": "Cyprus", "MLT": "Malta", "ISL": "Iceland", "IRL": "Ireland",
-        "DNK": "Denmark", "FIN": "Finland", "NOR": "Norway", "SWE": "Sweden", "EST": "Estonia",
-        "LVA": "Latvia", "BLR": "Belarus", "UKR": "Ukraine", "MDA": "Moldova", "ROU": "Romania",
-        "BGR": "Bulgaria", "SRB": "Serbia", "MNE": "Montenegro", "ALB": "Albania", "GRC": "Greece",
-        "TUR": "Turkey", "CYP": "Cyprus", "ARM": "Armenia", "AZE": "Azerbaijan", "GEO": "Georgia",
-        "KAZ": "Kazakhstan", "TKM": "Turkmenistan", "UZB": "Uzbekistan", "KGZ": "Kyrgyzstan", "TJK": "Tajikistan",
-        "MNG": "Mongolia", "CHN": "China", "PRK": "North Korea", "KOR": "South Korea", "JPN": "Japan",
-        "TWN": "Taiwan", "HKG": "Hong Kong", "MAC": "Macau", "IND": "India", "PAK": "Pakistan",
-        "BGD": "Bangladesh", "LKA": "Sri Lanka", "NPL": "Nepal", "BTN": "Bhutan", "MDV": "Maldives",
-        "AFG": "Afghanistan", "IRN": "Iran", "OMN": "Oman", "YEM": "Yemen", "ARE": "UAE",
-        "QAT": "Qatar", "BHR": "Bahrain", "KWT": "Kuwait", "SAU": "Saudi Arabia", "JOR": "Jordan",
-        "ISR": "Israel", "LBN": "Lebanon", "SYR": "Syria", "IRQ": "Iraq", "TUR": "Turkey",
-        "EGY": "Egypt", "LBY": "Libya", "TUN": "Tunisia", "DZA": "Algeria", "MAR": "Morocco",
-        "MRT": "Mauritania", "MLI": "Mali", "NER": "Niger", "TCD": "Chad", "SDN": "Sudan",
-        "ERI": "Eritrea", "DJI": "Djibouti", "SOM": "Somalia", "ETH": "Ethiopia", "SSD": "South Sudan",
-        "CAF": "Central African Republic", "CMR": "Cameroon", "NGA": "Nigeria", "BEN": "Benin", "TGO": "Togo",
-        "GHA": "Ghana", "CIV": "Ivory Coast", "LBR": "Liberia", "SLE": "Sierra Leone", "GIN": "Guinea",
-        "GNB": "Guinea-Bissau", "SEN": "Senegal", "GMB": "Gambia", "BFA": "Burkina Faso", "CPV": "Cape Verde",
-        "GNQ": "Equatorial Guinea", "GAB": "Gabon", "COG": "Congo", "COD": "DR Congo", "UGA": "Uganda",
-        "KEN": "Kenya", "RWA": "Rwanda", "BDI": "Burundi", "TZA": "Tanzania", "MWI": "Malawi",
-        "MOZ": "Mozambique", "ZMB": "Zambia", "ZWE": "Zimbabwe", "BWA": "Botswana", "NAM": "Namibia",
-        "ZAF": "South Africa", "LSO": "Lesotho", "SWZ": "Eswatini", "MDG": "Madagascar", "MUS": "Mauritius",
-        "COM": "Comoros", "SYC": "Seychelles", "REU": "Reunion", "MYT": "Mayotte", "BRA": "Brazil",
-        "ARG": "Argentina", "CHL": "Chile", "URY": "Uruguay", "PRY": "Paraguay", "BOL": "Bolivia",
-        "PER": "Peru", "ECU": "Ecuador", "COL": "Colombia", "VEN": "Venezuela", "GUY": "Guyana",
-        "SUR": "Suriname", "GUF": "French Guiana", "CAN": "Canada", "USA": "United States", "MEX": "Mexico",
-        "GTM": "Guatemala", "BLZ": "Belize", "SLV": "El Salvador", "HND": "Honduras", "NIC": "Nicaragua",
-        "CRI": "Costa Rica", "PAN": "Panama", "CUB": "Cuba", "JAM": "Jamaica", "HTI": "Haiti",
-        "DOM": "Dominican Republic", "PRI": "Puerto Rico", "VCT": "St Vincent", "GRD": "Grenada", "TTO": "Trinidad",
-        "BRB": "Barbados", "LCA": "St Lucia", "DMA": "Dominica", "ATG": "Antigua", "KNA": "St Kitts",
-        "VGB": "British Virgin Islands", "AIA": "Anguilla", "MAF": "St Martin", "SXM": "Sint Maarten", "CUW": "Curacao",
-        "ABW": "Aruba", "BES": "Bonaire", "CYM": "Cayman Islands", "TCA": "Turks and Caicos", "BHS": "Bahamas",
-        "BMU": "Bermuda", "GRL": "Greenland", "SPM": "St Pierre", "MNP": "Northern Mariana Islands", "GUM": "Guam",
-        "ASM": "American Samoa", "VIR": "US Virgin Islands", "PLW": "Palau", "FSM": "Micronesia", "KIR": "Kiribati",
-        "MHL": "Marshall Islands", "NRU": "Nauru", "SLB": "Solomon Islands", "VUT": "Vanuatu", "FJI": "Fiji",
-        "TON": "Tonga", "WSM": "Samoa", "TUV": "Tuvalu", "COK": "Cook Islands", "NIU": "Niue",
-        "TKL": "Tokelau", "WLF": "Wallis and Futuna", "NFK": "Norfolk Island", "PCN": "Pitcairn", "HMD": "Heard Island",
-        "IOT": "Chagos", "SGS": "South Georgia", "SHN": "St Helena", "ASC": "Ascension", "TAA": "Tristan da Cunha",
-        "FLK": "Falkland Islands", "GIB": "Gibraltar", "GGY": "Guernsey", "JEY": "Jersey", "IMN": "Isle of Man",
-        "FRO": "Faroe Islands", "ALA": "Aland Islands", "SJM": "Svalbard", "NCL": "New Caledonia", "PYF": "French Polynesia",
-        "GUM": "Guam", "MNP": "Northern Mariana Islands", "ASM": "American Samoa", "TLS": "Timor-Leste", "XKX": "Kosovo",
-        "PSE": "Palestine", "UNK": "Unknown"
-    }
-    
-    # Get the most recent country features with their topics
-    pipeline = [
+    country_risk_pipeline = [
         {"$match": {"mode": mode}},
         {"$sort": {"timestamp": -1}},
-        {"$group": {
-            "_id": "$country",
-            "doc": {"$first": "$$ROOT"},
-            "latest_timestamp": {"$first": "$timestamp"}
-        }},
-        {"$project": {
-            "country": "$_id",
-            "risk_score": {"$ifNull": ["$doc.features.global_risk_score", 50.0]},
-            "topics": {"$ifNull": ["$doc.features.top_topics", ["no data"]]},
-            "timestamp": "$latest_timestamp",
-            "news_sentiment": {"$ifNull": ["$doc.features.news_sentiment", 0.0]},
-            "gdelt_sentiment": {"$ifNull": ["$doc.features.gdelt_sentiment", 0.0]},
-        }},
-        {"$sort": {"timestamp": -1}},
-        {"$limit": limit}
+        {"$group": {"_id": "$country", "doc": {"$first": "$$ROOT"}}},
+        {"$replaceRoot": {"newRoot": "$doc"}},
+        {"$project": {"country": 1, "risk": "$features.global_risk_score", "topics": "$features.top_topics"}},
     ]
-    
-    docs = list(db.country_features.aggregate(pipeline))
-    
-    # Sample news headlines and summaries for different categories
-    news_templates = {
-        "political": [
-            ("Government announces new economic reforms amid rising inflation concerns", "The administration unveiled a comprehensive economic package today aimed at stabilizing markets and controlling inflation. Key measures include tax adjustments, monetary policy changes, and social welfare programs. Opposition parties have expressed mixed reactions to the proposed reforms."),
-            ("Parliament debates controversial new legislation on digital privacy", "Lawmakers are currently discussing a bill that would significantly change how personal data is collected and stored by tech companies. Privacy advocates argue the legislation doesn't go far enough, while industry representatives warn of compliance costs."),
-            ("Opposition leader calls for early elections following policy disagreements", "The main opposition party has demanded snap elections after the government failed to pass key infrastructure spending bills. Political analysts suggest this could lead to increased market volatility in the coming weeks."),
-        ],
-        "economic": [
-            ("Central bank raises interest rates to combat inflation pressures", "The monetary authority announced a 25 basis point increase in the benchmark interest rate, citing persistent inflation above target levels. The move is expected to strengthen the currency but may slow economic growth in the short term."),
-            ("Stock market reaches record high as foreign investment surges", "Local equities markets closed at all-time highs today, driven by unprecedented foreign capital inflows. Technology and renewable energy sectors led the gains, with trading volumes exceeding historical averages."),
-            ("Trade deficit narrows as exports show strong growth", "Latest trade figures reveal a significant improvement in the country's trade balance, with exports growing 15% year-over-year. Manufacturing and agricultural products drove the increase, while import growth remained moderate."),
-        ],
-        "social": [
-            ("Major labor union announces nationwide strike action", "The country's largest labor federation has called for a general strike next week to protest wage stagnation and working conditions. Essential services are expected to be affected, with the government urging both sides to return to negotiations."),
-            ("Healthcare system faces strain as flu season peaks early", "Hospitals across the country are reporting capacity issues as an early and severe flu season overwhelms medical facilities. Health officials are urging vulnerable populations to take precautions and consider vaccination."),
-            ("Education reforms spark debate among parents and teachers", "Proposed changes to the national curriculum have generated significant discussion, with supporters praising modernization efforts while critics worry about reduced emphasis on traditional subjects."),
-        ],
-        "security": [
-            ("Military conducts exercises near border amid regional tensions", "Armed forces are conducting large-scale military exercises in response to increased activity from neighboring countries. Defense officials emphasize these are routine training operations, though observers note the timing amid diplomatic tensions."),
-            ("Cybersecurity agency warns of increased hacking attempts", "National cybersecurity authorities report a 40% increase in attempted cyber attacks on critical infrastructure. The agency has issued new guidelines for businesses and government departments to strengthen their digital defenses."),
-            ("Police launch operation against organized crime networks", "Law enforcement agencies conducted coordinated raids across multiple cities, resulting in dozens of arrests. Officials describe the operation as a significant blow to transnational criminal organizations operating in the region."),
-        ],
-        "environment": [
-            ("Severe weather alerts issued as storm system approaches", "Meteorological services have issued warnings for heavy rainfall and strong winds expected to impact coastal regions. Emergency services are on standby, and residents in low-lying areas are advised to prepare for potential flooding."),
-            ("Government announces new climate action plan", "Environmental authorities unveiled an ambitious strategy to reduce carbon emissions by 40% over the next decade. The plan includes investments in renewable energy, public transportation, and sustainable agriculture practices."),
-            ("Wildfire containment efforts continue as temperatures rise", "Firefighting crews are battling multiple blazes across drought-affected regions. Hot and dry conditions are expected to continue, complicating efforts to bring the fires under control."),
-        ],
-        "technology": [
-            ("Tech sector sees major investment from international firms", "Several global technology companies announced significant investments in local research and development facilities. The move is expected to create thousands of high-skilled jobs and boost the country's innovation ecosystem."),
-            ("New telecommunications infrastructure project launched", "The government and private sector partners broke ground on a nationwide 5G network expansion. The project aims to provide high-speed internet access to rural and underserved areas within three years."),
-            ("Data protection authority fines major tech company", "The national privacy regulator imposed a record fine on a major technology firm for violations of data protection laws. The case is seen as a landmark decision that could affect how tech companies operate in the region."),
-        ],
-    }
-    
-    # Source URLs for different news categories
-    source_urls = {
-        "Reuters": "https://www.reuters.com",
-        "Bloomberg": "https://www.bloomberg.com",
-        "BBC": "https://www.bbc.com/news",
-        "CNN": "https://www.cnn.com",
-        "Al Jazeera": "https://www.aljazeera.com",
-        "Associated Press": "https://apnews.com",
-        "Financial Times": "https://www.ft.com",
-        "The Guardian": "https://www.theguardian.com",
-        "Wall Street Journal": "https://www.wsj.com",
-        "New York Times": "https://www.nytimes.com",
-        "GDELT": "https://www.gdeltproject.org",
-        "News": "https://news.google.com",
-    }
-    
-    import random
-    random.seed(42)  # For consistent results
-    
-    # Build intelligence feed items with detailed news
+    risk_docs = list(db.country_features.aggregate(country_risk_pipeline))
+    risk_by_country: dict[str, dict[str, Any]] = {}
+    for row in risk_docs:
+        code = convert_country_code(str(row.get("country") or "").upper().strip())
+        if not code:
+            continue
+        risk_by_country[code] = {
+            "risk_score": float(row.get("risk", 50.0) or 50.0),
+            "topics": row.get("topics") if isinstance(row.get("topics"), list) else [],
+        }
+
+    def _infer_category(title: str, summary: str, risk_score: float, topics: list[str]) -> str:
+        blob = f"{title} {summary} {' '.join([str(t) for t in topics])}".lower()
+        if risk_score >= 75 or any(tok in blob for tok in ["war", "conflict", "attack", "military", "security"]):
+            return "security"
+        if any(tok in blob for tok in ["econom", "market", "inflation", "interest rate", "trade", "currency"]):
+            return "economic"
+        if any(tok in blob for tok in ["climate", "weather", "flood", "storm", "wildfire", "drought"]):
+            return "environment"
+        if any(tok in blob for tok in ["tech", "ai", "cyber", "digital", "internet", "software"]):
+            return "technology"
+        if any(tok in blob for tok in ["election", "parliament", "government", "policy", "diplomat"]):
+            return "political"
+        return "social"
+
+    news_docs = list(
+        db.country_news.find(
+            {},
+            {
+                "_id": 1,
+                "country": 1,
+                "country_name": 1,
+                "timestamp": 1,
+                "collected_at": 1,
+                "data.title": 1,
+                "data.description": 1,
+                "data.content": 1,
+                "data.url": 1,
+                "data.source_name": 1,
+                "data.published_at": 1,
+                "source": 1,
+            },
+        )
+        .sort("timestamp", DESCENDING)
+        .limit(max(limit * 30, 1000))
+    )
+
     feed_items = []
-    for idx, doc in enumerate(docs):
-        country_code = convert_country_code(doc.get("country", "UNK"))
-        country_name = country_names.get(country_code, country_code)
-        topics = doc.get("topics", ["no data"])
-        risk_score = float(doc.get("risk_score", 50.0))
-        
-        # Determine category based on topics and risk score
-        if risk_score >= 75:
-            category = "security"
-        elif risk_score >= 50:
-            category = "political"
-        elif "economy" in str(topics).lower() or "market" in str(topics).lower():
-            category = "economic"
-        elif "climate" in str(topics).lower() or "weather" in str(topics).lower():
-            category = "environment"
-        elif "tech" in str(topics).lower() or "digital" in str(topics).lower():
-            category = "technology"
-        else:
-            category = random.choice(["political", "economic", "social"])
-        
-        # Select news template
-        templates = news_templates.get(category, news_templates["political"])
-        headline, summary = templates[idx % len(templates)]
-        
-        # Generate full article text
-        full_article = f"""{headline}
+    seen = set()
+    for doc in news_docs:
+        data = doc.get("data") if isinstance(doc.get("data"), dict) else {}
+        headline = str(data.get("title") or "").strip()
+        if not headline:
+            continue
 
-{summary}
+        country_code = convert_country_code(str(doc.get("country") or data.get("country") or "UNK").upper().strip())
+        country_name = str(doc.get("country_name") or COUNTRY_NAMES.get(country_code, country_code))
+        summary = str(data.get("description") or data.get("content") or "").strip()
+        full_article = str(data.get("content") or summary or headline).strip()
+        source = str(data.get("source_name") or doc.get("source") or "unknown")
+        source_url = str(data.get("url") or "").strip()
+        timestamp = str(data.get("published_at") or doc.get("timestamp") or doc.get("collected_at") or datetime.utcnow().isoformat())
 
-This development comes at a time when {country_name} is navigating complex domestic and international challenges. Analysts suggest that the situation will require careful monitoring in the coming days, with potential implications for regional stability and economic performance.
+        dedupe_key = f"{country_code}|{headline.lower()}|{source_url}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
 
-Key stakeholders have responded with varying degrees of support and concern. International observers are watching closely to see how authorities manage the evolving situation. The outcome could have lasting effects on {country_name}'s trajectory in the near to medium term.
+        risk_meta = risk_by_country.get(country_code, {"risk_score": 50.0, "topics": []})
+        risk_score = float(risk_meta.get("risk_score", 50.0) or 50.0)
+        topics = risk_meta.get("topics") if isinstance(risk_meta.get("topics"), list) else []
+        category = _infer_category(headline, summary, risk_score, topics)
 
-Further updates are expected as more information becomes available and officials provide additional context on the measures being implemented."""
-        
-        # Determine source based on available data
-        news_sent = float(doc.get("news_sentiment", 0.0))
-        gdelt_sent = float(doc.get("gdelt_sentiment", 0.0))
-        
-        if abs(news_sent) > abs(gdelt_sent):
-            source = random.choice(["Reuters", "Bloomberg", "BBC", "CNN", "Associated Press"])
-        else:
-            source = "GDELT"
-        
-        source_url = source_urls.get(source, "https://news.google.com")
-        
-        # Create unique ID for this feed item
-        item_id = f"{country_code}_{doc.get('timestamp', datetime.utcnow().isoformat())}_{idx}"
-        
-        feed_items.append({
-            "id": item_id,
-            "country": country_code,
-            "country_name": country_name,
-            "headline": headline,
-            "summary": summary,
-            "full_article": full_article,
-            "source": source,
-            "source_url": source_url,
-            "risk_score": risk_score,
-            "timestamp": str(doc.get("timestamp", datetime.utcnow().isoformat())),
-            "category": category
-        })
-    
-    # Sort by most recent first
-    feed_items.sort(key=lambda x: x["timestamp"], reverse=True)
-    
-    return feed_items
+        feed_items.append(
+            {
+                "id": str(doc.get("_id")),
+                "country": country_code or "UNK",
+                "country_name": country_name or (country_code or "Unknown"),
+                "headline": headline,
+                "summary": summary if summary else headline,
+                "full_article": full_article if full_article else headline,
+                "source": source,
+                "source_url": source_url,
+                "risk_score": risk_score,
+                "timestamp": timestamp,
+                "category": category,
+            }
+        )
+        if len(feed_items) >= limit:
+            break
+
+    feed_items.sort(key=lambda x: _parse_timestamp(str(x.get("timestamp") or "")), reverse=True)
+    return feed_items[:limit]
 
 
 
@@ -3880,130 +4231,6 @@ def dashboard_trends_radar(request: Request, role: str = Depends(check_role), li
             })
             seen_ids.add(fallback_id)
             seen_topics.add(topic_key)
-    supported_regions = {
-        str(item.get("region") or "").strip().upper()
-        for item in trend_items
-        if str(item.get("source_mode") or "") == "trending_searches"
-    }
-    supported_regions = {r for r in supported_regions if len(r) == 2 and r.isalpha()}
-
-    all_map_regions = []
-    seen_map_regions = set()
-    for code in ISO2_TO_ISO3.keys():
-        region = "GB" if str(code).upper() == "UK" else str(code).upper()
-        if len(region) != 2 or (not region.isalpha()) or region in seen_map_regions:
-            continue
-        seen_map_regions.add(region)
-        all_map_regions.append(region)
-
-    missing_regions = [r for r in all_map_regions if r not in supported_regions]
-
-    def _fetch_wikimedia_topics(max_topics: int = 80) -> list[str]:
-        # Wikimedia top endpoint is available for completed days, so query UTC yesterday.
-        day = (datetime.now(timezone.utc) - timedelta(days=1))
-        url = (
-            "https://wikimedia.org/api/rest_v1/metrics/pageviews/top/"
-            f"en.wikipedia/all-access/{day.year}/{day.month:02d}/{day.day:02d}"
-        )
-        try:
-            req = urllib_request.Request(url, headers={"User-Agent": "world-pulse-research/1.0"})
-            with urllib_request.urlopen(req, timeout=8) as resp:
-                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
-            days = payload.get("items") or []
-            if not days:
-                return []
-            articles = ((days[0] or {}).get("articles") or [])
-            topics = []
-            for article in articles:
-                title = str(article.get("article") or "").strip()
-                if not title or title.lower() == "main_page":
-                    continue
-                topics.append(title.replace("_", " "))
-                if len(topics) >= max_topics:
-                    break
-            return topics
-        except Exception:
-            return []
-
-    wiki_topics = _fetch_wikimedia_topics(max_topics=120)
-
-    gdelt_scores: dict[str, float] = {}
-    gdelt_topics: dict[str, str] = {}
-    try:
-        now_dt = datetime.now(timezone.utc)
-        curr_start = now_dt - timedelta(hours=48)
-        prev_start = now_dt - timedelta(hours=96)
-
-        curr_docs = list(db.country_news.find({"timestamp": {"$gte": curr_start}}).sort("timestamp", -1).limit(15000))
-        prev_docs = list(db.country_news.find({"timestamp": {"$gte": prev_start, "$lt": curr_start}}).limit(15000))
-
-        curr_counts: dict[str, int] = defaultdict(int)
-        prev_counts: dict[str, int] = defaultdict(int)
-
-        for doc in curr_docs:
-            iso3 = str(doc.get("country") or "").strip().upper()
-            iso2 = ISO3_TO_ISO2.get(iso3)
-            if not iso2:
-                continue
-            region = "GB" if str(iso2).upper() == "UK" else str(iso2).upper()
-            if len(region) != 2:
-                continue
-            curr_counts[region] += 1
-            if region not in gdelt_topics:
-                title = str(_pick_nested(doc, "data.title", default="")).strip()
-                if title:
-                    gdelt_topics[region] = title[:80]
-
-        for doc in prev_docs:
-            iso3 = str(doc.get("country") or "").strip().upper()
-            iso2 = ISO3_TO_ISO2.get(iso3)
-            if not iso2:
-                continue
-            region = "GB" if str(iso2).upper() == "UK" else str(iso2).upper()
-            if len(region) != 2:
-                continue
-            prev_counts[region] += 1
-
-        for region, curr_count in curr_counts.items():
-            prev_count = prev_counts.get(region, 0)
-            spike = (curr_count + 1.0) / (prev_count + 1.0)
-            score = min(100.0, 25.0 + (spike * 18.0) + (curr_count * 1.5))
-            gdelt_scores[region] = score
-    except Exception:
-        gdelt_scores = {}
-        gdelt_topics = {}
-
-    proxy_items = []
-    for idx, region in enumerate(missing_regions):
-        if len(proxy_items) >= max(limit * 3, 120):
-            break
-        gdelt_score = float(gdelt_scores.get(region, 0.0))
-        wiki_topic = wiki_topics[idx % len(wiki_topics)] if wiki_topics else "global attention shift"
-        base_topic = gdelt_topics.get(region) or f"{wiki_topic}"
-        if not base_topic:
-            continue
-        score = max(18.0, min(95.0, gdelt_score if gdelt_score > 0 else 30.0))
-        velocity = round(max(-5.0, min(15.0, score / 12.0)), 1)
-        proxy_items.append({
-            "id": f"proxy-{region}-{idx}",
-            "topic": base_topic,
-            "category": "Public Interest",
-            "search_volume": int(score),
-            "interest_score": int(score),
-            "velocity": velocity,
-            "trend_direction": "rising" if velocity > 1 else "stable",
-            "breakout": score >= 75,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source_mode": "proxy_wikimedia_gdelt",
-            "region": region,
-            "related_queries": [
-                f"{base_topic} news",
-                f"{wiki_topic} wikipedia",
-                f"{region} gdelt mentions",
-            ],
-        })
-
-    trend_items.extend(proxy_items)
     trend_items.sort(key=lambda x: (1 if str(x.get("source_mode") or "") == "trending_searches" else 0, x["interest_score"], _parse_timestamp(x["timestamp"])), reverse=True)
     trend_items = trend_items[:limit]
 
@@ -4326,49 +4553,32 @@ def analytics_event_predictions(request: Request, role: str = Depends(check_role
         if str(d.get("country", "")).strip()
     }
 
-    catalog = sorted(get_country_catalog().keys()) or sorted(COUNTRY_NAMES.keys())
-    if not catalog:
-        catalog = sorted(latest_by_country.keys())
-
-    latest_global = get_latest_global_doc(mode="online")
-    global_features = latest_global.get("features", {}) if isinstance(latest_global, dict) else {}
-    default_risk = _normalize_risk_score((global_features or {}).get("global_risk_score", 50.0), 50.0)
-
     events = []
-    for country_code in catalog:
-        d = latest_by_country.get(country_code)
-        if d is None:
-            risk = default_risk
-            baseline = default_risk
-            risk_delta = 0.0
-            confidence = 0.4
-            ts_value = datetime.utcnow().isoformat()
-            event_id = f"synthetic-{country_code}"
-        else:
-            features = d.get("features")
-            f = features if isinstance(features, dict) else {}
-            risk = _normalize_risk_score(f.get("global_risk_score", 50.0), default_risk)
+    for country_code, d in latest_by_country.items():
+        features = d.get("features")
+        f = features if isinstance(features, dict) else {}
+        risk = _normalize_risk_score(f.get("global_risk_score", 50.0), 50.0)
 
-            baseline_docs = list(
-                country_features_collection.find(
-                    {
-                        "mode": "online",
-                        "country": country_code,
-                        "timestamp": {"$lt": d.get("timestamp")},
-                    },
-                    {"features.global_risk_score": 1},
-                ).sort("timestamp", -1).limit(12)
-            )
-            baseline_vals = []
-            for row in baseline_docs:
-                rf = row.get("features") if isinstance(row.get("features"), dict) else {}
-                baseline_vals.append(_normalize_risk_score(rf.get("global_risk_score", default_risk), default_risk))
-            baseline = (sum(baseline_vals) / len(baseline_vals)) if baseline_vals else default_risk
+        baseline_docs = list(
+            country_features_collection.find(
+                {
+                    "mode": "online",
+                    "country": country_code,
+                    "timestamp": {"$lt": d.get("timestamp")},
+                },
+                {"features.global_risk_score": 1},
+            ).sort("timestamp", -1).limit(12)
+        )
+        baseline_vals = []
+        for row in baseline_docs:
+            rf = row.get("features") if isinstance(row.get("features"), dict) else {}
+            baseline_vals.append(_normalize_risk_score(rf.get("global_risk_score", 50.0), 50.0))
+        baseline = (sum(baseline_vals) / len(baseline_vals)) if baseline_vals else 50.0
 
-            risk_delta = round(risk - baseline, 2)
-            confidence = min(0.99, max(0.45, 0.58 + (abs(risk_delta) / 45.0)))
-            ts_value = str(d.get("timestamp", datetime.utcnow().isoformat()))
-            event_id = str(d.get("_id"))
+        risk_delta = round(risk - baseline, 2)
+        confidence = min(0.99, max(0.45, 0.58 + (abs(risk_delta) / 45.0)))
+        ts_value = str(d.get("timestamp", datetime.utcnow().isoformat()))
+        event_id = str(d.get("_id"))
 
         severity_score_raw = float(risk + (abs(risk_delta) * 1.75))
         events.append({
@@ -5654,14 +5864,16 @@ def _identity_from_ws_credentials(
         try:
             return decode_access_token(candidate_token, source="websocket_query_token")
         except HTTPException:
-            return None
+            # If token is invalid/expired, continue to Authorization/API key fallback.
+            pass
 
     bearer = (authorization or "").strip()
     if bearer.lower().startswith("bearer "):
         try:
             return decode_access_token(bearer.split(" ", 1)[1].strip(), source="websocket_authorization_header")
         except HTTPException:
-            return None
+            # Fall through to API key fallback.
+            pass
 
     return _identity_from_api_key(x_api_key or api_key)
 
@@ -5717,6 +5929,17 @@ def _build_live_risk_snapshot(trigger: dict | None = None) -> dict:
         "type": "risk_update",
         "timestamp": str(doc.get("timestamp") or features.get("timestamp") or datetime.utcnow().isoformat()),
         "global_risk_score": float(features.get("global_risk_score", 50) or 50),
+        "global_mood_score": float(features.get("global_mood_score", features.get("global_risk_score", 50)) or 50),
+        "global_mood_confidence": float(features.get("global_mood_confidence", 0.0) or 0.0),
+        "global_mood_uncertainty": float(features.get("global_mood_uncertainty", 18.0) or 18.0),
+        "global_mood_verified_countries": int(features.get("global_mood_verified_countries", 0) or 0),
+        "global_mood_eligible_countries": int(features.get("global_mood_eligible_countries", 0) or 0),
+        "global_mood_used_countries": int(features.get("global_mood_used_countries", features.get("global_mood_contributing_countries", 0)) or 0),
+        "global_mood_excluded_countries": int(features.get("global_mood_excluded_countries", 0) or 0),
+        "forecast_risk_score": float(features.get("forecast_risk_score", features.get("global_risk_score", 50)) or 50),
+        "forecast_risk_delta": float(features.get("forecast_risk_delta", 0.0) or 0.0),
+        "forecast_confidence": float(features.get("forecast_confidence", 0.35) or 0.35),
+        "forecast_horizon_hours": int(features.get("forecast_horizon_hours", 24) or 24),
         "top_topics": top_topics,
     }
     if trigger:
@@ -5792,9 +6015,12 @@ async def websocket_risk(
     await websocket.accept()
     consumer = None
     last_keepalive = time.monotonic()
+    last_snapshot_emit = 0.0
+    snapshot_interval_seconds = 3.0
 
     try:
         await websocket.send_json(_build_live_risk_snapshot())
+        last_snapshot_emit = time.monotonic()
         while True:
             if consumer is None:
                 try:
@@ -5819,7 +6045,15 @@ async def websocket_risk(
             if messages:
                 await websocket.send_json(_build_live_risk_snapshot(messages[-1]))
                 last_keepalive = time.monotonic()
+                last_snapshot_emit = time.monotonic()
                 continue
+
+            # Even when there are no Kafka events, stream fresh DB snapshots so dashboard
+            # top-line cards (mood/risk/forecast) continue updating in near real time.
+            if time.monotonic() - last_snapshot_emit >= snapshot_interval_seconds:
+                await websocket.send_json(_build_live_risk_snapshot())
+                last_snapshot_emit = time.monotonic()
+                last_keepalive = time.monotonic()
 
             if time.monotonic() - last_keepalive >= WS_IDLE_KEEPALIVE_SECONDS:
                 await websocket.send_json(_heartbeat_message("risk"))

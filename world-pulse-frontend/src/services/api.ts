@@ -1,7 +1,9 @@
 import axios, { AxiosHeaders } from "axios";
 
 const PRIMARY_API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-const FALLBACK_API_URL = import.meta.env.VITE_API_FALLBACK_URL || "http://127.0.0.1:8010";
+// Do not default to an alternate port unless explicitly configured.
+// A dead fallback (e.g. :8010) can trap auth/login in repeated connection refused loops.
+const FALLBACK_API_URL = import.meta.env.VITE_API_FALLBACK_URL || "";
 const API_KEY = import.meta.env.VITE_API_KEY || "super_secure_api_key";
 const USE_MOCK_API = String(import.meta.env.VITE_USE_MOCK_API || "").trim().toLowerCase() === "true";
 const ACTIVE_API_URL_STORAGE_KEY = "wp_active_api_url";
@@ -10,7 +12,9 @@ function readPersistedApiUrl(): string {
   if (typeof window === "undefined") return PRIMARY_API_URL;
   const stored = String(window.localStorage.getItem(ACTIVE_API_URL_STORAGE_KEY) || "").trim();
   if (!stored) return PRIMARY_API_URL;
-  if (stored === PRIMARY_API_URL || stored === FALLBACK_API_URL) return stored;
+  if (stored === PRIMARY_API_URL || (FALLBACK_API_URL && stored === FALLBACK_API_URL)) return stored;
+  // Reset stale/invalid stored API URL to primary so app can recover automatically.
+  window.localStorage.setItem(ACTIVE_API_URL_STORAGE_KEY, PRIMARY_API_URL);
   return PRIMARY_API_URL;
 }
 

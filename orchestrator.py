@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 World Pulse Orchestrator - Optimized Production Streaming
-Collectors â†’ Kafka â†’ Consumer â†’ Data Lake â†’ Preprocessing â†’ Mongo â†’ NLP â†’ Feature Store â†’ ML â†’ Alerts
+Collectors Ã¢â€ â€™ Kafka Ã¢â€ â€™ Consumer Ã¢â€ â€™ Data Lake Ã¢â€ â€™ Preprocessing Ã¢â€ â€™ Mongo Ã¢â€ â€™ NLP Ã¢â€ â€™ Feature Store Ã¢â€ â€™ ML Ã¢â€ â€™ Alerts
 """
 
 import sys, io, os, json, logging, traceback, time, hashlib, re
@@ -114,16 +114,23 @@ def mongo_safe_upsert(collection, record):
         )
         return True
     except Exception as e:
-        log_event(f"âŒ Mongo upsert failed: {e}")
+        log_event(f"Ã¢ÂÅ’ Mongo upsert failed: {e}")
         traceback.print_exc()
         return False
 
 
 # -------------------------------
-# UTF-8 stdout/stderr
+# Console encoding safety
 # -------------------------------
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+# Avoid replacing stdout/stderr wrappers directly; this can cause odd behavior in
+# some shells. Reconfigure when supported and fall back silently.
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 # -------------------------------
 # Logging
@@ -161,9 +168,9 @@ def send_email(subject, body):
             server.starttls()
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
-        log_event("ðŸ“§ Email alert sent!")
+        log_event("Ã°Å¸â€œÂ§ Email alert sent!")
     except Exception as e:
-        log_event(f"âŒ Failed to send email: {e}")
+        log_event(f"Ã¢ÂÅ’ Failed to send email: {e}")
 
 # -------------------------------
 # Kafka Setup
@@ -349,9 +356,9 @@ def load_model():
     return loaded_models
 
 def classify_risk(prob):
-    if prob >= ALERT_THRESHOLD_HIGH: return "ðŸ”´ CRITICAL", "GLOBAL CRISIS IMMINENT"
-    if prob >= ALERT_THRESHOLD_MED: return "ðŸŸ  ELEVATED", "INSTABILITY DETECTED"
-    return "ðŸŸ¢ LOW", "STABLE SYSTEM"
+    if prob >= ALERT_THRESHOLD_HIGH: return "Ã°Å¸â€Â´ CRITICAL", "GLOBAL CRISIS IMMINENT"
+    if prob >= ALERT_THRESHOLD_MED: return "Ã°Å¸Å¸Â  ELEVATED", "INSTABILITY DETECTED"
+    return "Ã°Å¸Å¸Â¢ LOW", "STABLE SYSTEM"
 
 def compute_forecast(latest, days=7):
     forecasts = []
@@ -435,7 +442,7 @@ def sanitize_for_mongo(record):
 def run_ml_engine():
     try:
         # -------------------------
-        # 0ï¸âƒ£ Load models
+        # 0Ã¯Â¸ÂÃ¢Æ’Â£ Load models
         # -------------------------
         models = load_model()
         gb_model = models.get("gb_model")
@@ -443,19 +450,19 @@ def run_ml_engine():
         log_model = models.get("logistic_model")
 
         # -------------------------
-        # 1ï¸âƒ£ Load features CSV
+        # 1Ã¯Â¸ÂÃ¢Æ’Â£ Load features CSV
         # -------------------------
         if not os.path.exists(HOURLY_FEATURES_CSV):
-            log_event("âš ï¸ hourly_features.csv not found. Skipping ML cycle.")
+            log_event("Ã¢Å¡Â Ã¯Â¸Â hourly_features.csv not found. Skipping ML cycle.")
             return
 
         df_features = pd.read_csv(HOURLY_FEATURES_CSV)
         if df_features.empty:
-            log_event("âš ï¸ No features available to run ML engine.")
+            log_event("Ã¢Å¡Â Ã¯Â¸Â No features available to run ML engine.")
             return
 
         # -------------------------
-        # 2ï¸âƒ£ Latest features
+        # 2Ã¯Â¸ÂÃ¢Æ’Â£ Latest features
         # -------------------------
         latest = df_features.iloc[-1]
         X = pd.DataFrame([latest[FEATURE_COLUMNS].values], columns=FEATURE_COLUMNS)
@@ -466,7 +473,7 @@ def run_ml_engine():
         level, message = classify_risk(prob)
 
         # -------------------------
-        # 3ï¸âƒ£ Forecast (for logging only)
+        # 3Ã¯Â¸ÂÃ¢Æ’Â£ Forecast (for logging only)
         # -------------------------
         forecast_df = compute_forecast(latest)
         forecast_probs = []
@@ -476,7 +483,7 @@ def run_ml_engine():
             forecast_probs.append(np.mean(row_probs))
 
         # -------------------------
-        # 4ï¸âƒ£ Country-level risks (for logging only)
+        # 4Ã¯Â¸ÂÃ¢Æ’Â£ Country-level risks (for logging only)
         # -------------------------
         country_df = fs.read_country()
         if country_df.empty:
@@ -489,19 +496,19 @@ def run_ml_engine():
             country_risks[row["country"]] = round(float(np.mean(row_probs)), 3)
 
         # -------------------------
-        # 5ï¸âƒ£ Load history & detect anomalies
+        # 5Ã¯Â¸ÂÃ¢Æ’Â£ Load history & detect anomalies
         # -------------------------
         df_history = load_hourly_features()
         df_history.dropna(subset=["news_sentiment", "gdelt_sentiment"], how="all", inplace=True)
         anomalies = detect_anomalies(df_history)
 
         # -------------------------
-        # 6ï¸âƒ£ Extract top topics from recent news/gdelt titles
+        # 6Ã¯Â¸ÂÃ¢Æ’Â£ Extract top topics from recent news/gdelt titles
         # -------------------------
         top_topics, topic_pressure, topic_obs = extract_recent_topic_intelligence(db, top_n=5)
 
         # -------------------------
-        # 7ï¸âƒ£ Prepare global_features document
+        # 7Ã¯Â¸ÂÃ¢Æ’Â£ Prepare global_features document
         # -------------------------
         now_iso = datetime.utcnow().isoformat()
         now_dt = datetime.utcnow()
@@ -531,12 +538,12 @@ def run_ml_engine():
         mongo_safe_upsert(db.global_features, global_doc)
 
         # -------------------------
-        # 8ï¸âƒ£ Update dashboard
+        # 8Ã¯Â¸ÂÃ¢Æ’Â£ Update dashboard
         # -------------------------
         update_dashboard(global_doc)
 
         # -------------------------
-        # 9ï¸âƒ£ Logging
+        # 9Ã¯Â¸ÂÃ¢Æ’Â£ Logging
         # -------------------------
         log_event(f"Time: {datetime.now(timezone.utc).isoformat()}")
         log_event(f"Crisis Probability: {prob:.4f} | Risk Level: {level}")
@@ -554,16 +561,16 @@ def run_ml_engine():
         )
 
         # -------------------------
-        # ðŸ”Ÿ Send alert email if critical
+        # Ã°Å¸â€Å¸ Send alert email if critical
         # -------------------------
-        if level == "ðŸ”´ CRITICAL":
+        if level == "Ã°Å¸â€Â´ CRITICAL":
             send_email(
-                "ðŸš¨ GLOBAL CRISIS ALERT",
+                "Ã°Å¸Å¡Â¨ GLOBAL CRISIS ALERT",
                 f"Crisis probability: {prob:.2f}\n{country_risks}"
             )
 
     except Exception as e:
-        log_event(f"âŒ ML Engine error: {e}")
+        log_event(f"Ã¢ÂÅ’ ML Engine error: {e}")
         traceback.print_exc()
 
 # -------------------------------
@@ -596,7 +603,7 @@ def upsert_delta(collection_name, record, unique_key="id"):
 
 
 # -------------------------------
-# Kafka Consumer â†’ Full End-to-End Processing (Batching & CSV Safe)
+# Kafka Consumer Ã¢â€ â€™ Full End-to-End Processing (Batching & CSV Safe)
 # -------------------------------
 from threading import Thread, Lock
 import threading 
@@ -703,20 +710,20 @@ if __name__=="__main__":
         health_status = health_check(model=model, feature_columns=FEATURE_COLUMNS, db_client=db)
         log_event(f"Service health status: {health_status}")
         if not all(health_status.values()):
-            log_event("âš ï¸ Warning: some components are unhealthy at startup")
+            log_event("WARNING: some components are unhealthy at startup")
     except Exception as e:
-        log_event(f"âŒ Startup health check failed: {e}")
+        log_event(f"ERROR: startup health check failed: {e}")
         traceback.print_exc()
 
     # -------------------------------
     # Preprocessing pipeline
     # -------------------------------
     try:
-        log_event("ðŸš€ Running full preprocessing (preprocess_data.main)...")
+        log_event("Running full preprocessing (preprocess_data.main)...")
         preprocess_main()
-        log_event("âœ… Preprocessing completed successfully")
+        log_event("Preprocessing completed successfully")
     except Exception as e:
-        log_event(f"âŒ Preprocessing pipeline failed: {e}")
+        log_event(f"ERROR: preprocessing pipeline failed: {e}")
         traceback.print_exc()
 
     # -------------------------------
@@ -730,33 +737,33 @@ if __name__=="__main__":
         while True:
             time.sleep(interval_sec)
             try:
-                # 1ï¸âƒ£ Update hourly_features CSV / collection
+                # 1Ã¯Â¸ÂÃ¢Æ’Â£ Update hourly_features CSV / collection
                 populate_hourly_features()
                 log_event("Hourly features updated")
 
-                # 2ï¸âƒ£ Read latest feature row from hourly_features CSV
+                # 2Ã¯Â¸ÂÃ¢Æ’Â£ Read latest feature row from hourly_features CSV
                 if not os.path.exists(HOURLY_FEATURES_CSV):
-                    log_event("âš ï¸ hourly_features.csv missing, skipping global_features update")
+                    log_event("Ã¢Å¡Â Ã¯Â¸Â hourly_features.csv missing, skipping global_features update")
                     continue
 
                 df_hourly = pd.read_csv(HOURLY_FEATURES_CSV)
                 if df_hourly.empty:
-                    log_event("âš ï¸ hourly_features.csv empty, skipping global_features update")
+                    log_event("Ã¢Å¡Â Ã¯Â¸Â hourly_features.csv empty, skipping global_features update")
                     continue
 
-                # âœ… Use latest CSV row as source of truth
+                # Ã¢Å“â€¦ Use latest CSV row as source of truth
                 features = df_hourly.iloc[-1].to_dict()
 
-                # 3ï¸âƒ£ Define timestamp
+                # 3Ã¯Â¸ÂÃ¢Æ’Â£ Define timestamp
                 now_iso = datetime.utcnow().isoformat()
                 now_dt = datetime.utcnow()
 
-                # 4ï¸âƒ£ Compute model-aligned risk + top topics
+                # 4Ã¯Â¸ÂÃ¢Æ’Â£ Compute model-aligned risk + top topics
                 models = load_model()
                 risk_score = compute_model_risk_score(models, features)
                 top_topics, topic_pressure, topic_obs = extract_recent_topic_intelligence(db, top_n=5)
 
-                # 5ï¸âƒ£ Build global_features document
+                # 5Ã¯Â¸ÂÃ¢Æ’Â£ Build global_features document
                 operational_features = compute_global_operational_features(
                     current_risk_score=risk_score,
                     mode="online",
@@ -781,14 +788,14 @@ if __name__=="__main__":
                     }
                 }
 
-                # 6ï¸âƒ£ Upsert to global_features
+                # 6Ã¯Â¸ÂÃ¢Æ’Â£ Upsert to global_features
                 if mongo_safe_upsert(db.global_features, global_doc):
-                    log_event(f"Global_features updated from hourly_features âœ… {global_doc['timestamp']}")
+                    log_event(f"Global_features updated from hourly_features Ã¢Å“â€¦ {global_doc['timestamp']}")
                 else:
-                    log_event("âŒ Global_features upsert from hourly_features failed")
+                    log_event("Ã¢ÂÅ’ Global_features upsert from hourly_features failed")
                     continue
 
-                # 7ï¸âƒ£ Update dashboard with latest global features
+                # 7Ã¯Â¸ÂÃ¢Æ’Â£ Update dashboard with latest global features
                 update_dashboard(global_doc)
                 log_event("Dashboard updated with latest global_features")
 
@@ -834,11 +841,12 @@ if __name__=="__main__":
         while True:
             try:
                 run_ml_engine()
-                log_event("âœ… ML engine cycle completed")
+                log_event("Ã¢Å“â€¦ ML engine cycle completed")
             except Exception as e:
-                log_event(f"âŒ ML engine loop error: {e}")
+                log_event(f"Ã¢ÂÅ’ ML engine loop error: {e}")
             time.sleep(interval_sec)
 
     # Start ML engine thread so it runs periodically in background
     Thread(target=ml_engine_loop, daemon=True).start()
+
 

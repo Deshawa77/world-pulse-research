@@ -24,8 +24,18 @@ def normalize(value, min_val=-50, max_val=50):
 # Config
 # ----------------------------
 load_dotenv()
-API_KEY = os.getenv("WEATHER_API_KEY")
+def _resolve_weather_api_key():
+    return (
+        os.getenv("WEATHER_API_KEY")
+        or os.getenv("OPENWEATHER_KEY")
+        or os.getenv("OPENWEATHER_API_KEY")
+    )
+
+
+API_KEY = _resolve_weather_api_key()
 PROCESSED_CSV = "processed_weather.csv"
+_MISSING_KEY_WARNED = False
+_AUTH_FAIL_WARNED = False
 
 TOP_100_CITIES = [
     {"name": "New York", "lat": 40.7128, "lon": -74.0060},
@@ -136,6 +146,13 @@ TOP_100_CITIES = [
 # Fetch historical weather
 # ----------------------------
 def fetch_weather(city_name, lat, lon):
+    global _MISSING_KEY_WARNED, _AUTH_FAIL_WARNED
+    if not API_KEY:
+        if not _MISSING_KEY_WARNED:
+            print("Weather collector skipped: set WEATHER_API_KEY or OPENWEATHER_KEY in environment.")
+            _MISSING_KEY_WARNED = True
+        return []
+
     url = "https://api.openweathermap.org/data/2.5/weather"
     params = {
         "lat": lat,
@@ -147,7 +164,20 @@ def fetch_weather(city_name, lat, lon):
     try:
         response = requests.get(url, params=params, timeout=10)
         if response.status_code != 200:
-            print(f"Error {response.status_code} for city {city_name}")
+            detail = ""
+            try:
+                payload = response.json()
+                detail = str(payload.get("message") or "").strip()
+            except Exception:
+                detail = ""
+            if response.status_code == 401 and not _AUTH_FAIL_WARNED:
+                print("Weather collector unauthorized (401): verify your OpenWeather API key.")
+                _AUTH_FAIL_WARNED = True
+                # Stop repeated unauthorized calls for remaining cities in this run.
+                globals()["API_KEY"] = None
+            elif response.status_code != 401:
+                suffix = f" - {detail}" if detail else ""
+                print(f"Error {response.status_code} for city {city_name}{suffix}")
             return []
 
         data = response.json()

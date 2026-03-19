@@ -878,45 +878,6 @@ export default function TrendPrediction() {
     }];
   }, [visiblePredictionLogs, visibleHistoricalData, activePredictionData]);  // Render ML Prediction Chart
 
-  const dashboardAnalytics = useMemo(() => {
-    const predictionScores = mlSeries.map((point) => safeN(point.probabilityPct));
-    const stableCount = predictionScores.filter((score) => score < 35).length;
-    const guardedCount = predictionScores.filter((score) => score >= 35 && score < 60).length;
-    const elevatedCount = predictionScores.filter((score) => score >= 60).length;
-    const totalSignals = Math.max(1, stableCount + guardedCount + elevatedCount);
-    const stablePct = Math.round((stableCount / totalSignals) * 100);
-    const guardedPct = Math.round((guardedCount / totalSignals) * 100);
-    const elevatedPct = Math.max(0, 100 - stablePct - guardedPct);
-    const donutStyle = {
-      background: `conic-gradient(#1ec88b 0 ${stablePct}%, #ef4444 ${stablePct}% ${stablePct + elevatedPct}%, #94a3b8 ${stablePct + elevatedPct}% 100%)`,
-    };
-    const currentSentiment = safeN(activeSentimentForecast?.current_sentiment, 0);
-    const forecastBars = [
-      { label: "Current", score: Math.round((currentSentiment + 100) / 2) },
-      { label: "1H", score: Math.round((safeN(activeSentimentForecast?.forecast_1h, currentSentiment) + 100) / 2) },
-      { label: "6H", score: Math.round((safeN(activeSentimentForecast?.forecast_6h, currentSentiment) + 100) / 2) },
-      { label: "24H", score: Math.round((safeN(activeSentimentForecast?.forecast_24h, currentSentiment) + 100) / 2) },
-    ];
-    const driverChips = activeFeatureEntries
-      .filter((entry) => Math.abs(safeN(entry.value)) > 0)
-      .sort((a, b) => Math.abs(safeN(b.value)) - Math.abs(safeN(a.value)))
-      .slice(0, 3)
-      .map((entry) => entry.label);
-    return {
-      stablePct,
-      guardedPct,
-      elevatedPct,
-      donutStyle,
-      forecastBars,
-      trendLabel: pressureTrendUp ? "Volatile" : "Balanced",
-      momentumLabel: pressureTrendUp ? "Accelerating" : "Stable",
-      averageLoad: predictionScores.length
-        ? predictionScores.reduce((sum, value) => sum + value, 0) / predictionScores.length
-        : safeN(activePredictionData?.probability, 0.5) * 100,
-      driverChips,
-    };
-  }, [activeFeatureEntries, activePredictionData, activeSentimentForecast, mlSeries, pressureTrendUp]);
-
   useEffect(() => {
     if (!mlChartRef.current || !plotlyRef.current || !plotlyReady) return;
     if (!mlSeries.length) return;
@@ -932,59 +893,75 @@ export default function TrendPrediction() {
         type: "scatter",
         mode: "lines+markers",
         name: "Risk Prediction",
-        line: { color: "#22d3ee", width: 3, shape: "spline" },
-        marker: { size: 7, color: "#22d3ee", line: { color: "rgba(8, 15, 28, 0.95)", width: 2 } },
+        line: { color: "#2f8cff", width: 4, shape: "spline" },
+        marker: { size: 8, color: "#2f8cff", line: { color: "#0a1428", width: 2 } },
         fill: "tozeroy",
-        fillcolor: "rgba(34, 211, 238, 0.12)",
+        fillcolor: "rgba(47, 140, 255, 0.22)",
+        hovertemplate: "Risk: %{y:.2f}<extra></extra>",
       },
       {
         x: timestamps,
         y: probabilities,
         type: "scatter",
-        mode: "lines",
+        mode: "lines+markers",
         name: "Confidence %",
-        line: { color: "#fbbf24", width: 2, dash: "dot" },
+        line: { color: "rgba(173, 189, 214, 0.72)", width: 3, dash: "dot", shape: "spline" },
+        marker: { size: 6, color: "rgba(173, 189, 214, 0.9)" },
         yaxis: "y2",
+        hovertemplate: "Confidence: %{y:.1f}%<extra></extra>",
       },
     ];
 
     const layout = {
       title: {
         text: "ML Risk Predictions Over Time",
-        font: { color: "#e7efff", size: 16 },
+        font: { color: "#eaf3ff", size: 16 },
       },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
-      font: { color: "#9fb0cf" },
+      font: { color: "#d6e4ff" },
+      hovermode: "x unified",
+      hoverlabel: {
+        bgcolor: "rgba(10, 25, 46, 0.96)",
+        bordercolor: "rgba(125, 211, 252, 0.55)",
+        font: { color: "#eaf3ff", size: 12 },
+      },
       xaxis: {
-        gridcolor: "rgba(148, 163, 184, 0.14)",
-        tickfont: { color: "#9fb0cf" },
+        gridcolor: "rgba(148, 163, 184, 0.16)",
+        tickfont: { color: "#d6e4ff", size: 12 },
+        linecolor: "rgba(148, 163, 184, 0.28)",
+        tickcolor: "rgba(148, 163, 184, 0.28)",
         zeroline: false,
       },
       yaxis: {
         title: "Risk Level (0-1)",
-        gridcolor: "rgba(148, 163, 184, 0.14)",
-        tickfont: { color: "#9fb0cf" },
+        titlefont: { color: "#c4d7ff" },
+        gridcolor: "rgba(148, 163, 184, 0.16)",
+        tickfont: { color: "#d6e4ff", size: 12 },
+        linecolor: "rgba(148, 163, 184, 0.28)",
+        tickcolor: "rgba(148, 163, 184, 0.28)",
         zeroline: false,
         range: [0, 1],
       },
       yaxis2: {
         title: "Confidence %",
+        titlefont: { color: "#fbbf24" },
         overlaying: "y",
         side: "right",
         range: [0, 100],
-        tickfont: { color: "#fbbf24" },
+        tickfont: { color: "#d7e3f5", size: 12 },
+        showgrid: false,
       },
       legend: {
-        font: { color: "#9fb0cf" },
+        font: { color: "#d6e4ff" },
         x: 0.02,
-        y: 1.1,
+        y: 1.12,
         orientation: "h",
-        bgcolor: "rgba(7, 12, 22, 0.82)",
-        bordercolor: "rgba(56, 189, 248, 0.16)",
+        bgcolor: "rgba(12, 31, 56, 0.74)",
+        bordercolor: "rgba(96, 165, 250, 0.35)",
         borderwidth: 1,
       },
-      margin: { t: 50, r: 60, b: 40, l: 60 },
+      margin: { t: 56, r: 66, b: 56, l: 70 },
     };
 
     plotlyRef.current.react(mlChartRef.current, data, layout, {
@@ -1004,44 +981,62 @@ export default function TrendPrediction() {
     const forecast24h = safeN(activeSentimentForecast.forecast_24h);
     const confidencePct = safeN(activeSentimentForecast.confidence) * 100;
 
+    const sentimentX = ["Current", "1h Forecast", "6h Forecast", "24h Forecast"];
+    const sentimentY = [currentSentiment, forecast1h, forecast6h, forecast24h];
     const forecastData = [
       {
-        x: ["Current", "1h Forecast", "6h Forecast", "24h Forecast"],
-        y: [currentSentiment, forecast1h, forecast6h, forecast24h],
-        type: "bar",
-        marker: { color: ["#22d3ee", "#38bdf8", "#7dd3fc", "#fbbf24"] },
-        text: [
-          currentSentiment.toFixed(1),
-          forecast1h.toFixed(1),
-          forecast6h.toFixed(1),
-          forecast24h.toFixed(1),
-        ],
-        textposition: "outside",
-        textfont: { color: "#e7efff" },
+        x: sentimentX,
+        y: sentimentY,
+        type: "scatter",
+        mode: "lines+markers+text",
+        name: "Sentiment Path",
+        line: { color: "#7c9bff", width: 4, shape: "spline" },
+        marker: {
+          size: 9,
+          color: ["#2ad1f5", "#3fa1ff", "#7c9bff", "#b084ff"],
+          line: { color: "#0a1428", width: 2 },
+        },
+        fill: "tozeroy",
+        fillcolor: "rgba(124, 155, 255, 0.16)",
+        text: sentimentY.map((v) => v.toFixed(1)),
+        textposition: "top center",
+        textfont: { color: "#edf3ff", size: 12 },
+        hovertemplate: "Sentiment: %{y:.2f}<extra></extra>",
       },
     ];
 
     const layout = {
       title: {
         text: `Sentiment Forecast (Confidence: ${confidencePct.toFixed(0)}%)`,
-        font: { color: "#e7efff", size: 16 },
+        font: { color: "#eaf3ff", size: 16 },
       },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
-      font: { color: "#9fb0cf" },
+      font: { color: "#d6e4ff" },
+      hovermode: "x unified",
+      hoverlabel: {
+        bgcolor: "rgba(10, 25, 46, 0.96)",
+        bordercolor: "rgba(125, 211, 252, 0.55)",
+        font: { color: "#eaf3ff", size: 12 },
+      },
       xaxis: {
         gridcolor: "rgba(148, 163, 184, 0.14)",
-        tickfont: { color: "#9fb0cf" },
+        tickfont: { color: "#d6e4ff", size: 12 },
+        linecolor: "rgba(148, 163, 184, 0.28)",
+        tickcolor: "rgba(148, 163, 184, 0.28)",
         zeroline: false,
       },
       yaxis: {
         title: "Sentiment Score",
-        gridcolor: "rgba(148, 163, 184, 0.14)",
-        tickfont: { color: "#9fb0cf" },
+        titlefont: { color: "#c4d7ff" },
+        gridcolor: "rgba(148, 163, 184, 0.16)",
+        tickfont: { color: "#d6e4ff", size: 12 },
+        linecolor: "rgba(148, 163, 184, 0.28)",
+        tickcolor: "rgba(148, 163, 184, 0.28)",
         zeroline: false,
         range: [-100, 100],
       },
-      margin: { t: 60, r: 30, b: 40, l: 60 },
+      margin: { t: 62, r: 42, b: 56, l: 70 },
     };
 
     plotlyRef.current.react(sentimentChartRef.current, forecastData, layout, {
@@ -1065,10 +1060,15 @@ export default function TrendPrediction() {
       {
         x: labels,
         y: sentimentImpacts,
-        type: "bar",
+        type: "scatter",
+        mode: "lines+markers",
         name: "Sentiment Impact",
-        marker: { color: "rgba(34, 211, 238, 0.82)" },
+        marker: { color: "#2ad1f5", size: 8, line: { color: "#0a1428", width: 2 } },
+        line: { color: "#2ad1f5", width: 3, shape: "spline" },
+        fill: "tozeroy",
+        fillcolor: "rgba(42, 209, 245, 0.14)",
         yaxis: "y",
+        hovertemplate: "Impact: %{y:.2f}<extra></extra>",
       },
       {
         x: labels,
@@ -1076,9 +1076,10 @@ export default function TrendPrediction() {
         type: "scatter",
         mode: "lines+markers",
         name: "Crypto Reaction %",
-        marker: { color: "#38bdf8", size: 7, line: { color: "rgba(8, 15, 28, 0.95)", width: 2 } },
-        line: { color: "#38bdf8", width: 2 },
+        marker: { color: "#7dd3fc", size: 8, line: { color: "#0b1730", width: 2 } },
+        line: { color: "#7dd3fc", width: 3 },
         yaxis: "y2",
+        hovertemplate: "Crypto: %{y:.2f}%<extra></extra>",
       },
       {
         x: labels,
@@ -1086,63 +1087,63 @@ export default function TrendPrediction() {
         type: "scatter",
         mode: "lines+markers",
         name: "Stock Reaction %",
-        marker: { color: "#fbbf24", size: 7, line: { color: "rgba(8, 15, 28, 0.95)", width: 2 } },
-        line: { color: "#fbbf24", width: 2 },
-        yaxis: "y3",
+        marker: { color: "#fbbf24", size: 8, line: { color: "#0b1730", width: 2 } },
+        line: { color: "#fbbf24", width: 3 },
+        yaxis: "y2",
+        hovertemplate: "Stock: %{y:.2f}%<extra></extra>",
       },
     ];
 
     const layout = {
       title: {
         text: "Market Reaction to Events",
-        font: { color: "#e7efff", size: 16 },
+        font: { color: "#eaf3ff", size: 16 },
       },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
-      font: { color: "#9fb0cf" },
-      barmode: "group",
+      font: { color: "#d6e4ff" },
+      hovermode: "x unified",
+      hoverlabel: {
+        bgcolor: "rgba(10, 25, 46, 0.96)",
+        bordercolor: "rgba(125, 211, 252, 0.55)",
+        font: { color: "#eaf3ff", size: 12 },
+      },
       xaxis: {
         gridcolor: "rgba(148, 163, 184, 0.14)",
-        tickfont: { color: "#9fb0cf" },
+        tickfont: { color: "#d6e4ff", size: 12 },
+        linecolor: "rgba(148, 163, 184, 0.28)",
+        tickcolor: "rgba(148, 163, 184, 0.28)",
         zeroline: false,
         tickangle: -30,
       },
       yaxis: {
         title: "Sentiment Impact",
-        gridcolor: "rgba(148, 163, 184, 0.14)",
-        tickfont: { color: "#9fb0cf" },
+        titlefont: { color: "#c4d7ff" },
+        gridcolor: "rgba(148, 163, 184, 0.16)",
+        tickfont: { color: "#d6e4ff", size: 12 },
+        linecolor: "rgba(148, 163, 184, 0.28)",
+        tickcolor: "rgba(148, 163, 184, 0.28)",
         zeroline: false,
       },
       yaxis2: {
-        title: "Crypto Reaction %",
+        title: "Market Reaction %",
+        titlefont: { color: "#93c5fd" },
         overlaying: "y",
         side: "right",
-        anchor: "free",
-        position: 0.92,
         showgrid: false,
         zeroline: false,
-        tickfont: { color: "#38bdf8" },
-      },
-      yaxis3: {
-        title: "Stock Reaction %",
-        overlaying: "y",
-        side: "right",
-        anchor: "free",
-        position: 1.0,
-        showgrid: false,
-        zeroline: false,
-        tickfont: { color: "#fbbf24" },
+        tickfont: { color: "#d7e3f5", size: 12 },
       },
       legend: {
-        font: { color: "#9fb0cf" },
+        font: { color: "#d6e4ff" },
         x: 0.02,
         y: 1.1,
         orientation: "h",
-        bgcolor: "rgba(7, 12, 22, 0.82)",
-        bordercolor: "rgba(56, 189, 248, 0.16)",
+        bgcolor: "rgba(12, 31, 56, 0.74)",
+        bordercolor: "rgba(96, 165, 250, 0.35)",
         borderwidth: 1,
       },
-      margin: { t: 50, r: 100, b: 90, l: 60 },
+      margin: { t: 56, r: 80, b: 96, l: 70 },
     };
 
     plotlyRef.current.react(marketChartRef.current, data, layout, {
@@ -1383,7 +1384,6 @@ export default function TrendPrediction() {
         subtitle="ML-Powered Risk Forecasting and market intelligence."
         sectionTabs={[
           { label: "Summary", targetId: "prediction-summary" },
-          { label: "Overview", targetId: "prediction-overview" },
           { label: "Deep Intel", targetId: "prediction-deep-intel" },
           { label: "Prediction History", targetId: "prediction-history" },
           { label: "Signals", targetId: "prediction-signals" },
@@ -1450,82 +1450,6 @@ export default function TrendPrediction() {
           )}
         </article>
       </section>
-
-      <section id="prediction-overview" className="operational-analytics-grid">
-        <article className="wp-card panel-frame operational-panel analytics-hero-panel">
-          <div className="panel-head analytics-panel-head analytics-panel-head-wide">
-            <div>
-              <div className="analytics-kicker">Prediction Analytics</div>
-              <h3>Forecast Intelligence Overview</h3>
-            </div>
-            <span className="analytics-pill">Live model view</span>
-          </div>
-          <div className="panel-content operational-panel-content">
-            <div className="analytics-hero-grid">
-              <section className="analytics-visual-card">
-                <div className="analytics-card-title">Prediction Distribution</div>
-                <div className="analytics-donut-stage">
-                  <div className="analytics-donut" style={dashboardAnalytics.donutStyle}>
-                    <div className="analytics-donut-core">
-                      <strong>{(safeN(activePredictionData?.probability, 0.5) * 100).toFixed(0)}</strong>
-                      <span>Risk</span>
-                    </div>
-                  </div>
-                  <div className="analytics-donut-legend">
-                    <span><i className="tone-positive" />Stable {dashboardAnalytics.stablePct}%</span>
-                    <span><i className="tone-negative" />Elevated {dashboardAnalytics.elevatedPct}%</span>
-                    <span><i className="tone-neutral" />Guarded {dashboardAnalytics.guardedPct}%</span>
-                  </div>
-                </div>
-              </section>
-
-              <section className="analytics-visual-card">
-                <div className="analytics-card-title">Forecast Horizon Impact</div>
-                <div className="analytics-bar-chart">
-                  {dashboardAnalytics.forecastBars.map((bar) => (
-                    <div key={bar.label} className="analytics-bar-group">
-                      <div className="analytics-bar-track">
-                        <div className="analytics-bar-fill" style={{ height: `${Math.max(bar.score, 6)}%` }} />
-                      </div>
-                      <strong>{bar.label}</strong>
-                      <span>{bar.score}</span>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </div>
-
-            <div className="analytics-summary-strip">
-              <div className="analytics-summary-item">
-                <span>Top Driver</span>
-                <strong>{topRiskDriver}</strong>
-              </div>
-              <div className="analytics-summary-item">
-                <span>Trend Stability</span>
-                <strong>{dashboardAnalytics.trendLabel}</strong>
-              </div>
-              <div className="analytics-summary-item">
-                <span>Forward Momentum</span>
-                <strong>{dashboardAnalytics.momentumLabel}</strong>
-              </div>
-              <div className="analytics-summary-item">
-                <span>Average Load</span>
-                <strong>{dashboardAnalytics.averageLoad.toFixed(1)} / 100</strong>
-              </div>
-            </div>
-
-            <div className="analytics-driver-strip">
-              <span>Driver Attribution</span>
-              <div className="brain-telemetry-chip-list">
-                {dashboardAnalytics.driverChips.map((driver) => (
-                  <span key={driver} className="brain-telemetry-chip">{driver}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-        </article>
-      </section>
-
 
       <section id="prediction-deep-intel" className="prediction-deep-intel">
         <div className="prediction-deep-intel-grid">

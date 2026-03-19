@@ -22,6 +22,9 @@ import {
 import { getCountryWeatherByCoords, type CountryWeatherSnapshot } from "../services/weather";
 import { formatDisplayScore } from "../utils/scoreFormatting";
 
+const ENABLE_COUNTRY_MAP_WS = String(import.meta.env.VITE_ENABLE_COUNTRY_MAP_WS ?? "true").toLowerCase() !== "false";
+const ENABLE_RISK_WS = String(import.meta.env.VITE_ENABLE_RISK_WS ?? "true").toLowerCase() !== "false";
+
 const CountryDrilldown = lazy(() => import("../components/CountryDrilldown"));
 const BrainModelViewer = lazy(() => import("../components/BrainModelViewer"));
 const GlobalIntelligenceFeed = lazy(() => import("../components/GlobalIntelligenceFeed"));
@@ -76,6 +79,24 @@ type Snapshot = {
   forecastHorizonHours: number;
   features: Record<string, number>;
   topics: string[];
+};
+
+type LiveRiskWsPayload = {
+  type?: string;
+  timestamp?: string;
+  global_risk_score?: number;
+  global_mood_score?: number;
+  global_mood_confidence?: number;
+  global_mood_uncertainty?: number;
+  global_mood_verified_countries?: number;
+  global_mood_eligible_countries?: number;
+  global_mood_used_countries?: number;
+  global_mood_excluded_countries?: number;
+  forecast_risk_score?: number;
+  forecast_risk_delta?: number;
+  forecast_confidence?: number;
+  forecast_horizon_hours?: number;
+  top_topics?: string[];
 };
 
 type ConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
@@ -847,20 +868,90 @@ export default function Dashboard() {
   }, [showDeferredPanels, selectedCountry, selectedCountryNews.length, recentSocketUpdates.length, history.length]);
 
   useEffect(() => {
+    if (!ENABLE_COUNTRY_MAP_WS) {
+      return () => {};
+    }
+
+    const WS_DISABLE_UNTIL_KEY = "wp_country_risk_ws_disable_until";
     let socket: WebSocket | null = null;
     let connectTimer = 0;
     let retryTimer = 0;
     let closed = false;
+    let retryCount = 0;
+    let wsDisabled = false;
+    let wsErrorNotified = false;
+
+    const MAX_WS_RETRIES = 2;
+    const BASE_RETRY_MS = 1500;
+    const MAX_RETRY_MS = 30000;
+    const WS_DISABLE_MS = 10 * 60 * 1000;
+
+    const shouldSkipWs = () => {
+      try {
+        const untilRaw = window.sessionStorage.getItem(WS_DISABLE_UNTIL_KEY);
+        const until = Number(untilRaw || 0);
+        return Number.isFinite(until) && until > Date.now();
+      } catch {
+        return false;
+      }
+    };
+
+    const disableWsTemporarily = () => {
+      wsDisabled = true;
+      setConnectionState("disconnected");
+      if (!wsErrorNotified) {
+        wsErrorNotified = true;
+        setErrorText(
+          "Live websocket unavailable. Running on HTTP polling until backend websocket is reachable."
+        );
+      }
+      try {
+        window.sessionStorage.setItem(
+          WS_DISABLE_UNTIL_KEY,
+          String(Date.now() + WS_DISABLE_MS)
+        );
+      } catch {
+        // ignore storage errors
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (closed || wsDisabled) return;
+      if (shouldSkipWs()) {
+        disableWsTemporarily();
+        return;
+      }
+
+      retryCount += 1;
+      if (retryCount > MAX_WS_RETRIES) {
+        disableWsTemporarily();
+        return;
+      }
+
+      const backoff = Math.min(MAX_RETRY_MS, BASE_RETRY_MS * 2 ** (retryCount - 1));
+      const jitter = Math.floor(Math.random() * 400);
+      retryTimer = window.setTimeout(connect, backoff + jitter);
+    };
 
     const connect = () => {
-      if (closed) return;
+      if (closed || wsDisabled) return;
       try {
         const wsUrl = buildWebSocketAuthUrl("/ws/country-risk-map");
         socket = new WebSocket(wsUrl);
       } catch {
-        retryTimer = window.setTimeout(connect, 3000);
+        scheduleReconnect();
         return;
       }
+
+      socket.onopen = () => {
+        retryCount = 0;
+        wsErrorNotified = false;
+        try {
+          window.sessionStorage.removeItem(WS_DISABLE_UNTIL_KEY);
+        } catch {
+          // ignore storage errors
+        }
+      };
 
       socket.onmessage = (event) => {
         try {
@@ -874,11 +965,18 @@ export default function Dashboard() {
 
       socket.onclose = () => {
         if (closed) return;
-        retryTimer = window.setTimeout(connect, 3000);
+        scheduleReconnect();
       };
 
       socket.onerror = () => {
-        // Let the browser/socket lifecycle handle failed connection attempts.
+        // Browser often emits repeated error events when WS endpoint returns HTTP 404.
+        // Disable WS temporarily and rely on HTTP polling fallback.
+        disableWsTemporarily();
+        try {
+          socket?.close();
+        } catch {
+          // ignore close errors
+        }
       };
     };
 
@@ -895,6 +993,173 @@ export default function Dashboard() {
       }
       pendingRiskMapUpdatesRef.current.clear();
       try { socket?.close(); } catch {}
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!ENABLE_RISK_WS) {
+      return () => {};
+    }
+
+    let socket: WebSocket | null = null;
+    let closed = false;
+    let retryTimer = 0;
+    let retriesLocal = 0;
+    const BASE_RETRY_MS = 1200;
+    const MAX_RETRY_MS = 15000;
+    const MAX_RETRIES = 3;
+    const WS_DISABLE_UNTIL_KEY = "wp_risk_ws_disable_until";
+    const WS_DISABLE_MS = 10 * 60 * 1000;
+    let wsDisabled = false;
+
+    const shouldSkipWs = () => {
+      try {
+        const untilRaw = window.sessionStorage.getItem(WS_DISABLE_UNTIL_KEY);
+        const until = Number(untilRaw || 0);
+        return Number.isFinite(until) && until > Date.now();
+      } catch {
+        return false;
+      }
+    };
+
+    const disableWsTemporarily = (reason: string) => {
+      wsDisabled = true;
+      setConnectionState("disconnected");
+      setErrorText(reason);
+      try {
+        window.sessionStorage.setItem(WS_DISABLE_UNTIL_KEY, String(Date.now() + WS_DISABLE_MS));
+      } catch {
+        // ignore storage errors
+      }
+    };
+
+    const connect = () => {
+      if (closed || wsDisabled) return;
+      if (shouldSkipWs()) {
+        disableWsTemporarily("Risk websocket temporarily disabled after repeated auth/network failures. Using HTTP polling.");
+        return;
+      }
+      try {
+        socket = new WebSocket(buildWebSocketAuthUrl("/ws/risk"));
+      } catch {
+        const backoff = Math.min(MAX_RETRY_MS, BASE_RETRY_MS * 2 ** retriesLocal);
+        retriesLocal += 1;
+        retryTimer = window.setTimeout(connect, backoff);
+        return;
+      }
+
+      socket.onopen = () => {
+        retriesLocal = 0;
+        setErrorText((current) =>
+          current.includes("Risk websocket temporarily disabled") ? "" : current
+        );
+        try {
+          window.sessionStorage.removeItem(WS_DISABLE_UNTIL_KEY);
+        } catch {
+          // ignore storage errors
+        }
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data) as LiveRiskWsPayload;
+          if (!msg || (msg.type !== "risk_update" && msg.type !== "risk_keepalive")) return;
+          if (msg.type === "risk_keepalive") return;
+
+          setHistory((prev) => {
+            const last = prev[prev.length - 1];
+            const timestamp = typeof msg.timestamp === "string" && msg.timestamp ? msg.timestamp : new Date().toISOString();
+            const base = last ?? ({
+              timestamp,
+              riskScore: 50,
+              moodScore: 50,
+              moodConfidence: 0,
+              moodUncertainty: 18,
+              moodVerifiedCountries: 0,
+              moodEligibleCountries: 0,
+              moodUsedCountries: 0,
+              moodExcludedCountries: 0,
+              forecastRiskScore: 50,
+              forecastRiskDelta: 0,
+              forecastConfidence: 0.35,
+              forecastHorizonHours: 24,
+              features: {
+                news_sentiment: 0,
+                gdelt_sentiment: 0,
+                crypto_return: 0,
+                crypto_volatility: 0,
+                stock_return: 0,
+                stock_volatility: 0,
+                weather_anomaly: 0,
+              },
+              topics: ["no data"],
+            } as Snapshot);
+
+            const next: Snapshot = {
+              ...base,
+              timestamp,
+              riskScore: normalizeRisk(safeN(msg.global_risk_score, base.riskScore)),
+              moodScore: normalizeRisk(safeN(msg.global_mood_score, base.moodScore)),
+              moodConfidence: Math.max(0, Math.min(1, safeN(msg.global_mood_confidence, base.moodConfidence))),
+              moodUncertainty: Math.max(0, safeN(msg.global_mood_uncertainty, base.moodUncertainty)),
+              moodVerifiedCountries: Math.max(0, Math.round(safeN(msg.global_mood_verified_countries, base.moodVerifiedCountries))),
+              moodEligibleCountries: Math.max(0, Math.round(safeN(msg.global_mood_eligible_countries, base.moodEligibleCountries))),
+              moodUsedCountries: Math.max(0, Math.round(safeN(msg.global_mood_used_countries, base.moodUsedCountries))),
+              moodExcludedCountries: Math.max(0, Math.round(safeN(msg.global_mood_excluded_countries, base.moodExcludedCountries))),
+              forecastRiskScore: normalizeRisk(safeN(msg.forecast_risk_score, base.forecastRiskScore)),
+              forecastRiskDelta: safeN(msg.forecast_risk_delta, base.forecastRiskDelta),
+              forecastConfidence: Math.max(0, Math.min(1, safeN(msg.forecast_confidence, base.forecastConfidence))),
+              forecastHorizonHours: Math.max(1, Math.round(safeN(msg.forecast_horizon_hours, base.forecastHorizonHours))),
+              topics: Array.isArray(msg.top_topics) && msg.top_topics.length ? msg.top_topics.map((item) => String(item)) : base.topics,
+            };
+
+            if (last?.timestamp === next.timestamp) {
+              const replace = [...prev];
+              replace[replace.length - 1] = next;
+              return replace;
+            }
+            return [...prev, next].slice(-MAX_HISTORY);
+          });
+          panelUpdated.current.risk = Date.now();
+          setConnectionState((state) => (state === "disconnected" ? "reconnecting" : state));
+        } catch {
+          // ignore malformed payloads
+        }
+      };
+
+      socket.onclose = (event) => {
+        if (closed) return;
+        if (event.code === 1008 || event.code === 4401 || event.code === 4403) {
+          disableWsTemporarily("Risk websocket authentication failed. Please log in again.");
+          return;
+        }
+        if (retriesLocal >= MAX_RETRIES) {
+          disableWsTemporarily("Risk websocket unavailable. Using HTTP polling.");
+          return;
+        }
+        const backoff = Math.min(MAX_RETRY_MS, BASE_RETRY_MS * 2 ** retriesLocal);
+        retriesLocal += 1;
+        retryTimer = window.setTimeout(connect, backoff);
+      };
+
+      socket.onerror = () => {
+        try {
+          socket?.close();
+        } catch {
+          // ignore close errors
+        }
+      };
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      window.clearTimeout(retryTimer);
+      try {
+        socket?.close();
+      } catch {
+        // ignore close errors
+      }
     };
   }, []);
 
@@ -918,13 +1183,46 @@ export default function Dashboard() {
         if (stopped || !mapRef.current) return;
         const selectedRiskRow = riskMapRows.find((row) => row.country === selectedCountry) ?? null;
         const selectedRiskValue = normalizeRisk(selectedRiskRow?.risk ?? 0);
+        const regionNames =
+          typeof Intl !== "undefined" && typeof Intl.DisplayNames !== "undefined"
+            ? new Intl.DisplayNames(["en"], { type: "region" })
+            : null;
+        const resolveLocation = (countryCode: string): { locationmode: "ISO-3" | "country names"; location: string } | null => {
+          const code = String(countryCode || "").trim().toUpperCase();
+          if (!code) return null;
+          if (code.length === 3) {
+            return { locationmode: "ISO-3", location: code };
+          }
+          if (code.length === 2 && regionNames) {
+            const resolved = regionNames.of(code);
+            if (resolved) return { locationmode: "country names", location: resolved };
+          }
+          return { locationmode: "country names", location: code };
+        };
+        const splitRowsByLocationMode = (rows: RiskMapPoint[]) => {
+          const iso3: Array<{ row: RiskMapPoint; location: string }> = [];
+          const countryNames: Array<{ row: RiskMapPoint; location: string }> = [];
+          rows.forEach((row) => {
+            const resolved = resolveLocation(row.country);
+            if (!resolved) return;
+            if (resolved.locationmode === "ISO-3") {
+              iso3.push({ row, location: resolved.location });
+            } else {
+              countryNames.push({ row, location: resolved.location });
+            }
+          });
+          return { iso3, countryNames };
+        };
+        const selectedResolved = selectedCountry ? resolveLocation(selectedCountry) : null;
+        const verifiedSplit = splitRowsByLocationMode(verifiedRiskMap);
+        const unverifiedSplit = splitRowsByLocationMode(unverifiedRiskMap);
 
         const traces = selectedCountry
           ? [
               {
                 type: "choropleth",
-                locationmode: "ISO-3",
-                locations: [selectedCountry],
+                locationmode: selectedResolved?.locationmode ?? "ISO-3",
+                locations: [selectedResolved?.location ?? selectedCountry],
                 z: [selectedRiskValue],
                 zmin: 0,
                 zmax: 100,
@@ -938,6 +1236,7 @@ export default function Dashboard() {
                 marker: {
                   line: { color: "#ff2d55", width: 2.6 },
                 },
+                customdata: [[selectedCountry, selectedRiskRow?.data_quality ?? "selected"]],
                 showscale: false,
               },
             ] as any
@@ -946,23 +1245,38 @@ export default function Dashboard() {
                 {
                   type: "choropleth",
                   locationmode: "ISO-3",
-                  locations: unverifiedRiskMap.map((r) => r.country),
-                  z: unverifiedRiskMap.map(() => 1),
+                  locations: unverifiedSplit.iso3.map((r) => r.location),
+                  z: unverifiedSplit.iso3.map(() => 1),
                   zmin: 0,
                   zmax: 1,
                   colorscale: [
                     [0, "#334155"],
                     [1, "#64748b"],
                   ],
-                  customdata: unverifiedRiskMap.map((r) => [r.data_quality ?? "unknown"]),
-                  hovertemplate: "%{location}<br>Status: %{customdata[0]}<br>No verified same-day risk yet<extra></extra>",
+                  customdata: unverifiedSplit.iso3.map((r) => [r.row.country, r.row.data_quality ?? "unknown"]),
+                  hovertemplate: "%{customdata[0]}<br>Status: %{customdata[1]}<br>No verified same-day risk yet<extra></extra>",
+                  showscale: false,
+                },
+                {
+                  type: "choropleth",
+                  locationmode: "country names",
+                  locations: unverifiedSplit.countryNames.map((r) => r.location),
+                  z: unverifiedSplit.countryNames.map(() => 1),
+                  zmin: 0,
+                  zmax: 1,
+                  colorscale: [
+                    [0, "#334155"],
+                    [1, "#64748b"],
+                  ],
+                  customdata: unverifiedSplit.countryNames.map((r) => [r.row.country, r.row.data_quality ?? "unknown"]),
+                  hovertemplate: "%{customdata[0]}<br>Status: %{customdata[1]}<br>No verified same-day risk yet<extra></extra>",
                   showscale: false,
                 },
                 {
                   type: "choropleth",
                   locationmode: "ISO-3",
-                  locations: verifiedRiskMap.map((r) => r.country),
-                  z: verifiedRiskMap.map((r) => normalizeRisk(r.risk ?? 0)),
+                  locations: verifiedSplit.iso3.map((r) => r.location),
+                  z: verifiedSplit.iso3.map((r) => normalizeRisk(r.row.risk ?? 0)),
                   zmin: 0,
                   zmax: 100,
                   colorscale: [
@@ -971,8 +1285,25 @@ export default function Dashboard() {
                     [0.7, "#fb923c"],
                     [1, "#ef4444"],
                   ],
-                  customdata: verifiedRiskMap.map((r) => [r.data_quality ?? "verified"]),
-                  hovertemplate: "%{location}<br>Risk: %{z:.1f}<br>Status: %{customdata[0]}<extra></extra>",
+                  customdata: verifiedSplit.iso3.map((r) => [r.row.country, r.row.data_quality ?? "verified"]),
+                  hovertemplate: "%{customdata[0]}<br>Risk: %{z:.1f}<br>Status: %{customdata[1]}<extra></extra>",
+                  showscale: false,
+                },
+                {
+                  type: "choropleth",
+                  locationmode: "country names",
+                  locations: verifiedSplit.countryNames.map((r) => r.location),
+                  z: verifiedSplit.countryNames.map((r) => normalizeRisk(r.row.risk ?? 0)),
+                  zmin: 0,
+                  zmax: 100,
+                  colorscale: [
+                    [0, "#22c55e"],
+                    [0.4, "#facc15"],
+                    [0.7, "#fb923c"],
+                    [1, "#ef4444"],
+                  ],
+                  customdata: verifiedSplit.countryNames.map((r) => [r.row.country, r.row.data_quality ?? "verified"]),
+                  hovertemplate: "%{customdata[0]}<br>Risk: %{z:.1f}<br>Status: %{customdata[1]}<extra></extra>",
                   showscale: false,
                 },
               ] as any
@@ -989,8 +1320,8 @@ export default function Dashboard() {
         if (selectedCountry) {
           traces.push({
             type: "choropleth",
-            locationmode: "ISO-3",
-            locations: [selectedCountry],
+            locationmode: selectedResolved?.locationmode ?? "ISO-3",
+            locations: [selectedResolved?.location ?? selectedCountry],
             z: [1],
             zmin: 0,
             zmax: 1,
@@ -1001,7 +1332,8 @@ export default function Dashboard() {
             marker: {
               line: { color: "#ff2d55", width: 2.6 },
             },
-            hovertemplate: "%{location}<br>Selected country focus<extra></extra>",
+            customdata: [[selectedCountry]],
+            hovertemplate: "%{customdata[0]}<br>Selected country focus<extra></extra>",
             showscale: false,
           });
         }
@@ -1016,8 +1348,8 @@ export default function Dashboard() {
                   lat: mapBeaconPoints.map((point) => point.lat),
                 }
               : {
-                  locationmode: "ISO-3",
-                  locations: mapBeaconPoints.map(() => selectedCountry),
+                  locationmode: selectedResolved?.locationmode ?? "ISO-3",
+                  locations: mapBeaconPoints.map(() => selectedResolved?.location ?? selectedCountry),
                 }),
             text: mapBeaconPoints.map((point) => `${point.headline}<br>${point.source}`),
             hovertemplate: "<b>News Beacon</b><br>%{text}<extra></extra>",
@@ -1037,8 +1369,8 @@ export default function Dashboard() {
                   lat: mapBeaconPoints.map((point) => point.lat),
                 }
               : {
-                  locationmode: "ISO-3",
-                  locations: mapBeaconPoints.map(() => selectedCountry),
+                  locationmode: selectedResolved?.locationmode ?? "ISO-3",
+                  locations: mapBeaconPoints.map(() => selectedResolved?.location ?? selectedCountry),
                 }),
             text: mapBeaconPoints.map((point) => `${point.headline}<br>${point.source}`),
             hovertemplate: "<b>News Beacon</b><br>%{text}<extra></extra>",
@@ -1103,13 +1435,14 @@ export default function Dashboard() {
 
             const p = e?.points?.[0];
             if (!p) return;
-            const quality = String(p.customdata?.[0] ?? "unknown");
-            setMapHover({ country: String(p.location), risk: Number(p.z), quality });
+            const countryCode = String(p.customdata?.[0] ?? p.location);
+            const quality = String(p.customdata?.[1] ?? "unknown");
+            setMapHover({ country: countryCode, risk: Number(p.z), quality });
           });
           (mapRef.current as any).on?.("plotly_click", (e: any) => {
             const p = e?.points?.[0];
-            if (!p?.location) return;
-            const country = String(p.location);
+            if (!p?.location && !p?.customdata?.[0]) return;
+            const country = String(p.customdata?.[0] ?? p.location);
             setSelectedCountry(country);
             const lat = Number(p.lat);
             const lon = Number(p.lon);

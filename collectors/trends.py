@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import time
 import random
 import json
+import os
 import requests
 from database.mongo import insert
 from backend.kafka_client import send_to_kafka  # Make sure this exists
@@ -76,8 +77,17 @@ def _extract_iso3_to_iso2_map():
 
 
 def _catalog_trend_regions(default_regions=None):
-    """Build Trends region list from country catalog (up to full map), fallback to defaults."""
+    """
+    Build Trends region list.
+    By default this stays conservative (known working fallback regions) because
+    Google Trending RSS does not support every ISO region code.
+    Set TRENDS_EXPAND_REGIONS=1 to include the full country-catalog expansion.
+    """
     fallback = list(default_regions or [])
+    expand = str(os.getenv("TRENDS_EXPAND_REGIONS", "")).strip().lower() in {"1", "true", "yes", "on"}
+    if not expand:
+        return fallback
+
     try:
         from processing.country_catalog import COUNTRY_NAMES
 
@@ -167,6 +177,7 @@ def fetch_trending_search_queries(regions=None, max_terms_per_region=25, max_ret
     effective_max_retries = 1 if len(regions) >= 120 else max_retries
     request_timeout = 8 if len(regions) >= 120 else 20
 
+    unsupported_regions = set()
     for raw_region in regions:
         region_code = str(raw_region or "").strip().upper()
         if not region_code:
@@ -180,7 +191,13 @@ def fetch_trending_search_queries(regions=None, max_terms_per_region=25, max_ret
                 response = requests.get(url, timeout=request_timeout)
                 if response.status_code != 200:
                     if attempt == effective_max_retries - 1:
-                        print(f"[trending_rss {region_code}] HTTP {response.status_code}")
+                        if response.status_code == 400:
+                            unsupported_regions.add(region_code)
+                        else:
+                            print(f"[trending_rss {region_code}] HTTP {response.status_code}")
+                    # 400 is usually an unsupported region code; retrying won't help.
+                    if response.status_code == 400:
+                        break
                     time.sleep(random.uniform(1.5, 3.5))
                     continue
                 xml_text = response.text
@@ -256,6 +273,11 @@ def fetch_trending_search_queries(regions=None, max_terms_per_region=25, max_ret
             except Exception as kafka_exc:
                 print(f"Error sending live trend record to Kafka: {kafka_exc}")
 
+    if unsupported_regions:
+        preview = ", ".join(sorted(list(unsupported_regions))[:12])
+        suffix = "..." if len(unsupported_regions) > 12 else ""
+        print(f"[trending_rss] skipped unsupported regions ({len(unsupported_regions)}): {preview}{suffix}")
+
     return records
 
 
@@ -267,7 +289,7 @@ def fetch_trends(keyword="football", max_retries=5):
     collected_at = datetime.now(timezone.utc).isoformat()
     pytrends = TrendReq(hl="en-US", tz=360, timeout=(10, 25))
 
-    for attempt in range(effective_max_retries):
+    for attempt in range(max_retries):
         try:
             pytrends.build_payload(kw_list=[keyword], timeframe="now 7-d", geo="", gprop="")
             time.sleep(random.uniform(5, 10))  # Random delay to avoid rate limits
@@ -277,6 +299,10 @@ def fetch_trends(keyword="football", max_retries=5):
             wait_time = 30 + random.randint(0, 10)  # wait 30-40 sec before retry
             print(f"[Attempt {attempt+1}] Rate limited by Google. Waiting {wait_time} seconds...")
             time.sleep(wait_time)
+        except Exception as exc:
+            if attempt == max_retries - 1:
+                print(f"Failed to fetch trends for '{keyword}': {exc}")
+            time.sleep(random.uniform(1.5, 3.0))
     else:
         print("Failed to fetch trends data after multiple attempts.")
         return []

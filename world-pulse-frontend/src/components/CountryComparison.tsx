@@ -118,27 +118,39 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
 
     if (chartType === "radar") {
       const option: echarts.EChartsOption = {
-        tooltip: {},
+        backgroundColor: "#13233f",
+        textStyle: { color: "#d6e4ff" },
+        tooltip: {
+          backgroundColor: "rgba(12, 31, 56, 0.96)",
+          borderColor: "rgba(96, 165, 250, 0.45)",
+          borderWidth: 1,
+          textStyle: { color: "#eaf3ff" },
+        },
         legend: {
           data: [country1Data?.country || "Country 1", country2Data?.country || "Country 2"],
-          textStyle: { color: "#aaa" },
+          textStyle: { color: "#d6e4ff" },
           bottom: 0,
+          itemWidth: 14,
+          itemHeight: 10,
         },
         radar: {
           indicator: METRICS.map((m) => buildRadarIndicator(m, country1Data, country2Data)),
           shape: "polygon",
           splitNumber: 4,
+          axisLine: {
+            lineStyle: { color: "rgba(148,163,184,0.3)" },
+          },
           axisName: {
-            color: "#888",
-            fontSize: 10,
+            color: "#c4d7ff",
+            fontSize: 11,
           },
           splitLine: {
-            lineStyle: { color: "rgba(255,255,255,0.1)" },
+            lineStyle: { color: "rgba(148,163,184,0.24)" },
           },
           splitArea: {
             show: true,
             areaStyle: {
-              color: ["rgba(0,0,0,0.2)", "rgba(0,0,0,0.4)"],
+              color: ["rgba(19,30,49,0.55)", "rgba(19,30,49,0.28)"],
             },
           },
         },
@@ -150,16 +162,16 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
               {
                 value: METRICS.map((m) => getMetricValue(country1Data, m.key)),
                 name: country1Data?.country || "Country 1",
-                lineStyle: { color: "#00d4ff" },
-                areaStyle: { color: "rgba(0,212,255,0.3)" },
-                itemStyle: { color: "#00d4ff" },
+                lineStyle: { color: "#38bdf8", width: 3 },
+                areaStyle: { color: "rgba(56,189,248,0.24)" },
+                itemStyle: { color: "#00d4ff", borderColor: "#0b1730", borderWidth: 1 },
               },
               {
                 value: METRICS.map((m) => getMetricValue(country2Data, m.key)),
                 name: country2Data?.country || "Country 2",
-                lineStyle: { color: "#ff69b4" },
-                areaStyle: { color: "rgba(255,105,180,0.3)" },
-                itemStyle: { color: "#ff69b4" },
+                lineStyle: { color: "#f59e0b", width: 3 },
+                areaStyle: { color: "rgba(245,158,11,0.18)" },
+                itemStyle: { color: "#fbbf24", borderColor: "#0b1730", borderWidth: 1 },
               },
             ],
           },
@@ -168,11 +180,21 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
       chart.setOption(option);
     } else {
       const option: echarts.EChartsOption = {
-        tooltip: { trigger: "axis" },
+        backgroundColor: "#13233f",
+        textStyle: { color: "#d6e4ff" },
+        tooltip: {
+          trigger: "axis",
+          backgroundColor: "rgba(12, 31, 56, 0.96)",
+          borderColor: "rgba(96, 165, 250, 0.45)",
+          borderWidth: 1,
+          textStyle: { color: "#eaf3ff" },
+        },
         legend: {
           data: [country1Data?.country || "Country 1", country2Data?.country || "Country 2"],
-          textStyle: { color: "#aaa" },
+          textStyle: { color: "#d6e4ff" },
           bottom: 0,
+          itemWidth: 14,
+          itemHeight: 10,
         },
         grid: {
           left: "3%",
@@ -184,26 +206,29 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
         xAxis: {
           type: "category",
           data: METRICS.map((m) => m.label),
-          axisLabel: { color: "#888", fontSize: 10, rotate: 30 },
-          axisLine: { lineStyle: { color: "#333" } },
+          axisLabel: { color: "#d6e4ff", fontSize: 11, rotate: 28 },
+          axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.45)" } },
         },
         yAxis: {
           type: "value",
-          axisLabel: { color: "#888" },
-          splitLine: { lineStyle: { color: "rgba(255,255,255,0.1)" } },
+          axisLabel: { color: "#d6e4ff", fontSize: 11 },
+          axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.45)" } },
+          splitLine: { lineStyle: { color: "rgba(148,163,184,0.24)" } },
         },
         series: [
           {
             name: country1Data?.country || "Country 1",
             type: "bar",
             data: METRICS.map((m) => getMetricValue(country1Data, m.key)),
-            itemStyle: { color: "#00d4ff" },
+            itemStyle: { color: "#38bdf8", borderRadius: [6, 6, 0, 0] },
+            barMaxWidth: 32,
           },
           {
             name: country2Data?.country || "Country 2",
             type: "bar",
             data: METRICS.map((m) => getMetricValue(country2Data, m.key)),
-            itemStyle: { color: "#ff69b4" },
+            itemStyle: { color: "#fbbf24", borderRadius: [6, 6, 0, 0] },
+            barMaxWidth: 32,
           },
         ],
       };
@@ -233,8 +258,9 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
         display: "flex", 
         alignItems: "center", 
         justifyContent: "center",
-        color: "#888",
-        background: "rgba(0,0,0,0.3)",
+        color: "#d6e4ff",
+        background: "rgba(19, 30, 49, 0.72)",
+        border: "1px solid rgba(96, 165, 250, 0.28)",
         borderRadius: "8px"
       }}>
         No country data available
@@ -249,20 +275,21 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
         gap: "16px", 
         marginBottom: "16px",
         padding: "12px",
-        background: "rgba(0,0,0,0.3)",
+        background: "rgba(19, 30, 49, 0.72)",
+        border: "1px solid rgba(96, 165, 250, 0.22)",
         borderRadius: "8px",
         alignItems: "center",
         flexWrap: "wrap",
       }}>
-        <div style={{ color: "#888", fontSize: "12px" }}>Compare:</div>
+        <div style={{ color: "#c4d7ff", fontSize: "12px" }}>Compare:</div>
         
         <select
           value={selectedCountries[0] || ""}
           onChange={(e) => setSelectedCountries([e.target.value, selectedCountries[1] || ""])}
           style={{
-            background: "rgba(0,0,0,0.5)",
-            border: "1px solid #00d4ff",
-            color: "#00d4ff",
+            background: "rgba(19, 30, 49, 0.82)",
+            border: "1px solid rgba(56,189,248,0.45)",
+            color: "#d6e4ff",
             padding: "8px 12px",
             borderRadius: "6px",
             cursor: "pointer",
@@ -277,15 +304,15 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
           ))}
         </select>
 
-        <span style={{ color: "#888" }}>vs</span>
+        <span style={{ color: "#c4d7ff" }}>vs</span>
 
         <select
           value={selectedCountries[1] || ""}
           onChange={(e) => setSelectedCountries([selectedCountries[0] || "", e.target.value])}
           style={{
-            background: "rgba(0,0,0,0.5)",
-            border: "1px solid #ff69b4",
-            color: "#ff69b4",
+            background: "rgba(19, 30, 49, 0.82)",
+            border: "1px solid rgba(251,191,36,0.45)",
+            color: "#d6e4ff",
             padding: "8px 12px",
             borderRadius: "6px",
             cursor: "pointer",
@@ -306,9 +333,9 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
           <button
             onClick={() => setChartType("radar")}
             style={{
-              background: chartType === "radar" ? "rgba(0,212,255,0.3)" : "rgba(100,100,100,0.3)",
-              border: `1px solid ${chartType === "radar" ? "#00d4ff" : "rgba(100,100,100,0.5)"}`,
-              color: chartType === "radar" ? "#00d4ff" : "#aaa",
+              background: chartType === "radar" ? "rgba(56,189,248,0.22)" : "rgba(30,41,59,0.74)",
+              border: `1px solid ${chartType === "radar" ? "rgba(56,189,248,0.6)" : "rgba(148,163,184,0.35)"}`,
+              color: chartType === "radar" ? "#d6e4ff" : "#9fb0cf",
               padding: "6px 12px",
               borderRadius: "4px",
               cursor: "pointer",
@@ -320,9 +347,9 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
           <button
             onClick={() => setChartType("bar")}
             style={{
-              background: chartType === "bar" ? "rgba(0,212,255,0.3)" : "rgba(100,100,100,0.3)",
-              border: `1px solid ${chartType === "bar" ? "#00d4ff" : "rgba(100,100,100,0.5)"}`,
-              color: chartType === "bar" ? "#00d4ff" : "#aaa",
+              background: chartType === "bar" ? "rgba(56,189,248,0.22)" : "rgba(30,41,59,0.74)",
+              border: `1px solid ${chartType === "bar" ? "rgba(56,189,248,0.6)" : "rgba(148,163,184,0.35)"}`,
+              color: chartType === "bar" ? "#d6e4ff" : "#9fb0cf",
               padding: "6px 12px",
               borderRadius: "4px",
               cursor: "pointer",
@@ -411,12 +438,12 @@ export default function CountryComparison({ countries, height = 500 }: CountryCo
         fontSize: "12px",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <div style={{ width: "12px", height: "12px", background: "#00d4ff", borderRadius: "2px" }} />
-          <span style={{ color: "#888" }}>{country1Data?.country || "Country 1"}</span>
+          <div style={{ width: "12px", height: "12px", background: "#38bdf8", borderRadius: "2px" }} />
+          <span style={{ color: "#c4d7ff" }}>{country1Data?.country || "Country 1"}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <div style={{ width: "12px", height: "12px", background: "#ff69b4", borderRadius: "2px" }} />
-          <span style={{ color: "#888" }}>{country2Data?.country || "Country 2"}</span>
+          <div style={{ width: "12px", height: "12px", background: "#fbbf24", borderRadius: "2px" }} />
+          <span style={{ color: "#c4d7ff" }}>{country2Data?.country || "Country 2"}</span>
         </div>
       </div>
     </div>
