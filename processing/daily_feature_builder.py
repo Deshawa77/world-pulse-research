@@ -163,6 +163,34 @@ def upsert_safe(collection, record, unique_key="_id"):
         logging.warning(f"Duplicate key for {record[unique_key]} skipped. Error: {e}")
         return False
 
+
+
+def compute_behavior_aggregates(db) -> dict:
+    pipeline = [
+        {"$sort": {"_id": -1}},
+        {"$group": {"_id": "$country", "doc": {"$first": "$$ROOT"}}},
+    ]
+    docs = list(db.country_features.aggregate(pipeline))
+    if not docs:
+        return {
+            "global_behavior_index": 0.0,
+            "global_context_index": 0.0,
+            "global_attention_index": 0.0,
+            "global_disruption_index": 0.0,
+            "global_economic_stress_index": 0.0,
+        }
+    features = [dict((doc.get("doc") or {}).get("features") or {}) for doc in docs]
+    def avg(key: str) -> float:
+        vals = [float(item.get(key) or 0.0) for item in features]
+        return float(np.mean(vals)) if vals else 0.0
+    return {
+        "global_behavior_index": round(avg("direct_behavior_score"), 4),
+        "global_context_index": round(avg("contextual_pressure_score"), 4),
+        "global_attention_index": round(np.mean([avg("public_attention_score") * 100.0, avg("narrative_velocity_score") * 100.0]), 4),
+        "global_disruption_index": round(np.mean([avg("mobility_disruption_score") * 100.0, avg("logistics_stress_score") * 100.0]), 4),
+        "global_economic_stress_index": round(np.mean([avg("household_stress_score") * 100.0, avg("energy_stress_score") * 100.0, avg("remittance_stress_score") * 100.0]), 4),
+    }
+
 # -------------------------
 # Build Hourly Features
 # -------------------------
@@ -228,6 +256,8 @@ def build_hourly_features(db) -> dict:
     if top_topics is None:
         top_topics = []
 
+    behavior_aggregates = safe_compute(compute_behavior_aggregates, db, default={}) or {}
+
     # --- Feature row ---
     feature_row = {
         "_id": str(uuid.uuid4()),
@@ -243,6 +273,7 @@ def build_hourly_features(db) -> dict:
         "weather_anomaly": weather_feats.get("weather_anomaly", 0.0),
         "global_risk_score": global_risk_score or 0.0,
         "top_topics": top_topics,  # keep as list
+        **behavior_aggregates,
     }
 
     logging.debug(f"[SAFE FEATURES] {feature_row}")

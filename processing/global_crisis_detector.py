@@ -6,7 +6,7 @@ from collections import defaultdict
 from monitoring.email_alert import send_email_alert
 
 # Collections to monitor
-COLLECTIONS = ["news", "reddit", "gdelt", "wiki", "who", "trends"]
+COLLECTIONS = ["news", "gdelt", "wiki", "who", "trends"]
 
 # Settings
 HISTORY_DAYS = 7

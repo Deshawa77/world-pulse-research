@@ -79,6 +79,19 @@ export default function SignalIntegrityBoard({
     },
   ];
 
+  const sourceHealthContainer = (trustSnapshot?.source_health ?? {}) as Record<string, unknown>;
+  const sourceHealth = Array.isArray(sourceHealthContainer.sources)
+    ? (sourceHealthContainer.sources as Array<Record<string, unknown>>)
+    : [];
+  const mobilitySnapshot = (trustSnapshot?.mobility ?? {}) as Record<string, unknown>;
+  const economicSnapshot = (trustSnapshot?.economic ?? {}) as Record<string, unknown>;
+  const domainRows = [
+    { label: "News", value: coverage.coverage_pct, detail: `${coverage.verified} verified countries` },
+    { label: "Attention", value: sourceHealth.filter((row) => ["telegram_public", "youtube_public", "wikipedia"].includes(String(row.source || "")) && String(row.status || "") === "up").length * 33.3, detail: `${sourceHealth.filter((row) => ["telegram_public", "youtube_public", "wikipedia"].includes(String(row.source || ""))).length} sources tracked` },
+    { label: "Mobility", value: sourceHealth.filter((row) => ["unhcr_idmc", "opensky", "logistics"].includes(String(row.source || "")) && String(row.status || "") === "up").length * 33.3, detail: `${safeNumber(mobilitySnapshot.combined_country_count)} countries covered` },
+    { label: "Economics", value: sourceHealth.filter((row) => (String(row.source || "").includes("worldbank_behavior") || ["economic_behavior", "frankfurter_behavior", "eia_behavior", "fred_behavior", "fred_behavior_labor", "fred_behavior_energy"].includes(String(row.source || ""))) && String(row.status || "") === "up").length * 14.2, detail: `${safeNumber(economicSnapshot.country_count)} countries covered` },
+  ];
+  const evidenceDensity = clampPercent((safeNumber(coverage.verified) / Math.max(safeNumber(coverage.total, 233), 1)) * 100 * (0.6 + freshnessRatio * 0.4));
   const moodGauge = clampPercent(moodConfidence * 100);
   const driftGauge = clampPercent(100 - Math.min(100, modelDrift * 35));
   const driftOffset = clampPercent(modelDrift * 35);
@@ -130,6 +143,21 @@ export default function SignalIntegrityBoard({
               <div className={`integrity-gauge-fill ${toneClass(moodGauge)}`} style={{ width: `${moodGauge}%` }} />
             </div>
             <small>Uncertainty +/- {moodUncertainty.toFixed(1)}</small>
+          </div>
+        </div>
+
+        <div className="integrity-domain-grid">
+          {domainRows.map((row) => (
+            <div key={row.label} className="integrity-domain-card">
+              <span>{row.label}</span>
+              <strong>{clampPercent(row.value).toFixed(0)}%</strong>
+              <small>{row.detail}</small>
+            </div>
+          ))}
+          <div className="integrity-domain-card">
+            <span>Evidence Density</span>
+            <strong>{evidenceDensity.toFixed(0)}%</strong>
+            <small>Blends verification coverage and freshness into one analyst-facing density read.</small>
           </div>
         </div>
 

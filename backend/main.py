@@ -9,6 +9,7 @@ import threading
 import platform
 import uuid
 import hmac
+import math
 import csv
 import io
 import json
@@ -61,6 +62,7 @@ from processing.global_risk import compute_global_risk
 from processing.global_mood import compute_global_operational_features
 from processing.world_state_quality import compute_quality_gate
 from processing.country_daily_risk import country_daily_refresh_if_due
+from processing.country_incremental_risk import recompute_country_risk
 from collectors.country_news import get_country_catalog
 from processing.country_catalog import COUNTRY_NAMES
 from processing.sentinel_analysis import compute_sentinel_analysis, get_sentinel_history
@@ -85,6 +87,13 @@ from processing.global_mood_validation import (
     list_global_mood_backtests,
 )
 from feature_store.model_registry import get_production_model, list_models
+from machine_learning.prediction_schema import (
+    DEFAULT_PREDICTION_FEATURES,
+    EXPANDED_GLOBAL_PREDICTION_FEATURES,
+    LEGACY_GLOBAL_PREDICTION_FEATURES,
+    PREDICTION_SCHEMA_VERSION,
+    extract_feature_vector,
+)
 
 from backend.country_risk_stream import country_risk_stream_health
 from backend.observability import (
@@ -337,7 +346,7 @@ security_events_collection.create_index([("client_ip", ASCENDING), ("timestamp",
 # =====================================================
 # Model Cache
 # =====================================================
-model_cache = {"model": None, "version": None}
+model_cache = {"model": None, "version": None, "feature_names": DEFAULT_PREDICTION_FEATURES, "schema_version": PREDICTION_SCHEMA_VERSION}
 
 # =====================================================
 # USER STORE (MongoDB)
@@ -742,28 +751,465 @@ def create_access_token(data: dict):
     return token
 
 
+def _build_attention_observability(window_hours: int = 48, max_countries: int = 12) -> dict:
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(hours=window_hours)
+    sample_docs = list(db.wiki.find({}, {"_id": 0, "country": 1, "collected_at": 1, "data": 1}).sort("_id", DESCENDING).limit(5000))
+
+    latest_by_country: dict[str, dict] = {}
+    total_recent_docs = 0
+    positive_delta_docs = 0
+    total_views = 0.0
+    total_delta_ratio = 0.0
+    measured_docs = 0
+
+    for doc in sample_docs:
+        stamp = _parse_timestamp(doc.get("collected_at") or (doc.get("data") or {}).get("date"))
+        if stamp < cutoff:
+            continue
+
+        country = str(doc.get("country") or "").strip().upper()
+        if not country:
+            continue
+
+        total_recent_docs += 1
+        data = doc.get("data") if isinstance(doc.get("data"), dict) else {}
+        views = _safe_float(data.get("views"), 0.0)
+        delta_ratio = _safe_float(data.get("view_delta_ratio"), 0.0)
+        total_views += views
+        total_delta_ratio += delta_ratio
+        measured_docs += 1
+        if delta_ratio > 0:
+            positive_delta_docs += 1
+
+        existing = latest_by_country.get(country)
+        if existing is None or stamp > existing["stamp"]:
+            latest_by_country[country] = {
+                "stamp": stamp,
+                "views": views,
+                "delta_ratio": delta_ratio,
+            }
+
+    countries = sorted(
+        (
+            {
+                "country": code,
+                "country_name": COUNTRY_NAMES.get(code) or get_country_catalog().get(code, code),
+                "timestamp": payload["stamp"].isoformat(),
+                "views": round(payload["views"], 0),
+                "delta_ratio": round(payload["delta_ratio"], 4),
+            }
+            for code, payload in latest_by_country.items()
+        ),
+        key=lambda item: (item["delta_ratio"], item["views"]),
+        reverse=True,
+    )
+
+    coverage_ratio = (len(latest_by_country) / 233.0) if latest_by_country else 0.0
+    return {
+        "status": "healthy" if latest_by_country else "monitoring",
+        "window_hours": window_hours,
+        "latest_country_count": len(latest_by_country),
+        "coverage_ratio": round(coverage_ratio, 4),
+        "recent_doc_count": total_recent_docs,
+        "positive_delta_ratio": round((positive_delta_docs / measured_docs), 4) if measured_docs else 0.0,
+        "average_views": round((total_views / measured_docs), 2) if measured_docs else 0.0,
+        "average_delta_ratio": round((total_delta_ratio / measured_docs), 4) if measured_docs else 0.0,
+        "top_countries": countries[:max_countries],
+        "last_updated": countries[0]["timestamp"] if countries else None,
+        "source": "wikimedia_pageviews",
+    }
+
+
+def _build_mobility_observability(displacement_window_hours: int = 72, aviation_window_hours: int = 18, max_countries: int = 12) -> dict:
+    now_utc = datetime.now(timezone.utc)
+    displacement_cutoff = now_utc - timedelta(hours=displacement_window_hours)
+    aviation_cutoff = now_utc - timedelta(hours=aviation_window_hours)
+    logistics_cutoff = now_utc - timedelta(hours=max(displacement_window_hours, 96))
+
+    displacement_docs = list(db.mobility.find({}, {"_id": 0, "country": 1, "collected_at": 1, "data": 1}).sort("_id", DESCENDING).limit(6000))
+    aviation_docs = list(db.aviation.find({}, {"_id": 0, "country": 1, "collected_at": 1, "data": 1}).sort("_id", DESCENDING).limit(6000))
+    logistics_docs = list(db.logistics.find({}, {"_id": 0, "country": 1, "collected_at": 1, "data": 1}).sort("_id", DESCENDING).limit(6000))
+
+    latest_displacement: dict[str, dict] = {}
+    latest_aviation: dict[str, dict] = {}
+    latest_logistics: dict[str, dict] = {}
+    displacement_daily: dict[str, set[str]] = {}
+    aviation_hourly: dict[str, set[str]] = {}
+    combined_daily: dict[str, set[str]] = {}
+
+    for doc in displacement_docs:
+        stamp = _parse_timestamp(doc.get("collected_at") or (doc.get("data") or {}).get("snapshot_date"))
+        if stamp < displacement_cutoff:
+            continue
+        country = str(doc.get("country") or "").strip().upper()
+        if not country:
+            continue
+        day_key = stamp.astimezone(timezone.utc).date().isoformat()
+        displacement_daily.setdefault(day_key, set()).add(country)
+        combined_daily.setdefault(day_key, set()).add(country)
+        displaced_people = _safe_float(((doc.get("data") or {}).get("displaced_people")), 0.0)
+        delta_ratio = _safe_float(((doc.get("data") or {}).get("displacement_delta_ratio")), 0.0)
+        displaced_pressure = min((math.log1p(max(displaced_people, 0.0)) / 13.0) + max(delta_ratio, 0.0) * 0.2, 1.0)
+        payload = {
+            "stamp": stamp,
+            "displaced_people": displaced_people,
+            "delta_ratio": delta_ratio,
+            "displaced_pressure": displaced_pressure,
+        }
+        existing = latest_displacement.get(country)
+        if existing is None or stamp > existing["stamp"]:
+            latest_displacement[country] = payload
+
+    for doc in aviation_docs:
+        stamp = _parse_timestamp(doc.get("collected_at") or (doc.get("data") or {}).get("snapshot_at"))
+        if stamp < aviation_cutoff:
+            continue
+        country = str(doc.get("country") or "").strip().upper()
+        if not country:
+            continue
+        hour_key = stamp.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat()
+        day_key = stamp.astimezone(timezone.utc).date().isoformat()
+        aviation_hourly.setdefault(hour_key, set()).add(country)
+        combined_daily.setdefault(day_key, set()).add(country)
+        payload = {
+            "stamp": stamp,
+            "aircraft_count": _safe_float(((doc.get("data") or {}).get("aircraft_count")), 0.0),
+            "aviation_disruption_score": _safe_float(((doc.get("data") or {}).get("aviation_disruption_score")), 0.0),
+        }
+        existing = latest_aviation.get(country)
+        if existing is None or stamp > existing["stamp"]:
+            latest_aviation[country] = payload
+
+    for doc in logistics_docs:
+        stamp = _parse_timestamp(doc.get("collected_at") or doc.get("timestamp"))
+        if stamp < logistics_cutoff:
+            continue
+        country = str(doc.get("country") or "").strip().upper()
+        if not country:
+            continue
+        day_key = stamp.astimezone(timezone.utc).date().isoformat()
+        combined_daily.setdefault(day_key, set()).add(country)
+        payload = {
+            "stamp": stamp,
+            "logistics_stress_score": _safe_float(((doc.get("data") or {}).get("logistics_stress_score")), 0.0),
+        }
+        existing = latest_logistics.get(country)
+        if existing is None or stamp > existing["stamp"]:
+            latest_logistics[country] = payload
+
+    union_countries = sorted(set(latest_displacement.keys()) | set(latest_aviation.keys()) | set(latest_logistics.keys()))
+    catalog = get_country_catalog()
+    top_rows = []
+    for code in union_countries:
+        displacement = latest_displacement.get(code) or {}
+        aviation = latest_aviation.get(code) or {}
+        logistics = latest_logistics.get(code) or {}
+        feature_docs = list(db.country_features.find({"country": code, "mode": "online"}).sort("timestamp", -1).limit(8))
+        preferred_doc = _prefer_feature_doc(feature_docs)
+        preferred_features = preferred_doc.get("features", {}) if preferred_doc else {}
+        source_count = sum(1 for item in (displacement, aviation, logistics) if item)
+        freshness_values = []
+        for item, window in ((displacement, displacement_window_hours), (aviation, aviation_window_hours), (logistics, max(displacement_window_hours, 96))):
+            stamp = item.get("stamp") if item else None
+            if stamp:
+                age_hours = max((now_utc - stamp).total_seconds() / 3600.0, 0.0)
+                freshness_values.append(max(0.0, 1.0 - min(age_hours / max(window, 1), 1.0)))
+        freshness = round(sum(freshness_values) / len(freshness_values), 4) if freshness_values else 0.0
+        confidence = round(min((source_count / 3.0) * 0.65 + freshness * 0.35, 1.0), 4) if source_count else 0.0
+        displaced_pressure = _safe_float(displacement.get("displaced_pressure"), 0.0)
+        aviation_disruption = _safe_float(aviation.get("aviation_disruption_score"), 0.0)
+        logistics_stress = _safe_float(logistics.get("logistics_stress_score"), 0.0)
+        severity = round(min(displaced_pressure * 0.4 + aviation_disruption * 0.3 + logistics_stress * 0.2 + freshness * 0.05 + confidence * 0.05, 1.0), 4)
+        top_rows.append({
+            "country": code,
+            "country_name": COUNTRY_NAMES.get(code) or catalog.get(code, code),
+            "risk_score": round(_safe_float(preferred_features.get("global_risk_score"), 0.0), 4),
+            "severity_score": severity,
+            "normalized_displaced_pressure": round(displaced_pressure, 4),
+            "aviation_disruption_score": round(aviation_disruption, 4),
+            "logistics_stress_score": round(logistics_stress, 4),
+            "freshness_score": freshness,
+            "confidence_score": confidence,
+            "displaced_people": round(_safe_float(displacement.get("displaced_people"), 0.0), 0),
+            "aircraft_count": round(_safe_float(aviation.get("aircraft_count"), 0.0), 0),
+            "direct_behavior_score": round(_safe_float(preferred_features.get("direct_behavior_score"), 0.0), 4),
+            "contextual_pressure_score": round(_safe_float(preferred_features.get("contextual_pressure_score"), 0.0), 4),
+            "household_stress_score": round(_safe_float(preferred_features.get("household_stress_score"), 0.0), 4),
+            "fuel_price_pressure": round(_safe_float(preferred_features.get("fuel_price_pressure"), 0.0), 4),
+            "food_price_pressure": round(_safe_float(preferred_features.get("food_price_pressure"), 0.0), 4),
+            "labor_stress_score": round(_safe_float(preferred_features.get("labor_stress_score"), 0.0), 4),
+            "fx_pressure_score": round(_safe_float(preferred_features.get("fx_pressure_score"), 0.0), 4),
+            "remittance_stress_score": round(_safe_float(preferred_features.get("remittance_stress_score"), 0.0), 4),
+            "energy_stress_score": round(_safe_float(preferred_features.get("energy_stress_score"), 0.0), 4),
+            "displacement_updated_at": displacement.get("stamp").isoformat() if displacement.get("stamp") else None,
+            "aviation_updated_at": aviation.get("stamp").isoformat() if aviation.get("stamp") else None,
+            "logistics_updated_at": logistics.get("stamp").isoformat() if logistics.get("stamp") else None,
+            "source_count": source_count,
+        })
+
+    top_rows.sort(key=lambda item: (item["severity_score"], item["normalized_displaced_pressure"], item["aviation_disruption_score"], item["logistics_stress_score"], item["freshness_score"], item["confidence_score"]), reverse=True)
+    overlap_count = len(set(latest_displacement.keys()) & set(latest_aviation.keys()))
+    displacement_latest = max((payload["stamp"] for payload in latest_displacement.values()), default=None)
+    aviation_latest = max((payload["stamp"] for payload in latest_aviation.values()), default=None)
+    logistics_latest = max((payload["stamp"] for payload in latest_logistics.values()), default=None)
+
+    displacement_history = [
+        {"period": period, "country_count": len(countries)}
+        for period, countries in sorted(displacement_daily.items())[-7:]
+    ]
+    aviation_history = [
+        {"period": period, "country_count": len(countries)}
+        for period, countries in sorted(aviation_hourly.items())[-12:]
+    ]
+    combined_history = [
+        {"period": period, "country_count": len(countries)}
+        for period, countries in sorted(combined_daily.items())[-7:]
+    ]
+
+    displacement_delta = 0
+    if len(displacement_history) >= 2:
+        displacement_delta = int(displacement_history[-1]["country_count"] - displacement_history[-2]["country_count"])
+    aviation_delta = 0
+    if len(aviation_history) >= 2:
+        aviation_delta = int(aviation_history[-1]["country_count"] - aviation_history[-2]["country_count"])
+    combined_delta = 0
+    if len(combined_history) >= 2:
+        combined_delta = int(combined_history[-1]["country_count"] - combined_history[-2]["country_count"])
+
+    return {
+        "generated_at": now_utc.isoformat(),
+        "status": "healthy" if union_countries else "monitoring",
+        "sources": {
+            "displacement": {
+                "source": "unhcr_idmc",
+                "country_count": len(latest_displacement),
+                "window_hours": displacement_window_hours,
+                "last_updated": displacement_latest.isoformat() if displacement_latest else None,
+            },
+            "aviation": {
+                "source": "opensky",
+                "country_count": len(latest_aviation),
+                "window_hours": aviation_window_hours,
+                "last_updated": aviation_latest.isoformat() if aviation_latest else None,
+            },
+            "logistics": {
+                "source": "worldbank_logistics",
+                "country_count": len(latest_logistics),
+                "window_hours": max(displacement_window_hours, 96),
+                "last_updated": logistics_latest.isoformat() if logistics_latest else None,
+            },
+        },
+        "combined_country_count": len(union_countries),
+        "crosscheck_overlap_count": overlap_count,
+        "crosscheck_overlap_ratio": round((overlap_count / max(len(union_countries), 1)), 4),
+        "trend": {
+            "displacement_delta": displacement_delta,
+            "aviation_delta": aviation_delta,
+            "combined_delta": combined_delta,
+            "displacement_daily": displacement_history,
+            "aviation_hourly": aviation_history,
+            "combined_daily": combined_history,
+        },
+        "top_countries": top_rows[:max_countries],
+    }
+
+
+def _build_economic_observability(window_hours: int = 96, max_countries: int = 12) -> dict:
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(hours=window_hours)
+    docs = list(db.economic_behavior.find({}, {"_id": 0, "country": 1, "country_name": 1, "collected_at": 1, "timestamp": 1, "data": 1}).sort("_id", DESCENDING).limit(8000))
+
+    latest_by_country: dict[str, dict[str, Any]] = {}
+    daily_country_sets: dict[str, set[str]] = {}
+    total_household = 0.0
+    total_fuel = 0.0
+    total_food = 0.0
+    total_labor = 0.0
+    total_fx = 0.0
+    measured = 0
+
+    for doc in docs:
+        stamp = _parse_timestamp(doc.get("timestamp") or doc.get("collected_at"))
+        if stamp < cutoff:
+            continue
+        country = str(doc.get("country") or "").strip().upper()
+        payload = doc.get("data") if isinstance(doc.get("data"), dict) else {}
+        if not country or not payload:
+            continue
+        day_key = stamp.astimezone(timezone.utc).date().isoformat()
+        daily_country_sets.setdefault(day_key, set()).add(country)
+        if country not in latest_by_country:
+            household = _safe_float(payload.get("household_stress_score"), 0.0)
+            fuel = _safe_float(payload.get("fuel_price_pressure"), 0.0)
+            food = _safe_float(payload.get("food_price_pressure"), 0.0)
+            labor = _safe_float(payload.get("labor_stress_score"), 0.0)
+            fx = _safe_float(payload.get("fx_pressure_score"), 0.0)
+            latest_by_country[country] = {
+                "country": country,
+                "country_name": doc.get("country_name") or COUNTRY_NAMES.get(country, country),
+                "timestamp": stamp.isoformat(),
+                "household_stress_score": round(household, 4),
+                "fuel_price_pressure": round(fuel, 4),
+                "food_price_pressure": round(food, 4),
+                "labor_stress_score": round(labor, 4),
+                "fx_pressure_score": round(fx, 4),
+                "component_sources": payload.get("component_sources") if isinstance(payload.get("component_sources"), list) else [],
+            }
+            total_household += household
+            total_fuel += fuel
+            total_food += food
+            total_labor += labor
+            total_fx += fx
+            measured += 1
+
+    trend_history = [
+        {"period": period, "country_count": len(countries)}
+        for period, countries in sorted(daily_country_sets.items())[-7:]
+    ]
+    coverage_delta = 0
+    if len(trend_history) >= 2:
+        coverage_delta = int(trend_history[-1]["country_count"] - trend_history[-2]["country_count"])
+
+    top_countries = sorted(
+        latest_by_country.values(),
+        key=lambda item: (item["household_stress_score"], item["fuel_price_pressure"], item["food_price_pressure"], item["labor_stress_score"]),
+        reverse=True,
+    )[:max_countries]
+    last_updated = max((_parse_timestamp(item["timestamp"]) for item in latest_by_country.values()), default=None)
+
+    return {
+        "status": "healthy" if latest_by_country else "monitoring",
+        "source": "economic_behavior",
+        "window_hours": window_hours,
+        "country_count": len(latest_by_country),
+        "last_updated": last_updated.isoformat() if last_updated else None,
+        "averages": {
+            "household_stress_score": round((total_household / measured), 4) if measured else 0.0,
+            "fuel_price_pressure": round((total_fuel / measured), 4) if measured else 0.0,
+            "food_price_pressure": round((total_food / measured), 4) if measured else 0.0,
+            "labor_stress_score": round((total_labor / measured), 4) if measured else 0.0,
+            "fx_pressure_score": round((total_fx / measured), 4) if measured else 0.0,
+        },
+        "trend": {
+            "coverage_delta": coverage_delta,
+            "daily_country_counts": trend_history,
+        },
+        "top_countries": top_countries,
+    }
+
+
+def _build_operational_alerts(latest_ingestion: dict, source_health: dict, mobility_snapshot: dict, economic_snapshot: dict) -> list[dict[str, Any]]:
+    alerts: list[dict[str, Any]] = []
+
+    for row in (latest_ingestion or {}).get("sources", []) if isinstance((latest_ingestion or {}).get("sources"), list) else []:
+        if row.get("status") == "stale":
+            source_name = str(row.get("source") or "")
+            alerts.append({
+                "severity": "medium" if row.get("tier") == "core" else ("medium" if source_name in {"mobility", "aviation", "economic_behavior", "weather", "trends"} else "low"),
+                "category": "source_stale",
+                "source": source_name,
+                "source_label": _source_label(source_name),
+                "message": f"{_source_label(source_name)} is stale at {row.get('age_hours')}h against {row.get('sla_hours')}h SLA.",
+            })
+
+    for row in (source_health or {}).get("sources", []) if isinstance((source_health or {}).get("sources"), list) else []:
+        source_name = str(row.get("source") or "")
+        source_label = _source_label(source_name)
+        if row.get("rate_limited"):
+            alerts.append({
+                "severity": "high" if source_name in {"opensky", "unhcr_idmc"} else "medium",
+                "category": "rate_limited",
+                "source": source_name,
+                "source_label": source_label,
+                "message": f"{source_label} is reporting rate limits.",
+            })
+        if row.get("auth_failed"):
+            alerts.append({
+                "severity": "high",
+                "category": "auth_failed",
+                "source": source_name,
+                "source_label": source_label,
+                "message": f"{source_label} authentication failed.",
+            })
+        if str(row.get("status") or "").lower() == "down" and source_name in {"unhcr_idmc", "opensky", "worldbank_behavior_SL.UEM.TOTL.ZS", "worldbank_behavior_FP.CPI.TOTL.ZG", "fred_behavior", "eia_behavior", "frankfurter_behavior"}:
+            alerts.append({
+                "severity": "high" if source_name in {"unhcr_idmc", "opensky"} else "medium",
+                "category": "source_down",
+                "source": source_name,
+                "source_label": source_label,
+                "message": f"{source_label} is down: {row.get('error') or 'no detail'}",
+            })
+
+    mobility_sources = (mobility_snapshot or {}).get("sources") if isinstance((mobility_snapshot or {}).get("sources"), dict) else {}
+    displacement = mobility_sources.get("displacement") if isinstance(mobility_sources, dict) else {}
+    aviation = mobility_sources.get("aviation") if isinstance(mobility_sources, dict) else {}
+    if isinstance(displacement, dict) and int(displacement.get("country_count", 0) or 0) == 0:
+        alerts.append({
+            "severity": "high",
+            "category": "zero_country_ingest",
+            "source": "unhcr_idmc",
+            "message": "Mobility displacement ingest returned zero countries in the current window.",
+        })
+    if isinstance(aviation, dict) and int(aviation.get("country_count", 0) or 0) == 0:
+        alerts.append({
+            "severity": "high",
+            "category": "zero_country_ingest",
+            "source": "opensky",
+            "message": "Aviation ingest returned zero countries in the current window.",
+        })
+    mobility_trend = (mobility_snapshot or {}).get("trend") if isinstance((mobility_snapshot or {}).get("trend"), dict) else {}
+    if int(mobility_trend.get("combined_delta", 0) or 0) <= -8:
+        alerts.append({
+            "severity": "medium",
+            "category": "coverage_drop",
+            "source": "mobility",
+            "message": f"Mobility cross-check coverage dropped by {int(mobility_trend.get('combined_delta', 0) or 0)} countries.",
+        })
+
+    if int((economic_snapshot or {}).get("country_count", 0) or 0) == 0:
+        alerts.append({
+            "severity": "high",
+            "category": "zero_country_ingest",
+            "source": "economic_behavior",
+            "message": "Economic behavior ingest returned zero countries in the current window.",
+        })
+    economic_trend = (economic_snapshot or {}).get("trend") if isinstance((economic_snapshot or {}).get("trend"), dict) else {}
+    if int(economic_trend.get("coverage_delta", 0) or 0) <= -12:
+        alerts.append({
+            "severity": "medium",
+            "category": "coverage_drop",
+            "source": "economic_behavior",
+            "message": f"Economic behavior coverage dropped by {int(economic_trend.get('coverage_delta', 0) or 0)} countries.",
+        })
+
+    severity_order = {"high": 0, "medium": 1, "low": 2}
+    alerts.sort(key=lambda item: (severity_order.get(str(item.get("severity")), 3), str(item.get("source") or ""), str(item.get("category") or "")))
+    return alerts[:24]
+
+
 def get_country_risk_dependency_health(mode: str = "online"):
     status = {
         "database": "connected",
         "model_loaded": False,
         "country_features_latest": None,
         "country_news_latest": None,
-        "reddit_latest": None,
+        "wiki_latest": None,
+        "mobility_latest": None,
+        "aviation_latest": None,
+        "economic_behavior_latest": None,
         "trends_latest": None,
         "weather_latest": None,
+        "attention": _build_attention_observability(window_hours=48, max_countries=6),
+        "mobility": _build_mobility_observability(displacement_window_hours=72, aviation_window_hours=18, max_countries=6),
         "validation_status": latest_country_risk_validation().get("status"),
     }
     model, version = load_production_model()
     status["model_loaded"] = model is not None
     status["model_version"] = version
 
-    for name, collection_name in [("country_features_latest", "country_features"), ("country_news_latest", "country_news"), ("reddit_latest", "reddit"), ("trends_latest", "trends"), ("weather_latest", "weather")]:
-        doc = db[collection_name].find_one(sort=[("_id", DESCENDING)])
-        if not doc:
-            status[name] = None
-            continue
-        stamp = doc.get("timestamp") or doc.get("collected_at") or ((doc.get("data") or {}).get("published_at")) or doc.get("data_timestamp")
-        status[name] = str(stamp) if stamp is not None else None
+    for name, collection_name in [("country_features_latest", "country_features"), ("country_news_latest", "country_news"), ("wiki_latest", "wiki"), ("mobility_latest", "mobility"), ("aviation_latest", "aviation"), ("economic_behavior_latest", "economic_behavior"), ("trends_latest", "trends"), ("weather_latest", "weather")]:
+        status[name] = _latest_collection_stamp(db[collection_name], ["timestamp", "collected_at", "published_at", "data_timestamp", "snapshot_at", "snapshot_date"])
 
     latest_country_doc = db.country_features.find_one({"mode": mode}, sort=[("_id", DESCENDING)])
     if latest_country_doc:
@@ -786,30 +1232,60 @@ def serialize_doc(doc: dict) -> dict:
             doc[key] = value.isoformat()
     return doc
 
-def load_production_model():
+def load_production_model_bundle() -> tuple[Any | None, str | None, list[str], str]:
     model_path = get_production_model()
     if not model_path or not os.path.exists(model_path):
-        return None, None
+        return None, None, DEFAULT_PREDICTION_FEATURES, PREDICTION_SCHEMA_VERSION
     models = list_models()
     for version, info in models.items():
         if info.get("stage") == "production":
             if model_cache["version"] != version:
-                model_cache["model"] = joblib.load(model_path)
+                loaded = joblib.load(model_path)
+                feature_names = list(info.get("feature_names") or [])
+                schema_version = str(info.get("schema_version") or PREDICTION_SCHEMA_VERSION)
+                if isinstance(loaded, dict) and "model" in loaded:
+                    model_cache["model"] = loaded.get("model")
+                    feature_names = list(loaded.get("feature_names") or feature_names or DEFAULT_PREDICTION_FEATURES)
+                    schema_version = str(loaded.get("schema_version") or schema_version)
+                else:
+                    model_cache["model"] = loaded
+                    if not feature_names:
+                        feature_names = DEFAULT_PREDICTION_FEATURES if getattr(loaded, "n_features_in_", 0) == len(DEFAULT_PREDICTION_FEATURES) else LEGACY_GLOBAL_PREDICTION_FEATURES
                 model_cache["version"] = version
-            return model_cache["model"], version
-    return None, None
+                model_cache["feature_names"] = feature_names
+                model_cache["schema_version"] = schema_version
+            return (
+                model_cache["model"],
+                version,
+                list(model_cache.get("feature_names") or DEFAULT_PREDICTION_FEATURES),
+                str(model_cache.get("schema_version") or PREDICTION_SCHEMA_VERSION),
+            )
+    return None, None, DEFAULT_PREDICTION_FEATURES, PREDICTION_SCHEMA_VERSION
 
 
-def compute_feature_drift(payload_features: list[float]) -> float | None:
-    expected_order = [
-        "news_sentiment",
-        "gdelt_sentiment",
-        "crypto_return",
-        "crypto_volatility",
-        "stock_return",
-        "stock_volatility",
-        "weather_anomaly",
-    ]
+def load_production_model():
+    model, version, _, _ = load_production_model_bundle()
+    return model, version
+
+
+def _current_prediction_feature_names(model: Any | None = None) -> list[str]:
+    names = list(model_cache.get("feature_names") or [])
+    if names:
+        return names
+    expected = int(getattr(model, "n_features_in_", 0) or 0)
+    if expected == len(DEFAULT_PREDICTION_FEATURES):
+        return list(DEFAULT_PREDICTION_FEATURES)
+    if expected == len(LEGACY_GLOBAL_PREDICTION_FEATURES):
+        return list(LEGACY_GLOBAL_PREDICTION_FEATURES)
+    return list(DEFAULT_PREDICTION_FEATURES)
+
+
+def _current_prediction_schema_version() -> str:
+    return str(model_cache.get("schema_version") or PREDICTION_SCHEMA_VERSION)
+
+
+def compute_feature_drift(payload_features: list[float], feature_names: list[str] | None = None) -> float | None:
+    expected_order = list(feature_names or _current_prediction_feature_names())
 
     if len(payload_features) != len(expected_order):
         return None
@@ -1097,7 +1573,9 @@ def get_global_history(mode: str = "online", limit: int = 1000, start_date: date
 # Request Schema
 # =====================================================
 class PredictionRequest(BaseModel):
-    features: list[float]
+    features: list[float] | None = None
+    feature_names: list[str] | None = None
+    feature_map: dict[str, float] | None = None
 
 
 class AlertActionRequest(BaseModel):
@@ -1463,6 +1941,131 @@ def assess_country_risk_quality(topics, feature_timestamp):
         "data_quality": data_quality,
     }
 
+COUNTRY_EXTERNAL_FIELDS = (
+    "mobility_disruption_score",
+    "aviation_disruption_score",
+    "logistics_stress_score",
+    "household_stress_score",
+    "fuel_price_pressure",
+    "food_price_pressure",
+    "labor_stress_score",
+    "fx_pressure_score",
+    "remittance_stress_score",
+    "energy_stress_score",
+    "public_attention_score",
+    "narrative_velocity_score",
+    "coordination_risk_score",
+    "google_trends_pressure",
+    "social_unrest_score",
+    "weather_stress",
+)
+
+ROLLUP_SIGNAL_FIELDS = (
+    "social_unrest_score",
+    "google_trends_pressure",
+    "public_attention_score",
+    "narrative_velocity_score",
+    "coordination_risk_score",
+    "mobility_disruption_score",
+    "aviation_disruption_score",
+    "logistics_stress_score",
+    "household_stress_score",
+    "fuel_price_pressure",
+    "food_price_pressure",
+    "labor_stress_score",
+    "fx_pressure_score",
+    "remittance_stress_score",
+    "energy_stress_score",
+    "weather_stress",
+    "external_signal_freshness",
+)
+
+
+def _safe_iso_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(raw)
+        return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _load_today_rollup(country: str) -> dict | None:
+    today = datetime.now(timezone.utc).date().isoformat()
+    return db.country_signal_rollups.find_one({"country": country, "event_date": today}, sort=[("updated_at", DESCENDING), ("_id", DESCENDING)])
+
+
+def _needs_rollup_backfill(latest_features: dict, rollup: dict | None) -> bool:
+    if not isinstance(rollup, dict):
+        return False
+    tracked_sources = {"mobility", "aviation", "opensky", "unhcr_idmc", "logistics", "economic_behavior", "telegram_public", "youtube_public", "wikipedia", "google_trends"}
+    rollup_sources = {str(source) for source in (rollup.get("sources") or [])}
+    if not (rollup_sources & tracked_sources):
+        return False
+    for field in ROLLUP_SIGNAL_FIELDS:
+        feature_value = float((latest_features or {}).get(field, 0.0) or 0.0)
+        rollup_value = float((rollup or {}).get(field, 0.0) or 0.0)
+        if rollup_value > feature_value + 1e-9:
+            return True
+    feature_ts = _safe_iso_datetime((latest_features or {}).get("timestamp"))
+    rollup_ts = _safe_iso_datetime((rollup or {}).get("updated_at") or (rollup or {}).get("last_event_timestamp"))
+    return bool(feature_ts and rollup_ts and rollup_ts > feature_ts)
+
+
+def _merge_rollup_signals(latest_features: dict, rollup: dict | None) -> dict:
+    merged = dict(latest_features or {})
+    if not isinstance(rollup, dict):
+        return merged
+    for field in ROLLUP_SIGNAL_FIELDS:
+        merged[field] = max(float(merged.get(field, 0.0) or 0.0), float(rollup.get(field, 0.0) or 0.0))
+    merged["external_sources"] = list(rollup.get("sources") or merged.get("external_sources") or [])
+    merged["source_count"] = max(int(merged.get("source_count") or 0), len(merged["external_sources"]))
+    merged["timestamp"] = merged.get("timestamp") or datetime.utcnow().isoformat()
+    return merged
+
+
+def _feature_signal_strength(features: dict) -> tuple[float, int]:
+    if not isinstance(features, dict):
+        return (0.0, 0)
+    values = [float(features.get(field, 0.0) or 0.0) for field in COUNTRY_EXTERNAL_FIELDS]
+    freshness = float(features.get("external_signal_freshness", 0.0) or 0.0)
+    nonzero = sum(1 for value in values if value > 0.0)
+    return (freshness + sum(values), nonzero)
+
+
+def _prefer_feature_doc(docs: list[dict]) -> dict | None:
+    if not docs:
+        return None
+    ranked = sorted(
+        docs,
+        key=lambda doc: (
+            _feature_signal_strength((doc or {}).get("features", {}))[1],
+            _feature_signal_strength((doc or {}).get("features", {}))[0],
+            str((doc or {}).get("features", {}).get("timestamp") or ""),
+            str((doc or {}).get("timestamp") or ""),
+        ),
+        reverse=True,
+    )
+    return ranked[0]
+
+
+def _refresh_country_features_if_stale(country: str, latest_features: dict, mode: str = "online") -> dict:
+    rollup = _load_today_rollup(country)
+    if not _needs_rollup_backfill(latest_features, rollup):
+        return dict(latest_features or {})
+    try:
+        recomputed = recompute_country_risk(country, mode=mode)
+        return dict(recomputed or latest_features or {})
+    except Exception:
+        return _merge_rollup_signals(latest_features, rollup)
+
+
 def convert_country_code(code: str) -> str:
     """Convert 2-letter country code to 3-letter ISO code"""
     if not code:
@@ -1496,8 +2099,24 @@ def dashboard_risk_map(
                 "source_count": {"$ifNull": ["$doc.features.source_count", 0]},
                 "social_unrest_score": {"$ifNull": ["$doc.features.social_unrest_score", 0.0]},
                 "google_trends_pressure": {"$ifNull": ["$doc.features.google_trends_pressure", 0.0]},
+                "public_attention_score": {"$ifNull": ["$doc.features.public_attention_score", 0.0]},
+                "narrative_velocity_score": {"$ifNull": ["$doc.features.narrative_velocity_score", 0.0]},
+                "coordination_risk_score": {"$ifNull": ["$doc.features.coordination_risk_score", 0.0]},
+                "mobility_disruption_score": {"$ifNull": ["$doc.features.mobility_disruption_score", 0.0]},
+                "logistics_stress_score": {"$ifNull": ["$doc.features.logistics_stress_score", 0.0]},
+                "aviation_disruption_score": {"$ifNull": ["$doc.features.aviation_disruption_score", 0.0]},
+                "household_stress_score": {"$ifNull": ["$doc.features.household_stress_score", 0.0]},
+                "fuel_price_pressure": {"$ifNull": ["$doc.features.fuel_price_pressure", 0.0]},
+                "food_price_pressure": {"$ifNull": ["$doc.features.food_price_pressure", 0.0]},
+                "labor_stress_score": {"$ifNull": ["$doc.features.labor_stress_score", 0.0]},
+                "fx_pressure_score": {"$ifNull": ["$doc.features.fx_pressure_score", 0.0]},
+                "remittance_stress_score": {"$ifNull": ["$doc.features.remittance_stress_score", 0.0]},
+                "energy_stress_score": {"$ifNull": ["$doc.features.energy_stress_score", 0.0]},
                 "weather_stress": {"$ifNull": ["$doc.features.weather_stress", 0.0]},
                 "external_signal_freshness": {"$ifNull": ["$doc.features.external_signal_freshness", 0.0]},
+                "direct_behavior_score": {"$ifNull": ["$doc.features.direct_behavior_score", 0.0]},
+                "contextual_pressure_score": {"$ifNull": ["$doc.features.contextual_pressure_score", 0.0]},
+                "evidence_quality_score": {"$ifNull": ["$doc.features.evidence_quality_score", 0.0]},
                 "war_state_rules": {"$ifNull": ["$doc.features.war_state_rules", []]},
             }
         },
@@ -1516,8 +2135,24 @@ def dashboard_risk_map(
                 "source_count": 0,
                 "social_unrest_score": 0.0,
                 "google_trends_pressure": 0.0,
+                "public_attention_score": 0.0,
+                "narrative_velocity_score": 0.0,
+                "coordination_risk_score": 0.0,
+                "mobility_disruption_score": 0.0,
+                "logistics_stress_score": 0.0,
+                "aviation_disruption_score": 0.0,
+                "household_stress_score": 0.0,
+                "fuel_price_pressure": 0.0,
+                "food_price_pressure": 0.0,
+                "labor_stress_score": 0.0,
+                "fx_pressure_score": 0.0,
+                "remittance_stress_score": 0.0,
+                "energy_stress_score": 0.0,
                 "weather_stress": 0.0,
                 "external_signal_freshness": 0.0,
+                "direct_behavior_score": 0.0,
+                "contextual_pressure_score": 0.0,
+                "evidence_quality_score": 0.0,
                 "war_state_rules": [],
             }
             for code in placeholder_codes
@@ -1529,14 +2164,43 @@ def dashboard_risk_map(
         if verified_only and not quality["validated_today"]:
             continue
 
-        risk_value = doc.get("risk")
         doc["country"] = convert_country_code(doc.get("country", ""))
+        fallback_docs = list(db.country_features.find({"country": doc["country"], "mode": mode}).sort("timestamp", -1).limit(8))
+        preferred = _prefer_feature_doc(fallback_docs)
+        if preferred and preferred.get("features"):
+            preferred_features = preferred.get("features", {})
+            doc["risk"] = preferred_features.get("global_risk_score", doc.get("risk"))
+            doc["timestamp"] = preferred.get("timestamp", doc.get("timestamp"))
+            doc["feature_timestamp"] = preferred_features.get("timestamp", doc.get("feature_timestamp"))
+            for field in COUNTRY_EXTERNAL_FIELDS + ("external_signal_freshness", "direct_behavior_score", "contextual_pressure_score", "evidence_quality_score", "war_state_rules"):
+                if field == "war_state_rules":
+                    doc[field] = preferred_features.get(field, doc.get(field, []))
+                else:
+                    doc[field] = preferred_features.get(field, doc.get(field, 0.0))
+        doc = _merge_rollup_signals(doc, _load_today_rollup(doc["country"]))
+        risk_value = doc.get("risk")
         doc["risk"] = float(risk_value) if risk_value is not None else 0.0
         doc["source_count"] = int(doc.get("source_count") or 0)
         doc["social_unrest_score"] = float(doc.get("social_unrest_score") or 0.0)
         doc["google_trends_pressure"] = float(doc.get("google_trends_pressure") or 0.0)
+        doc["public_attention_score"] = float(doc.get("public_attention_score") or 0.0)
+        doc["narrative_velocity_score"] = float(doc.get("narrative_velocity_score") or 0.0)
+        doc["coordination_risk_score"] = float(doc.get("coordination_risk_score") or 0.0)
+        doc["mobility_disruption_score"] = float(doc.get("mobility_disruption_score") or 0.0)
+        doc["logistics_stress_score"] = float(doc.get("logistics_stress_score") or 0.0)
+        doc["aviation_disruption_score"] = float(doc.get("aviation_disruption_score") or 0.0)
+        doc["household_stress_score"] = float(doc.get("household_stress_score") or 0.0)
+        doc["fuel_price_pressure"] = float(doc.get("fuel_price_pressure") or 0.0)
+        doc["food_price_pressure"] = float(doc.get("food_price_pressure") or 0.0)
+        doc["labor_stress_score"] = float(doc.get("labor_stress_score") or 0.0)
+        doc["fx_pressure_score"] = float(doc.get("fx_pressure_score") or 0.0)
+        doc["remittance_stress_score"] = float(doc.get("remittance_stress_score") or 0.0)
+        doc["energy_stress_score"] = float(doc.get("energy_stress_score") or 0.0)
         doc["weather_stress"] = float(doc.get("weather_stress") or 0.0)
         doc["external_signal_freshness"] = float(doc.get("external_signal_freshness") or 0.0)
+        doc["direct_behavior_score"] = float(doc.get("direct_behavior_score") or 0.0)
+        doc["contextual_pressure_score"] = float(doc.get("contextual_pressure_score") or 0.0)
+        doc["evidence_quality_score"] = float(doc.get("evidence_quality_score") or 0.0)
         doc.update(quality)
         doc.pop("topics", None)
         response_docs.append(doc)
@@ -1998,9 +2662,10 @@ def dashboard_country(request: Request, country: str, role: str = Depends(check_
         raise HTTPException(status_code=404, detail=f"No country data for {country} (tried: {country_codes})")
 
 
+    preferred_doc = _prefer_feature_doc(docs) or docs[0]
     ordered = list(reversed(docs))
-    latest = ordered[-1]
-    latest_features = latest.get("features", {})
+    latest = preferred_doc
+    latest_features = _refresh_country_features_if_stale(code, latest.get("features", {}), mode=mode)
     trend = [
         {
             "timestamp": str(d.get("timestamp", datetime.utcnow().isoformat())),
@@ -2010,12 +2675,38 @@ def dashboard_country(request: Request, country: str, role: str = Depends(check_
     ]
 
     drivers = []
-    for k in ("news_sentiment", "gdelt_sentiment", "crypto_return", "crypto_volatility", "stock_return", "stock_volatility", "weather_anomaly"):
+    for k in (
+        "direct_behavior_score",
+        "contextual_pressure_score",
+        "evidence_quality_score",
+        "social_unrest_score",
+        "google_trends_pressure",
+        "public_attention_score",
+        "narrative_velocity_score",
+        "coordination_risk_score",
+        "mobility_disruption_score",
+        "logistics_stress_score",
+        "aviation_disruption_score",
+        "household_stress_score",
+        "fuel_price_pressure",
+        "food_price_pressure",
+        "labor_stress_score",
+        "fx_pressure_score",
+        "remittance_stress_score",
+        "energy_stress_score",
+        "weather_stress",
+        "news_sentiment",
+        "gdelt_sentiment",
+    ):
         value = float(latest_features.get(k, 0.0))
+        if k == "evidence_quality_score":
+            contribution = round((value - 50.0) / 100.0, 4)
+        else:
+            contribution = round(value / 100.0, 4) if "score" in k or k.endswith("stress") or k.endswith("pressure") else round(value * 0.12, 4)
         drivers.append({
             "feature": k,
             "value": value,
-            "contribution": round(value * 0.12, 4),
+            "contribution": contribution,
         })
 
     events_cursor = list(
@@ -2032,6 +2723,18 @@ def dashboard_country(request: Request, country: str, role: str = Depends(check_
     return {
         "country": country,
         "risk": risk,
+        "direct_behavior_score": float(latest_features.get("direct_behavior_score", 0.0) or 0.0),
+        "contextual_pressure_score": float(latest_features.get("contextual_pressure_score", 0.0) or 0.0),
+        "evidence_quality_score": float(latest_features.get("evidence_quality_score", 0.0) or 0.0),
+        "mobility_disruption_score": float(latest_features.get("mobility_disruption_score", 0.0) or 0.0),
+        "logistics_stress_score": float(latest_features.get("logistics_stress_score", 0.0) or 0.0),
+        "household_stress_score": float(latest_features.get("household_stress_score", 0.0) or 0.0),
+        "fuel_price_pressure": float(latest_features.get("fuel_price_pressure", 0.0) or 0.0),
+        "food_price_pressure": float(latest_features.get("food_price_pressure", 0.0) or 0.0),
+        "labor_stress_score": float(latest_features.get("labor_stress_score", 0.0) or 0.0),
+        "fx_pressure_score": float(latest_features.get("fx_pressure_score", 0.0) or 0.0),
+        "remittance_stress_score": float(latest_features.get("remittance_stress_score", 0.0) or 0.0),
+        "energy_stress_score": float(latest_features.get("energy_stress_score", 0.0) or 0.0),
         "trend": trend,
         "drivers": drivers,
         "events": events,
@@ -3799,28 +4502,61 @@ def model_info(request: Request, role: str = Depends(check_role)):
 @app.post("/predict")
 @limiter.limit("10/minute")
 def predict(request: Request, payload: PredictionRequest, role: str = Depends(check_role)):
-    model, version = load_production_model()
+    model, version, model_feature_names, schema_version = load_production_model_bundle()
     if model is None:
         raise HTTPException(status_code=404, detail="No production model available")
 
-    expected_features = model.n_features_in_
-    if len(payload.features) != expected_features:
-        raise HTTPException(status_code=400, detail=f"Model expects {expected_features} features")
+    expected_features = int(getattr(model, "n_features_in_", len(model_feature_names)) or len(model_feature_names))
+    if len(model_feature_names) != expected_features:
+        model_feature_names = model_feature_names[:expected_features] if len(model_feature_names) > expected_features else model_feature_names + [f"feature_{idx+1}" for idx in range(len(model_feature_names), expected_features)]
+
+    aligned_features: list[float]
+    provided_names: list[str] = []
+
+    if payload.feature_map:
+        provided_names = list(payload.feature_map.keys())
+        aligned_features = [float(payload.feature_map.get(name, 0.0) or 0.0) for name in model_feature_names]
+    elif payload.features is not None:
+        raw_features = [float(value or 0.0) for value in payload.features]
+        if payload.feature_names and len(payload.feature_names) == len(raw_features):
+            feature_lookup = {str(name): raw_features[idx] for idx, name in enumerate(payload.feature_names)}
+            provided_names = [str(name) for name in payload.feature_names]
+            aligned_features = [float(feature_lookup.get(name, 0.0) or 0.0) for name in model_feature_names]
+        elif len(raw_features) == expected_features:
+            provided_names = list(model_feature_names)
+            aligned_features = raw_features
+        elif len(raw_features) == len(LEGACY_GLOBAL_PREDICTION_FEATURES) and expected_features >= len(raw_features):
+            feature_lookup = {name: raw_features[idx] for idx, name in enumerate(LEGACY_GLOBAL_PREDICTION_FEATURES)}
+            provided_names = list(LEGACY_GLOBAL_PREDICTION_FEATURES)
+            aligned_features = [float(feature_lookup.get(name, 0.0) or 0.0) for name in model_feature_names]
+        else:
+            raise HTTPException(status_code=400, detail=f"Model expects {expected_features} features; received {len(raw_features)}")
+    else:
+        raise HTTPException(status_code=400, detail="Provide features, feature_names, or feature_map")
 
     try:
-        prediction = model.predict([payload.features])[0]
-        probabilities = model.predict_proba([payload.features])[0]
-        confidence = float(probabilities[1])
+        raw_prediction = float(model.predict([aligned_features])[0])
+        if hasattr(model, "predict_proba"):
+            probabilities = model.predict_proba([aligned_features])[0]
+            confidence = float(probabilities[1])
+            prediction_output = int(raw_prediction)
+            predicted_risk_score = round(confidence * 100.0, 4)
+        else:
+            predicted_risk_score = round(max(0.0, min(100.0, raw_prediction)), 4)
+            confidence = round(predicted_risk_score / 100.0, 6)
+            prediction_output = predicted_risk_score
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Prediction failed: {str(e)}")
 
-    drift_score = compute_feature_drift(payload.features)
+    drift_score = compute_feature_drift(aligned_features, model_feature_names)
     record_prediction(
         prediction_collection=prediction_collection,
         model_monitoring_collection=model_monitoring_collection,
         model_version=version,
-        features=payload.features,
-        prediction=int(prediction),
+        features=aligned_features,
+        feature_names=model_feature_names,
+        schema_version=schema_version,
+        prediction=float(prediction_output),
         probability=confidence,
         drift_score=drift_score,
         role=role,
@@ -3828,11 +4564,15 @@ def predict(request: Request, payload: PredictionRequest, role: str = Depends(ch
     )
     runtime_metrics.on_prediction()
 
-    logging.info(f"version={version} | features={payload.features} | prediction={int(prediction)} | confidence={confidence}")
+    logging.info(f"version={version} | feature_names={model_feature_names} | prediction={prediction_output} | confidence={confidence}")
 
     return {
         "model_version": version,
-        "prediction": int(prediction),
+        "schema_version": schema_version,
+        "feature_names": model_feature_names,
+        "provided_feature_names": provided_names,
+        "prediction": prediction_output,
+        "predicted_risk_score": predicted_risk_score,
         "probability": confidence,
         "drift_score": drift_score,
     }
@@ -4355,6 +5095,27 @@ def observability_streaming(request: Request, role: str = Depends(require_admin)
     return country_risk_stream_health()
 
 
+@app.get("/observability/attention")
+@limiter.limit("10/minute")
+def observability_attention(
+    request: Request,
+    window_hours: int = Query(48, ge=6, le=168),
+    role: str = Depends(require_admin),
+):
+    return _build_attention_observability(window_hours=window_hours)
+
+
+@app.get("/observability/mobility")
+@limiter.limit("10/minute")
+def observability_mobility(
+    request: Request,
+    displacement_window_hours: int = Query(72, ge=12, le=336),
+    aviation_window_hours: int = Query(18, ge=3, le=72),
+    role: str = Depends(require_admin),
+):
+    return _build_mobility_observability(displacement_window_hours=displacement_window_hours, aviation_window_hours=aviation_window_hours)
+
+
 @app.get("/observability/country-risk-validation")
 @limiter.limit("10/minute")
 def observability_country_risk_validation(request: Request, role: str = Depends(require_admin)):
@@ -4461,6 +5222,9 @@ INGESTION_SLA_HOURS = {
     "economics": 24.0,
     "health": 24.0,
     "trends": 24.0,
+    "mobility": 36.0,
+    "aviation": 6.0,
+    "economic_behavior": 72.0,
 }
 
 CORE_INGESTION_SOURCES = {
@@ -4484,6 +5248,9 @@ def _build_latest_ingestion() -> dict:
         "economics": _latest_collection_stamp(economics_collection, ["collected_at", "timestamp", "created_at"]),
         "health": _latest_collection_stamp(health_collection, ["collected_at", "timestamp", "created_at"]),
         "trends": _latest_collection_stamp(trends_collection, ["collected_at", "timestamp", "created_at"]),
+        "mobility": _latest_collection_stamp(db["mobility"], ["collected_at", "timestamp", "created_at"]),
+        "aviation": _latest_collection_stamp(db["aviation"], ["collected_at", "timestamp", "created_at"]),
+        "economic_behavior": _latest_collection_stamp(db["economic_behavior"], ["collected_at", "timestamp", "created_at"]),
     }
 
 
@@ -4594,6 +5361,9 @@ def trust_reliability(request: Request, role: str = Depends(check_role), mode: s
     source_health = _build_source_health_snapshot()
     coverage_snapshot = _compute_country_coverage_snapshot(mode=mode)
     quality_gate = _build_quality_gate_snapshot(coverage_snapshot, freshness, source_health)
+    mobility_snapshot = _build_mobility_observability()
+    economic_snapshot = _build_economic_observability()
+    alerts = _build_operational_alerts(freshness, source_health, mobility_snapshot, economic_snapshot)
     country_validation = latest_country_risk_validation()
     global_validation = latest_global_mood_validation()
     country_backtest = latest_country_risk_backtest()
@@ -4623,6 +5393,9 @@ def trust_reliability(request: Request, role: str = Depends(check_role), mode: s
         "coverage": coverage_snapshot,
         "quality_gate": quality_gate,
         "confidence": _build_confidence_snapshot(mode=mode),
+        "mobility": mobility_snapshot,
+        "economic": economic_snapshot,
+        "alerts": alerts,
         "validation": {
             "country_latest": {
                 "status": country_validation.get("status"),
@@ -4681,18 +5454,30 @@ def trust_global_mood_backtests(
     return {"rows": list_global_mood_backtests(limit=limit), "limit": limit}
 
 
-def _latest_collection_stamp(collection, keys: list[str]) -> str | None:
-    doc = collection.find_one(sort=[("_id", DESCENDING)])
-    if not doc:
+def _latest_collection_stamp(collection, keys: list[str], max_scan: int = 25) -> str | None:
+    docs = list(collection.find().sort("_id", DESCENDING).limit(max_scan))
+    if not docs:
         return None
 
-    for key in keys:
-        value = doc.get(key)
-        if value is None:
-            continue
-        if isinstance(value, datetime):
-            return value.isoformat()
-        return str(value)
+    for doc in docs:
+        for key in keys:
+            value = doc.get(key)
+            if value is None:
+                continue
+            if isinstance(value, datetime):
+                return value.isoformat()
+            if isinstance(value, str) and value.strip():
+                return value
+            if value:
+                return str(value)
+            nested = doc.get("data") if isinstance(doc.get("data"), dict) else {}
+            nested_value = nested.get(key) if isinstance(nested, dict) else None
+            if isinstance(nested_value, datetime):
+                return nested_value.isoformat()
+            if isinstance(nested_value, str) and nested_value.strip():
+                return nested_value
+            if nested_value:
+                return str(nested_value)
 
     return None
 
@@ -4751,7 +5536,16 @@ def admin_system_monitoring(request: Request, role: str = Depends(require_admin)
         "economics": _latest_collection_stamp(economics_collection, ["collected_at", "timestamp", "created_at"]),
         "health": _latest_collection_stamp(health_collection, ["collected_at", "timestamp", "created_at"]),
         "trends": _latest_collection_stamp(trends_collection, ["collected_at", "timestamp", "created_at"]),
+        "mobility": _latest_collection_stamp(db["mobility"], ["collected_at", "timestamp", "created_at"]),
+        "aviation": _latest_collection_stamp(db["aviation"], ["collected_at", "timestamp", "created_at"]),
+        "economic_behavior": _latest_collection_stamp(db["economic_behavior"], ["collected_at", "timestamp", "created_at"]),
     }
+
+    mobility_snapshot = _build_mobility_observability(displacement_window_hours=72, aviation_window_hours=18, max_countries=8)
+    economic_snapshot = _build_economic_observability(window_hours=96, max_countries=8)
+    freshness_snapshot = _build_freshness_snapshot(latest_ingestion)
+    source_health_snapshot = _build_source_health_snapshot()
+    operational_alerts = _build_operational_alerts(freshness_snapshot, source_health_snapshot, mobility_snapshot, economic_snapshot)
 
     response = {
         "server_status": {
@@ -4775,6 +5569,11 @@ def admin_system_monitoring(request: Request, role: str = Depends(require_admin)
             "status": pipeline_status,
             "dependencies": dependencies,
             "latest_ingestion": latest_ingestion,
+            "freshness": freshness_snapshot,
+            "source_health": source_health_snapshot,
+            "mobility": mobility_snapshot,
+            "economic": economic_snapshot,
+            "alerts": operational_alerts,
         },
         "uptime_statistics": {
             "uptime_seconds": round(uptime_seconds, 3),
@@ -5573,8 +6372,43 @@ def bootstrap_and_migrate_users():
 
 
 
+SOURCE_LABELS = {
+    "unhcr_idmc": "UNHCR displacement",
+    "opensky": "OpenSky aviation",
+    "opensky_auth": "OpenSky auth",
+    "fred_behavior": "FRED food pressure",
+    "fred_behavior_labor": "FRED labor proxy",
+    "eia_behavior": "EIA fuel pressure",
+    "frankfurter_behavior": "Frankfurter FX pressure",
+    "worldbank_behavior_BX.TRF.PWKR.CD.DT": "World Bank remittance inflows",
+    "worldbank_behavior_EG.IMP.CONS.ZS": "World Bank energy dependency",
+    "fred_behavior_energy": "FRED energy proxy",
+    "telegram_public": "Telegram public channels",
+    "youtube_public": "YouTube public trends",
+    "logistics": "Logistics stress",
+    "worldbank_behavior_SL.UEM.TOTL.ZS": "World Bank unemployment",
+    "worldbank_behavior_FP.CPI.TOTL.ZG": "World Bank inflation",
+    "acled": "ACLED events",
+    "reliefweb": "ReliefWeb",
+    "weather": "Weather feed",
+    "trends": "Trends feed",
+    "economic_behavior": "Economic behavior",
+}
+
+
+def _source_label(source: str) -> str:
+    key = str(source or "").strip()
+    if key in SOURCE_LABELS:
+        return SOURCE_LABELS[key]
+    return key.replace("_", " ").replace(".", " ").title()
+
+
 def _build_source_health_snapshot() -> dict:
-    docs = list(source_health_collection.find({}, {"_id": 0}).sort("updated_at", DESCENDING))
+    docs = [
+        {**row, "source_label": _source_label(str(row.get("source") or ""))}
+        for row in source_health_collection.find({}, {"_id": 0}).sort("updated_at", DESCENDING)
+        if str(row.get("source") or "") != "worldbank_behavior"
+    ]
     critical_down = 0
     critical_down_live = 0
     up_count = 0

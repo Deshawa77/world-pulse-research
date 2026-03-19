@@ -206,7 +206,16 @@ import collectors.frankfurter as frankfurter
 import collectors.who as who
 import collectors.twelvedata as twelvedata
 import collectors.worldbank as worldbank
-import collectors.reddit as reddit
+import collectors.mobility as mobility
+import collectors.aviation as aviation
+import collectors.opensky as opensky
+import collectors.unhcr as unhcr
+import collectors.logistics as logistics
+import collectors.telegram_public as telegram_public
+import collectors.youtube_trends as youtube_trends
+import collectors.economic_behavior as economic_behavior
+import collectors.worldbank_behavior as worldbank_behavior
+import collectors.energy_stress as energy_stress
 import collectors.world_state as world_state
 
 # -------------------------------
@@ -271,7 +280,9 @@ WHO_INDICATOR_CODES = [
 COLLECTOR_TASKS = {
     "news": (lambda: news.fetch_news("earthquake", page_size=5), "news_topic"),
     "gdelt": (lambda: gdelt.fetch_gdelt_articles("(earthquake OR flood)", max_records=5), "gdelt_topic"),
-    "wiki": (lambda: wiki.fetch_pageviews("Earthquake", days=5), "wiki_topic"),
+    "wiki_attention": (lambda: wiki.collect_country_attention(batch_size=50, pause_sec=0.05), "wiki_pageviews"),
+    "telegram_public": (lambda: telegram_public.collect_telegram_public_signals(), "telegram_public_topic"),
+    "youtube_trends": (lambda: youtube_trends.collect_youtube_trend_signals(), "youtube_trends_topic"),
     "trends": (lambda: trends.fetch_trends_multi(TREND_KEYWORDS, max_retries=2), "trends_topic"),
     "earthquakes": (lambda: usgs.fetch_earthquakes(), "earthquakes_topic"),
     "weather": (lambda: weather.collect_weather_for_orchestrator(), "weather_topic"),
@@ -281,7 +292,14 @@ COLLECTOR_TASKS = {
     "who": (lambda: who.fetch_who_indicators(WHO_INDICATOR_CODES, max_results_per_indicator=300, include_covid_deaths=True, max_covid_records=260), "who_topic"),
     "stocks": (lambda: twelvedata.fetch_stock("AAPL","1day",5), "stocks_topic"),
     "worldbank": (lambda: worldbank.fetch_worldbank_data(date="2020:2025", per_page=5), "worldbank_topic"),
-    "reddit": (lambda: reddit.fetch_reddit_posts("worldnews", limit=5), "reddit_topic"),
+    "mobility": (lambda: mobility.collect_mobility_signals(year_from=datetime.now(timezone.utc).year - 2, year_to=datetime.now(timezone.utc).year), "mobility_topic"),
+    "unhcr": (lambda: unhcr.collect_unhcr_signals(year_from=datetime.now(timezone.utc).year - 2, year_to=datetime.now(timezone.utc).year), "mobility_topic"),
+    "aviation": (lambda: aviation.collect_aviation_signals(), "aviation_topic"),
+    "opensky": (lambda: opensky.collect_opensky_signals(), "aviation_topic"),
+    "logistics": (lambda: logistics.collect_logistics_signals(), "logistics_topic"),
+    "economic_behavior": (lambda: economic_behavior.collect_economic_behavior_signals(), "economic_behavior_topic"),
+    "worldbank_behavior": (lambda: worldbank_behavior.collect_worldbank_behavior_indicators(), "worldbank_behavior_topic"),
+    "energy_stress": (lambda: energy_stress.collect_energy_stress_signals(), "energy_stress_topic"),
     "world_state": (lambda: world_state.collect_world_state_signals(), "world_state_signals_topic")
 }
 
@@ -786,7 +804,7 @@ if __name__=="__main__":
     def country_risk_loop(interval_sec=3600):
         while True:
             try:
-                summary = country_daily_refresh_if_due(max_records=4, batch_size=50)
+                summary = country_daily_refresh_if_due(max_records=12, batch_size=50)
                 log_event(f"Country daily risk refresh: {summary}")
             except Exception as e:
                 log_event(f"Country daily risk loop error: {e}")

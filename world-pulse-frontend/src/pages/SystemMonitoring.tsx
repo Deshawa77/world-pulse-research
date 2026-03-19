@@ -58,6 +58,23 @@ export default function SystemMonitoring() {
   const trustFreshness = (trust?.data_freshness ?? {}) as Record<string, unknown>;
   const trustConfidence = (trust?.confidence ?? {}) as Record<string, unknown>;
   const trustValidation = (trust?.validation ?? {}) as Record<string, unknown>;
+  const trustSourceHealth = (trust?.source_health ?? {}) as Record<string, unknown>;
+  const mobilitySnapshot = ((data?.mobility ?? trust?.mobility) ?? {}) as Record<string, unknown>;
+  const mobilitySources = (mobilitySnapshot.sources ?? {}) as Record<string, unknown>;
+  const mobilityTrend = (mobilitySnapshot.trend ?? {}) as Record<string, unknown>;
+  const mobilityDisplacement = (mobilitySources.displacement ?? {}) as Record<string, unknown>;
+  const mobilityAviation = (mobilitySources.aviation ?? {}) as Record<string, unknown>;
+  const combinedDaily = Array.isArray(mobilityTrend.combined_daily) ? (mobilityTrend.combined_daily as Array<Record<string, unknown>>) : [];
+  const economicSnapshot = ((data?.economic ?? trust?.economic) ?? {}) as Record<string, unknown>;
+  const economicAverages = (economicSnapshot.averages ?? {}) as Record<string, unknown>;
+  const economicTrend = (economicSnapshot.trend ?? {}) as Record<string, unknown>;
+  const economicTopCountries = Array.isArray(economicSnapshot.top_countries) ? (economicSnapshot.top_countries as Array<Record<string, unknown>>) : [];
+  const operationalAlerts = Array.isArray(data?.alerts) ? data.alerts : Array.isArray(trust?.alerts) ? trust.alerts : [];
+  const sourceHealthRows = Array.isArray(trustSourceHealth.sources) ? (trustSourceHealth.sources as Array<Record<string, unknown>>) : [];
+  const economicHealthRows = sourceHealthRows.filter((row) => {
+    const source = String(row.source ?? "");
+    return source.startsWith("worldbank_behavior_") || source === "fred_behavior" || source === "eia_behavior" || source === "frankfurter_behavior";
+  });
 
   const readyHealth = (apiHealth.ready ?? {}) as Record<string, unknown>;
 
@@ -128,6 +145,80 @@ export default function SystemMonitoring() {
           <p>Overall freshness: <strong>{displayValue(trustFreshness.overall_status)}</strong></p>
           <p>Country backtest Brier: <strong>{displayValue((trustValidation.country_backtest as Record<string, unknown> | undefined)?.weighted_brier_score)}</strong></p>
           <p>Global mood backtest MAE: <strong>{displayValue((trustValidation.global_backtest as Record<string, unknown> | undefined)?.weighted_mae)}</strong></p>
+        </article>
+      </section>
+
+      <section className="proposal-runtime-grid">
+        <article className="wp-card proposal-runtime-panel">
+          <span className="proposal-eyebrow">Mobility trust</span>
+          <p>Status: <strong>{displayValue(mobilitySnapshot.status)}</strong></p>
+          <p>Displacement coverage: <strong>{displayValue(mobilityDisplacement.country_count)}</strong></p>
+          <p>Aviation coverage: <strong>{displayValue(mobilityAviation.country_count)}</strong></p>
+          <p>Overlap ratio: <strong>{displayValue(mobilitySnapshot.crosscheck_overlap_ratio)}</strong></p>
+        </article>
+
+        <article className="wp-card proposal-runtime-panel">
+          <span className="proposal-eyebrow">Mobility coverage trend</span>
+          <p>Combined delta: <strong>{displayValue(mobilityTrend.combined_delta)}</strong></p>
+          <p>Displacement delta: <strong>{displayValue(mobilityTrend.displacement_delta)}</strong></p>
+          <p>Aviation delta: <strong>{displayValue(mobilityTrend.aviation_delta)}</strong></p>
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: "0.78rem" }}>{compactJson(combinedDaily.slice(-5))}</pre>
+        </article>
+      </section>
+
+      <section className="proposal-runtime-grid">
+        <article className="wp-card proposal-runtime-panel">
+          <span className="proposal-eyebrow">Economic source health</span>
+          {economicHealthRows.length ? (
+            <div>
+              {economicHealthRows.map((row) => (
+                <p key={String(row.source ?? row.source_label ?? Math.random())}>
+                  {displayValue(row.source_label ?? row.source)}: <strong>{displayValue(row.status)}</strong>
+                  {row.records !== undefined ? ` (${displayValue(row.records)} rows)` : ""}
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p>No economic source-health rows available yet.</p>
+          )}
+        </article>
+
+        <article className="wp-card proposal-runtime-panel">
+          <span className="proposal-eyebrow">Alert summary</span>
+          {operationalAlerts.length ? (
+            <div>
+              {operationalAlerts.slice(0, 6).map((alert, index) => (
+                <p key={`${String(alert.source ?? 'alert')}-${index}`}>
+                  {displayValue(alert.severity)}: <strong>{displayValue(alert.source_label ?? alert.source)}</strong> - {displayValue(alert.message)}
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p>No active mobility or economic alerts.</p>
+          )}
+        </article>
+      </section>
+
+      <section className="proposal-runtime-grid">
+        <article className="wp-card proposal-runtime-panel">
+          <span className="proposal-eyebrow">Economic observability</span>
+          <p>Status: <strong>{displayValue(economicSnapshot.status)}</strong></p>
+          <p>Country coverage: <strong>{displayValue(economicSnapshot.country_count)}</strong></p>
+          <p>Coverage delta: <strong>{displayValue(economicTrend.coverage_delta)}</strong></p>
+          <p>Household avg: <strong>{displayValue(economicAverages.household_stress_score)}</strong></p>
+          <p>Fuel avg: <strong>{displayValue(economicAverages.fuel_price_pressure)}</strong></p>
+          <p>Food avg: <strong>{displayValue(economicAverages.food_price_pressure)}</strong></p>
+          <p>Labor avg: <strong>{displayValue(economicAverages.labor_stress_score)}</strong></p>
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: "0.78rem" }}>{compactJson(economicTopCountries.slice(0, 5))}</pre>
+        </article>
+
+        <article className="wp-card proposal-runtime-panel">
+          <span className="proposal-eyebrow">Operational alerts</span>
+          {operationalAlerts.length ? (
+            <pre style={{ whiteSpace: "pre-wrap", fontSize: "0.78rem" }}>{compactJson(operationalAlerts)}</pre>
+          ) : (
+            <p>No active mobility or economic alerts.</p>
+          )}
         </article>
       </section>
 

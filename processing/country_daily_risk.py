@@ -9,6 +9,9 @@ import numpy as np
 import pandas as pd
 
 from collectors.country_news import get_country_catalog, refresh_country_news
+from collectors.mobility import collect_mobility_signals
+from collectors.economic_behavior import collect_economic_behavior_signals
+from collectors.wiki import collect_country_attention
 from config import FEATURE_COLUMNS
 from database.mongo import db, get_latest_global_features, write_country_features_v2
 from processing.country_risk_validation import latest_country_risk_validation
@@ -548,16 +551,128 @@ def _compute_regional_escalation(country_code, indicators_by_country):
 def _apply_external_signal_overlay(score, external_signals):
     social_unrest_score = float(external_signals.get("social_unrest_score", 0.0) or 0.0)
     google_trends_pressure = float(external_signals.get("google_trends_pressure", 0.0) or 0.0)
+    public_attention_score = float(external_signals.get("public_attention_score", 0.0) or 0.0)
+    narrative_velocity_score = float(external_signals.get("narrative_velocity_score", 0.0) or 0.0)
+    coordination_risk_score = float(external_signals.get("coordination_risk_score", 0.0) or 0.0)
     weather_stress = float(external_signals.get("weather_stress", 0.0) or 0.0)
+    mobility_disruption_score = float(external_signals.get("mobility_disruption_score", 0.0) or 0.0)
+    logistics_stress_score = float(external_signals.get("logistics_stress_score", 0.0) or 0.0)
+    household_stress_score = float(external_signals.get("household_stress_score", 0.0) or 0.0)
+    fuel_price_pressure = float(external_signals.get("fuel_price_pressure", 0.0) or 0.0)
+    food_price_pressure = float(external_signals.get("food_price_pressure", 0.0) or 0.0)
+    labor_stress_score = float(external_signals.get("labor_stress_score", 0.0) or 0.0)
+    fx_pressure_score = float(external_signals.get("fx_pressure_score", 0.0) or 0.0)
+    remittance_stress_score = float(external_signals.get("remittance_stress_score", 0.0) or 0.0)
+    energy_stress_score = float(external_signals.get("energy_stress_score", 0.0) or 0.0)
     external_signal_freshness = float(external_signals.get("external_signal_freshness", 0.0) or 0.0)
 
     overlay = (
-        social_unrest_score * 10.0
+        social_unrest_score * 8.0
         + google_trends_pressure * 8.0
+        + public_attention_score * 6.0
+        + narrative_velocity_score * 7.0
+        + coordination_risk_score * 6.0
+        + mobility_disruption_score * 10.0
+        + logistics_stress_score * 6.0
+        + household_stress_score * 8.0
+        + labor_stress_score * 6.0
+        + fx_pressure_score * 6.0
+        + remittance_stress_score * 5.0
+        + energy_stress_score * 6.0
+        + fuel_price_pressure * 7.0
+        + food_price_pressure * 7.0
         + weather_stress * 12.0
         + external_signal_freshness * 4.0
     )
     return round(min(score + overlay, 100.0), 2)
+
+
+def compute_country_signal_scores(
+    *,
+    base_risk_score: float,
+    conflict_indicators: dict,
+    external_signals: dict,
+    source_count: int,
+    source_diversity_score: float,
+    source_reliability_score: float,
+    regional_escalation: float,
+    war_state_rules: list[str] | None,
+) -> dict[str, float]:
+    social_unrest_score = float(external_signals.get("social_unrest_score", 0.0) or 0.0)
+    google_trends_pressure = float(external_signals.get("google_trends_pressure", 0.0) or 0.0)
+    public_attention_score = float(external_signals.get("public_attention_score", 0.0) or 0.0)
+    narrative_velocity_score = float(external_signals.get("narrative_velocity_score", 0.0) or 0.0)
+    coordination_risk_score = float(external_signals.get("coordination_risk_score", 0.0) or 0.0)
+    weather_stress = float(external_signals.get("weather_stress", 0.0) or 0.0)
+    mobility_disruption_score = float(external_signals.get("mobility_disruption_score", 0.0) or 0.0)
+    logistics_stress_score = float(external_signals.get("logistics_stress_score", 0.0) or 0.0)
+    household_stress_score = float(external_signals.get("household_stress_score", 0.0) or 0.0)
+    fuel_price_pressure = float(external_signals.get("fuel_price_pressure", 0.0) or 0.0)
+    food_price_pressure = float(external_signals.get("food_price_pressure", 0.0) or 0.0)
+    labor_stress_score = float(external_signals.get("labor_stress_score", 0.0) or 0.0)
+    fx_pressure_score = float(external_signals.get("fx_pressure_score", 0.0) or 0.0)
+    remittance_stress_score = float(external_signals.get("remittance_stress_score", 0.0) or 0.0)
+    energy_stress_score = float(external_signals.get("energy_stress_score", 0.0) or 0.0)
+    external_signal_freshness = float(external_signals.get("external_signal_freshness", 0.0) or 0.0)
+    source_confidence = float(conflict_indicators.get("source_confidence", 0.0) or 0.0)
+    recency_weight = float(conflict_indicators.get("recency_weight", 0.0) or 0.0)
+    weighted_keyword_severity = float(conflict_indicators.get("weighted_keyword_severity", 0.0) or 0.0)
+    conflict_count = float(conflict_indicators.get("conflict_headline_count", 0.0) or 0.0)
+    source_count_weight = min(max(float(source_count) / 6.0, 0.0), 1.0)
+    war_pressure = 1.0 if war_state_rules else 0.0
+
+    direct_behavior_score = min(
+        100.0,
+        (
+            social_unrest_score * 18.0
+            + google_trends_pressure * 28.0
+            + public_attention_score * 24.0
+            + narrative_velocity_score * 18.0
+            + coordination_risk_score * 12.0
+            + mobility_disruption_score * 18.0
+            + household_stress_score * 16.0
+            + labor_stress_score * 14.0
+            + fx_pressure_score * 12.0
+            + remittance_stress_score * 10.0
+            + external_signal_freshness * 12.0
+            + source_count_weight * 8.0
+        ),
+    )
+    contextual_pressure_score = min(
+        100.0,
+        (
+            min(max(base_risk_score, 0.0), 100.0) * 0.34
+            + weather_stress * 16.0
+            + mobility_disruption_score * 8.0
+            + logistics_stress_score * 10.0
+            + fuel_price_pressure * 14.0
+            + food_price_pressure * 14.0
+            + fx_pressure_score * 10.0
+            + energy_stress_score * 12.0
+            + weighted_keyword_severity * 20.0
+            + min(conflict_count / 4.0, 1.0) * 16.0
+            + regional_escalation * 16.0
+            + war_pressure * 10.0
+        ),
+    )
+    evidence_quality_score = min(
+        100.0,
+        max(
+            0.0,
+            (
+                source_diversity_score * 28.0
+                + source_reliability_score * 24.0
+                + source_confidence * 18.0
+                + recency_weight * 18.0
+                + external_signal_freshness * 12.0
+            ),
+        ),
+    )
+    return {
+        "direct_behavior_score": round(direct_behavior_score, 2),
+        "contextual_pressure_score": round(contextual_pressure_score, 2),
+        "evidence_quality_score": round(evidence_quality_score, 2),
+    }
 
 
 def _apply_conflict_overlay(base_score, indicators, regional_escalation):
@@ -600,8 +715,14 @@ def _load_today_country_news(day: datetime | None = None):
 def build_daily_country_features(day: datetime | None = None, ensure_fresh_news: bool = True, max_records: int = 4, batch_size: int = 50):
     target_day = day or datetime.now(timezone.utc)
     refresh_summary = None
+    attention_summary = None
+    mobility_summary = None
+    economic_behavior_summary = None
     if ensure_fresh_news:
         refresh_summary = refresh_country_news(day=target_day, max_records=max_records, batch_size=batch_size)
+        attention_summary = collect_country_attention(day=target_day, batch_size=batch_size)
+        mobility_summary = collect_mobility_signals(year_from=target_day.year - 2, year_to=target_day.year)
+        economic_behavior_summary = collect_economic_behavior_signals()
 
     grouped_news = {country: _dedupe_country_docs(docs) for country, docs in _load_today_country_news(target_day).items()}
     neutral_defaults = _neutral_feature_defaults()
@@ -624,6 +745,9 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
         "with_news": 0,
         "without_news": [],
         "refresh": refresh_summary,
+        "attention_refresh": attention_summary,
+        "mobility_refresh": mobility_summary,
+        "economic_behavior_refresh": economic_behavior_summary,
         "external_signals": external_signal_summary,
         "latest_validation_status": latest_validation.get("status"),
         "latest_validation_sample_count": int(latest_validation.get("sample_count", 0) or 0),
@@ -648,6 +772,16 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
         risk_score = _apply_conflict_overlay(base_risk_score, conflict_indicators, regional_escalation)
         risk_score = _apply_external_signal_overlay(risk_score, external_signals)
         risk_score, war_state_rules = _apply_war_state_floor(country_code, risk_score, conflict_indicators, regional_escalation, war_state_results)
+        signal_scores = compute_country_signal_scores(
+            base_risk_score=base_risk_score,
+            conflict_indicators=conflict_indicators,
+            external_signals=external_signals,
+            source_count=len(country_docs),
+            source_diversity_score=source_diversity_score,
+            source_reliability_score=source_reliability_score,
+            regional_escalation=regional_escalation,
+            war_state_rules=war_state_rules,
+        )
         feature_doc = {
             **features,
             "timestamp": timestamp_iso,
@@ -667,9 +801,23 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             "regional_escalation_regions": triggered_regions,
             "social_unrest_score": float(external_signals.get("social_unrest_score", 0.0) or 0.0),
             "google_trends_pressure": float(external_signals.get("google_trends_pressure", 0.0) or 0.0),
+            "public_attention_score": float(external_signals.get("public_attention_score", 0.0) or 0.0),
+            "narrative_velocity_score": float(external_signals.get("narrative_velocity_score", 0.0) or 0.0),
+            "coordination_risk_score": float(external_signals.get("coordination_risk_score", 0.0) or 0.0),
+            "mobility_disruption_score": float(external_signals.get("mobility_disruption_score", 0.0) or 0.0),
+            "logistics_stress_score": float(external_signals.get("logistics_stress_score", 0.0) or 0.0),
+            "aviation_disruption_score": float(external_signals.get("aviation_disruption_score", 0.0) or 0.0),
+            "household_stress_score": float(external_signals.get("household_stress_score", 0.0) or 0.0),
+            "fuel_price_pressure": float(external_signals.get("fuel_price_pressure", 0.0) or 0.0),
+            "food_price_pressure": float(external_signals.get("food_price_pressure", 0.0) or 0.0),
+            "labor_stress_score": float(external_signals.get("labor_stress_score", 0.0) or 0.0),
+            "fx_pressure_score": float(external_signals.get("fx_pressure_score", 0.0) or 0.0),
+            "remittance_stress_score": float(external_signals.get("remittance_stress_score", 0.0) or 0.0),
+            "energy_stress_score": float(external_signals.get("energy_stress_score", 0.0) or 0.0),
             "weather_stress": float(external_signals.get("weather_stress", 0.0) or 0.0),
             "external_signal_freshness": float(external_signals.get("external_signal_freshness", 0.0) or 0.0),
             "external_sources": list(external_signals.get("external_sources", [])),
+            **signal_scores,
             "war_state_rules": war_state_rules,
             "risk_category": "HIGH" if risk_score >= 70 else "MEDIUM" if risk_score >= 40 else "LOW",
         }
@@ -697,8 +845,24 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             "regional_escalation": round(regional_escalation, 4),
             "social_unrest_score": float(external_signals.get("social_unrest_score", 0.0) or 0.0),
             "google_trends_pressure": float(external_signals.get("google_trends_pressure", 0.0) or 0.0),
+            "public_attention_score": float(external_signals.get("public_attention_score", 0.0) or 0.0),
+            "narrative_velocity_score": float(external_signals.get("narrative_velocity_score", 0.0) or 0.0),
+            "coordination_risk_score": float(external_signals.get("coordination_risk_score", 0.0) or 0.0),
+            "mobility_disruption_score": float(external_signals.get("mobility_disruption_score", 0.0) or 0.0),
+            "logistics_stress_score": float(external_signals.get("logistics_stress_score", 0.0) or 0.0),
+            "aviation_disruption_score": float(external_signals.get("aviation_disruption_score", 0.0) or 0.0),
+            "household_stress_score": float(external_signals.get("household_stress_score", 0.0) or 0.0),
+            "fuel_price_pressure": float(external_signals.get("fuel_price_pressure", 0.0) or 0.0),
+            "food_price_pressure": float(external_signals.get("food_price_pressure", 0.0) or 0.0),
+            "labor_stress_score": float(external_signals.get("labor_stress_score", 0.0) or 0.0),
+            "fx_pressure_score": float(external_signals.get("fx_pressure_score", 0.0) or 0.0),
+            "remittance_stress_score": float(external_signals.get("remittance_stress_score", 0.0) or 0.0),
+            "energy_stress_score": float(external_signals.get("energy_stress_score", 0.0) or 0.0),
             "weather_stress": float(external_signals.get("weather_stress", 0.0) or 0.0),
             "external_signal_freshness": float(external_signals.get("external_signal_freshness", 0.0) or 0.0),
+            "direct_behavior_score": feature_doc["direct_behavior_score"],
+            "contextual_pressure_score": feature_doc["contextual_pressure_score"],
+            "evidence_quality_score": feature_doc["evidence_quality_score"],
             "war_state_rules": war_state_rules,
             "source": "country_news_multi_source_daily",
         })
@@ -714,7 +878,7 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             "country", "timestamp", *FEATURE_COLUMNS, "global_risk_score", "base_model_risk_score", "top_topics",
             "country_name", "source_count", "source_diversity_score", "source_reliability_score", "country_mood_score", "country_mood_baseline", "country_mood_sentiment_delta", "country_mood_sentiment_zscore", "conflict_headline_count", "weighted_keyword_severity",
             "source_confidence", "recency_weight", "regional_escalation", "social_unrest_score",
-            "google_trends_pressure", "weather_stress", "external_signal_freshness", "war_state_rules", "source"
+            "google_trends_pressure", "public_attention_score", "narrative_velocity_score", "coordination_risk_score", "mobility_disruption_score", "aviation_disruption_score", "logistics_stress_score", "household_stress_score", "fuel_price_pressure", "food_price_pressure", "labor_stress_score", "fx_pressure_score", "remittance_stress_score", "energy_stress_score", "weather_stress", "external_signal_freshness", "direct_behavior_score", "contextual_pressure_score", "evidence_quality_score", "war_state_rules", "source"
         ]
         fs.write_country(df[write_cols])
         df.to_csv(COUNTRY_FEATURE_CSV, index=False)

@@ -1,7 +1,5 @@
-import axios from "axios";
+import API from "./api";
 import type { UserRole, UserType } from "./api";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export type AuthResponse = {
   access_token: string;
@@ -13,8 +11,8 @@ export type AuthResponse = {
 };
 
 export async function login(email: string, password: string): Promise<AuthResponse> {
-  const response = await axios.post(
-    `${API_URL}/auth/login`,
+  const response = await API.post(
+    "/auth/login",
     {
       email,
       password,
@@ -54,8 +52,8 @@ export async function register(
     payload.admin_invite_code = adminInviteCode;
   }
 
-  const response = await axios.post(
-    `${API_URL}/auth/register`,
+  const response = await API.post(
+    "/auth/register",
     payload,
     {
       headers: {
@@ -68,8 +66,8 @@ export async function register(
 }
 
 export async function forgotPassword(email: string) {
-  const response = await axios.post(
-    `${API_URL}/auth/forgot-password`,
+  const response = await API.post(
+    "/auth/forgot-password",
     {
       email,
     },
@@ -84,8 +82,8 @@ export async function forgotPassword(email: string) {
 }
 
 export async function resetPassword(token: string, newPassword: string) {
-  const response = await axios.post(
-    `${API_URL}/auth/reset-password`,
+  const response = await API.post(
+    "/auth/reset-password",
     {
       token,
       new_password: newPassword,

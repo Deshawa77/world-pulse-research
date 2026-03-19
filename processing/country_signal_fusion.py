@@ -142,12 +142,27 @@ def _match_countries(text: str, alias_map: dict[str, set[str]]):
     return matched
 
 
+SOURCE_LOOKBACK_HOURS = {
+    'wiki': 24,
+    'telegram_public': 24,
+    'youtube_trends': 24,
+    'trends': 24,
+    'weather': 18,
+    'mobility': 72,
+    'aviation': 24,
+    'logistics': 96,
+    'economic_behavior': 96,
+}
+
+
 def _latest_docs_for_day(collection_name: str, day: datetime | None = None):
-    start, end = _utc_day_bounds(day)
+    current = (day or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    lookback_hours = int(SOURCE_LOOKBACK_HOURS.get(collection_name, 24))
+    cutoff = current - timedelta(hours=lookback_hours)
     docs = []
     for doc in db[collection_name].find():
         stamp = _parse_dt(doc.get('timestamp') or doc.get('collected_at') or ((doc.get('data') or {}).get('published_at')) or doc.get('data_timestamp'))
-        if stamp and start <= stamp < end:
+        if stamp and cutoff <= stamp <= current:
             docs.append(doc)
     return docs
 
@@ -158,35 +173,85 @@ def build_country_external_signal_snapshot(day: datetime | None, catalog: dict[s
         code: {
             'social_unrest_score': 0.0,
             'google_trends_pressure': 0.0,
+            'public_attention_score': 0.0,
+            'narrative_velocity_score': 0.0,
+            'coordination_risk_score': 0.0,
             'weather_stress': 0.0,
+            'mobility_disruption_score': 0.0,
+            'aviation_disruption_score': 0.0,
+            'logistics_stress_score': 0.0,
+            'household_stress_score': 0.0,
+            'fuel_price_pressure': 0.0,
+            'food_price_pressure': 0.0,
+            'labor_stress_score': 0.0,
+            'fx_pressure_score': 0.0,
+            'remittance_stress_score': 0.0,
+            'energy_stress_score': 0.0,
             'external_signal_freshness': 0.0,
             'external_sources': [],
-            'social_posts': 0,
+            'attention_points': 0,
             'trend_points': 0,
+            'social_points': 0,
             'weather_points': 0,
+            'mobility_points': 0,
+            'aviation_points': 0,
+            'logistics_points': 0,
+            'economic_points': 0,
         }
         for code in catalog.keys()
     }
-    source_coverage = {'reddit': 0, 'trends': 0, 'weather': 0}
+    source_coverage = {'wiki': 0, 'trends': 0, 'telegram_public': 0, 'youtube_public': 0, 'weather': 0, 'mobility': 0, 'aviation': 0, 'logistics': 0, 'economic_behavior': 0}
 
-    reddit_docs = _latest_docs_for_day('reddit', day)
-    for doc in reddit_docs:
+    wiki_docs = _latest_docs_for_day('wiki', day)
+    for doc in wiki_docs:
         data = doc.get('data') or {}
-        text = ' '.join([str(data.get('query') or ''), str(data.get('title') or ''), str(data.get('text') or ''), str(data.get('subreddit') or '')])
-        matched = _match_countries(text, alias_map)
-        if not matched:
-            continue
-        norm_text = _norm(text)
-        keyword_pressure = max((weight for term, weight in SOCIAL_RISK_TERMS.items() if _contains(norm_text, term)), default=0.0)
-        score = float(data.get('score') or 0.0)
-        social_strength = min((math.log1p(max(score, 0.0)) / 6.0) + keyword_pressure, 1.0)
+        country_code = str(doc.get('country') or '').strip().upper()
+        article = str(data.get('article') or '')
+        if country_code not in signals:
+            matched = _match_countries(article, alias_map)
+            if not matched:
+                continue
+        else:
+            matched = {country_code}
+        views = float(data.get('views') or 0.0)
+        delta_ratio = float(data.get('view_delta_ratio') or 0.0)
+        attention_strength = min((math.log1p(max(views, 0.0)) / 12.0) + max(delta_ratio, 0.0) * 0.35, 1.0)
         for code in matched:
             entry = signals[code]
-            entry['social_unrest_score'] = min(1.0, entry['social_unrest_score'] + social_strength * 0.35)
-            entry['social_posts'] += 1
-            if 'reddit' not in entry['external_sources']:
-                entry['external_sources'].append('reddit')
-            source_coverage['reddit'] += 1
+            entry['public_attention_score'] = min(1.0, max(entry['public_attention_score'], attention_strength))
+            entry['attention_points'] += 1
+            if 'wikipedia' not in entry['external_sources']:
+                entry['external_sources'].append('wikipedia')
+            source_coverage['wiki'] += 1
+
+    telegram_docs = _latest_docs_for_day('telegram_public', day)
+    for doc in telegram_docs:
+        data = doc.get('data') or {}
+        country_code = str(doc.get('country') or '').strip().upper()
+        if country_code not in signals:
+            continue
+        entry = signals[country_code]
+        entry['narrative_velocity_score'] = max(entry['narrative_velocity_score'], float(data.get('narrative_velocity_score') or 0.0))
+        entry['coordination_risk_score'] = max(entry['coordination_risk_score'], float(data.get('coordination_risk_score') or 0.0))
+        entry['social_unrest_score'] = max(entry['social_unrest_score'], float(data.get('social_unrest_score') or 0.0))
+        entry['social_points'] += 1
+        if 'telegram_public' not in entry['external_sources']:
+            entry['external_sources'].append('telegram_public')
+        source_coverage['telegram_public'] += 1
+
+    youtube_docs = _latest_docs_for_day('youtube_trends', day)
+    for doc in youtube_docs:
+        data = doc.get('data') or {}
+        country_code = str(doc.get('country') or '').strip().upper()
+        if country_code not in signals:
+            continue
+        entry = signals[country_code]
+        entry['public_attention_score'] = max(entry['public_attention_score'], float(data.get('public_attention_score') or 0.0))
+        entry['narrative_velocity_score'] = max(entry['narrative_velocity_score'], float(data.get('narrative_velocity_score') or 0.0))
+        entry['social_points'] += 1
+        if 'youtube_public' not in entry['external_sources']:
+            entry['external_sources'].append('youtube_public')
+        source_coverage['youtube_public'] += 1
 
     trend_docs = _latest_docs_for_day('trends', day)
     for doc in trend_docs:
@@ -204,6 +269,70 @@ def build_country_external_signal_snapshot(day: datetime | None, catalog: dict[s
             if 'google_trends' not in entry['external_sources']:
                 entry['external_sources'].append('google_trends')
             source_coverage['trends'] += 1
+
+    mobility_docs = _latest_docs_for_day('mobility', day)
+    for doc in mobility_docs:
+        data = doc.get('data') or {}
+        country_code = str(doc.get('country') or data.get('origin_country') or '').strip().upper()
+        if country_code not in signals:
+            continue
+        displaced_people = float(data.get('displaced_people') or 0.0)
+        delta_ratio = float(data.get('displacement_delta_ratio') or 0.0)
+        mobility_strength = min((math.log1p(max(displaced_people, 0.0)) / 13.0) + max(delta_ratio, 0.0) * 0.2, 1.0)
+        entry = signals[country_code]
+        entry['mobility_disruption_score'] = max(entry['mobility_disruption_score'], mobility_strength)
+        entry['mobility_points'] += 1
+        if 'mobility' not in entry['external_sources']:
+            entry['external_sources'].append('mobility')
+        source_coverage['mobility'] += 1
+
+    aviation_docs = _latest_docs_for_day('aviation', day)
+    for doc in aviation_docs:
+        data = doc.get('data') or {}
+        country_code = str(doc.get('country') or '').strip().upper()
+        if country_code not in signals:
+            continue
+        aviation_strength = float(data.get('aviation_disruption_score') or 0.0)
+        entry = signals[country_code]
+        entry['aviation_disruption_score'] = max(entry['aviation_disruption_score'], aviation_strength)
+        entry['mobility_disruption_score'] = max(entry['mobility_disruption_score'], aviation_strength)
+        entry['aviation_points'] += 1
+        if 'aviation' not in entry['external_sources']:
+            entry['external_sources'].append('aviation')
+        source_coverage['aviation'] += 1
+
+    logistics_docs = _latest_docs_for_day('logistics', day)
+    for doc in logistics_docs:
+        data = doc.get('data') or {}
+        country_code = str(doc.get('country') or '').strip().upper()
+        if country_code not in signals:
+            continue
+        entry = signals[country_code]
+        entry['logistics_stress_score'] = max(entry['logistics_stress_score'], float(data.get('logistics_stress_score') or 0.0))
+        entry['mobility_disruption_score'] = max(entry['mobility_disruption_score'], float(data.get('logistics_stress_score') or 0.0) * 0.75)
+        entry['logistics_points'] += 1
+        if 'logistics' not in entry['external_sources']:
+            entry['external_sources'].append('logistics')
+        source_coverage['logistics'] += 1
+
+    economic_docs = _latest_docs_for_day('economic_behavior', day)
+    for doc in economic_docs:
+        data = doc.get('data') or {}
+        country_code = str(doc.get('country') or '').strip().upper()
+        if country_code not in signals:
+            continue
+        entry = signals[country_code]
+        entry['household_stress_score'] = max(entry['household_stress_score'], float(data.get('household_stress_score') or 0.0))
+        entry['fuel_price_pressure'] = max(entry['fuel_price_pressure'], float(data.get('fuel_price_pressure') or 0.0))
+        entry['food_price_pressure'] = max(entry['food_price_pressure'], float(data.get('food_price_pressure') or 0.0))
+        entry['labor_stress_score'] = max(entry['labor_stress_score'], float(data.get('labor_stress_score') or 0.0))
+        entry['fx_pressure_score'] = max(entry['fx_pressure_score'], float(data.get('fx_pressure_score') or 0.0))
+        entry['remittance_stress_score'] = max(entry['remittance_stress_score'], float(data.get('remittance_stress_score') or 0.0))
+        entry['energy_stress_score'] = max(entry['energy_stress_score'], float(data.get('energy_stress_score') or 0.0))
+        entry['economic_points'] += 1
+        if 'economic_behavior' not in entry['external_sources']:
+            entry['external_sources'].append('economic_behavior')
+        source_coverage['economic_behavior'] += 1
 
     weather_docs = _latest_docs_for_day('weather', day)
     for doc in weather_docs:
@@ -226,22 +355,44 @@ def build_country_external_signal_snapshot(day: datetime | None, catalog: dict[s
         source_coverage['weather'] += 1
 
     for entry in signals.values():
-        contributing = sum(1 for source in ('reddit', 'google_trends', 'weather') if source in entry['external_sources'])
+        contributing = sum(1 for source in ('wikipedia', 'google_trends', 'telegram_public', 'youtube_public', 'weather', 'mobility', 'aviation', 'logistics', 'economic_behavior') if source in entry['external_sources'])
         entry['social_unrest_score'] = round(min(entry['social_unrest_score'], 1.0), 4)
         entry['google_trends_pressure'] = round(min(entry['google_trends_pressure'], 1.0), 4)
+        entry['public_attention_score'] = round(min(entry['public_attention_score'], 1.0), 4)
+        entry['narrative_velocity_score'] = round(min(entry['narrative_velocity_score'], 1.0), 4)
+        entry['coordination_risk_score'] = round(min(entry['coordination_risk_score'], 1.0), 4)
         entry['weather_stress'] = round(min(entry['weather_stress'], 1.0), 4)
-        entry['external_signal_freshness'] = round(contributing / 3.0, 4)
+        entry['mobility_disruption_score'] = round(min(entry['mobility_disruption_score'], 1.0), 4)
+        entry['aviation_disruption_score'] = round(min(entry['aviation_disruption_score'], 1.0), 4)
+        entry['logistics_stress_score'] = round(min(entry['logistics_stress_score'], 1.0), 4)
+        entry['household_stress_score'] = round(min(entry['household_stress_score'], 1.0), 4)
+        entry['fuel_price_pressure'] = round(min(entry['fuel_price_pressure'], 1.0), 4)
+        entry['food_price_pressure'] = round(min(entry['food_price_pressure'], 1.0), 4)
+        entry['labor_stress_score'] = round(min(entry['labor_stress_score'], 1.0), 4)
+        entry['fx_pressure_score'] = round(min(entry['fx_pressure_score'], 1.0), 4)
+        entry['remittance_stress_score'] = round(min(entry['remittance_stress_score'], 1.0), 4)
+        entry['energy_stress_score'] = round(min(entry['energy_stress_score'], 1.0), 4)
+        entry['external_signal_freshness'] = round(contributing / 9.0, 4)
 
     summary = {
         'source_docs': {
-            'reddit': len(reddit_docs),
+            'wiki': len(wiki_docs),
             'trends': len(trend_docs),
+            'telegram_public': len(telegram_docs),
+            'youtube_public': len(youtube_docs),
             'weather': len(weather_docs),
+            'mobility': len(mobility_docs),
+            'aviation': len(aviation_docs),
+            'logistics': len(logistics_docs),
+            'economic_behavior': len(economic_docs),
         },
         'country_coverage': {
-            'reddit': sum(1 for item in signals.values() if item['social_posts'] > 0),
+            'wiki': sum(1 for item in signals.values() if item['attention_points'] > 0),
             'trends': sum(1 for item in signals.values() if item['trend_points'] > 0),
             'weather': sum(1 for item in signals.values() if item['weather_points'] > 0),
+            'mobility': sum(1 for item in signals.values() if item['mobility_points'] > 0),
+            'aviation': sum(1 for item in signals.values() if item['aviation_points'] > 0),
+            'economic_behavior': sum(1 for item in signals.values() if item['economic_points'] > 0),
         },
     }
     return signals, summary

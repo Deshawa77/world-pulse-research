@@ -20,6 +20,7 @@ import {
   type TrustReliabilitySnapshot,
 } from "../services/api";
 import { getCountryWeatherByCoords, type CountryWeatherSnapshot } from "../services/weather";
+import { formatDisplayScore } from "../utils/scoreFormatting";
 
 const CountryDrilldown = lazy(() => import("../components/CountryDrilldown"));
 const BrainModelViewer = lazy(() => import("../components/BrainModelViewer"));
@@ -27,6 +28,7 @@ const GlobalIntelligenceFeed = lazy(() => import("../components/GlobalIntelligen
 const PriorityWatchlist = lazy(() => import("../components/PriorityWatchlist"));
 const SignalIntegrityBoard = lazy(() => import("../components/SignalIntegrityBoard"));
 const BehavioralAnalyticsPanel = lazy(() => import("../components/BehavioralAnalyticsPanel"));
+const MobilityObservabilityPanel = lazy(() => import("../components/MobilityObservabilityPanel"));
 const SystemEventStream = lazy(() => import("../components/SystemEventStream"));
 
 type Features = {
@@ -1437,6 +1439,62 @@ export default function Dashboard() {
                 <p style={{ fontSize: 12, color: "#d1d5db" }}>
                   {coverageState.verified} / {coverageState.total || riskMapRows.length} countries verified today. Gray countries have no same-day source data yet. Click a country to zoom, inspect news beacons, and open drilldown analysis.
                 </p>
+                {selectedCountry && countryData ? (
+                  <div className="proposal-map-score-strip">
+                    <div className="proposal-map-score-card">
+                      <span>Direct Behavior</span>
+                      <strong>{formatDisplayScore(countryData.direct_behavior_score, "absolute")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Context Pressure</span>
+                      <strong>{formatDisplayScore(countryData.contextual_pressure_score, "absolute")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Evidence Quality</span>
+                      <strong>{formatDisplayScore(countryData.evidence_quality_score, "absolute")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Narrative Velocity</span>
+                      <strong>{formatDisplayScore(countryData.narrative_velocity_score, "normalized")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Coordination Risk</span>
+                      <strong>{formatDisplayScore(countryData.coordination_risk_score, "normalized")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Household Stress</span>
+                      <strong>{formatDisplayScore(countryData.household_stress_score, "normalized")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Fuel Pressure</span>
+                      <strong>{formatDisplayScore(countryData.fuel_price_pressure, "normalized")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Food Pressure</span>
+                      <strong>{formatDisplayScore(countryData.food_price_pressure, "normalized")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Labor Stress</span>
+                      <strong>{formatDisplayScore(countryData.labor_stress_score, "normalized")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Logistics</span>
+                      <strong>{formatDisplayScore(countryData.logistics_stress_score, "normalized")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>FX Pressure</span>
+                      <strong>{formatDisplayScore(countryData.fx_pressure_score, "normalized")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Remittance</span>
+                      <strong>{formatDisplayScore(countryData.remittance_stress_score, "normalized")} </strong>
+                    </div>
+                    <div className="proposal-map-score-card">
+                      <span>Energy</span>
+                      <strong>{formatDisplayScore(countryData.energy_stress_score, "normalized")} </strong>
+                    </div>
+                  </div>
+                ) : null}
                 <p style={{ fontSize: 12, color: "#94a3b8" }}>
                   Latest validation: {validationSummary?.status ?? "not available"}{validationSummary?.sample_count ? `, ${validationSummary.sample_count} benchmark rows, Brier ${safeN(validationSummary.brier_score).toFixed(3)}` : ""}.
                 </p>
@@ -1585,12 +1643,16 @@ export default function Dashboard() {
                 staleSources={staleSources}
               />
             </Suspense>
+            <Suspense fallback={<DeferredPanelPlaceholder label="Loading mobility observability..." />}>
+              <MobilityObservabilityPanel mobilitySnapshot={(trustSnapshot?.mobility ?? null) as Record<string, unknown> | null} />
+            </Suspense>
           </>
         ) : (
           <>
             <article className="wp-card panel-frame operational-panel analytics-hero-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing behavioral analytics..." /></div></article>
             <article className="wp-card panel-frame operational-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing priority watchlist..." /></div></article>
             <article className="wp-card panel-frame operational-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing signal integrity board..." /></div></article>
+            <article className="wp-card panel-frame operational-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing mobility observability..." /></div></article>
           </>
         )}
       </section>

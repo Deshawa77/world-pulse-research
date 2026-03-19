@@ -1,7 +1,309 @@
 import axios, { AxiosHeaders } from "axios";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const PRIMARY_API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const FALLBACK_API_URL = import.meta.env.VITE_API_FALLBACK_URL || "http://127.0.0.1:8010";
 const API_KEY = import.meta.env.VITE_API_KEY || "super_secure_api_key";
+const USE_MOCK_API = String(import.meta.env.VITE_USE_MOCK_API || "").trim().toLowerCase() === "true";
+const ACTIVE_API_URL_STORAGE_KEY = "wp_active_api_url";
+
+function readPersistedApiUrl(): string {
+  if (typeof window === "undefined") return PRIMARY_API_URL;
+  const stored = String(window.localStorage.getItem(ACTIVE_API_URL_STORAGE_KEY) || "").trim();
+  if (!stored) return PRIMARY_API_URL;
+  if (stored === PRIMARY_API_URL || stored === FALLBACK_API_URL) return stored;
+  return PRIMARY_API_URL;
+}
+
+function setActiveApiUrl(url: string): void {
+  activeApiUrl = url;
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(ACTIVE_API_URL_STORAGE_KEY, url);
+}
+
+let activeApiUrl = readPersistedApiUrl();
+
+function isNetworkFailure(error: unknown): boolean {
+  const e = (error ?? {}) as { code?: string; message?: string; response?: unknown };
+  if (e.response) return false;
+  const code = String(e.code ?? "").toUpperCase();
+  const message = String(e.message ?? "").toLowerCase();
+  return code === "ECONNABORTED"
+    || code === "ERR_NETWORK"
+    || code === "ERR_CONNECTION_RESET"
+    || message.includes("network error")
+    || message.includes("connection refused")
+    || message.includes("connection reset")
+    || message.includes("timeout");
+}
+
+function shouldUseFallbackApi(): boolean {
+  return Boolean(FALLBACK_API_URL && FALLBACK_API_URL !== PRIMARY_API_URL);
+}
+
+const MOCK_RISK_MAP: RiskMapPoint[] = [
+  {
+    country: "USA",
+    risk: 0.62,
+    validated_today: true,
+    data_quality: "synthetic",
+    source_count: 6,
+    public_attention_score: 0.66,
+    narrative_velocity_score: 0.58,
+    coordination_risk_score: 0.31,
+    mobility_disruption_score: 0.22,
+    logistics_stress_score: 0.28,
+    household_stress_score: 0.49,
+    fuel_price_pressure: 0.43,
+    food_price_pressure: 0.36,
+    labor_stress_score: 0.29,
+    fx_pressure_score: 0.17,
+    remittance_stress_score: 0.12,
+    energy_stress_score: 0.34,
+    external_signal_freshness: 0.78,
+    direct_behavior_score: 0.57,
+    contextual_pressure_score: 0.41,
+    evidence_quality_score: 0.64,
+  },
+  {
+    country: "IND",
+    risk: 0.68,
+    validated_today: true,
+    data_quality: "synthetic",
+    source_count: 7,
+    public_attention_score: 0.71,
+    narrative_velocity_score: 0.63,
+    coordination_risk_score: 0.39,
+    mobility_disruption_score: 0.27,
+    logistics_stress_score: 0.34,
+    household_stress_score: 0.56,
+    fuel_price_pressure: 0.51,
+    food_price_pressure: 0.48,
+    labor_stress_score: 0.42,
+    fx_pressure_score: 0.29,
+    remittance_stress_score: 0.22,
+    energy_stress_score: 0.44,
+    external_signal_freshness: 0.8,
+    direct_behavior_score: 0.61,
+    contextual_pressure_score: 0.47,
+    evidence_quality_score: 0.66,
+  },
+  {
+    country: "LKA",
+    risk: 0.59,
+    validated_today: true,
+    data_quality: "synthetic",
+    source_count: 5,
+    public_attention_score: 0.61,
+    narrative_velocity_score: 0.52,
+    coordination_risk_score: 0.28,
+    mobility_disruption_score: 0.18,
+    logistics_stress_score: 0.26,
+    household_stress_score: 0.54,
+    fuel_price_pressure: 0.47,
+    food_price_pressure: 0.41,
+    labor_stress_score: 0.33,
+    fx_pressure_score: 0.38,
+    remittance_stress_score: 0.35,
+    energy_stress_score: 0.45,
+    external_signal_freshness: 0.72,
+    direct_behavior_score: 0.55,
+    contextual_pressure_score: 0.42,
+    evidence_quality_score: 0.6,
+  },
+  {
+    country: "GBR",
+    risk: 0.46,
+    validated_today: true,
+    data_quality: "synthetic",
+    source_count: 6,
+    public_attention_score: 0.48,
+    narrative_velocity_score: 0.37,
+    coordination_risk_score: 0.19,
+    mobility_disruption_score: 0.13,
+    logistics_stress_score: 0.18,
+    household_stress_score: 0.31,
+    fuel_price_pressure: 0.28,
+    food_price_pressure: 0.24,
+    labor_stress_score: 0.2,
+    fx_pressure_score: 0.14,
+    remittance_stress_score: 0.09,
+    energy_stress_score: 0.25,
+    external_signal_freshness: 0.76,
+    direct_behavior_score: 0.39,
+    contextual_pressure_score: 0.29,
+    evidence_quality_score: 0.67,
+  },
+  {
+    country: "DEU",
+    risk: 0.43,
+    validated_today: true,
+    data_quality: "synthetic",
+    source_count: 6,
+    public_attention_score: 0.42,
+    narrative_velocity_score: 0.34,
+    coordination_risk_score: 0.16,
+    mobility_disruption_score: 0.14,
+    logistics_stress_score: 0.19,
+    household_stress_score: 0.29,
+    fuel_price_pressure: 0.24,
+    food_price_pressure: 0.21,
+    labor_stress_score: 0.18,
+    fx_pressure_score: 0.13,
+    remittance_stress_score: 0.08,
+    energy_stress_score: 0.22,
+    external_signal_freshness: 0.77,
+    direct_behavior_score: 0.36,
+    contextual_pressure_score: 0.27,
+    evidence_quality_score: 0.69,
+  },
+  {
+    country: "BRA",
+    risk: 0.57,
+    validated_today: true,
+    data_quality: "synthetic",
+    source_count: 5,
+    public_attention_score: 0.57,
+    narrative_velocity_score: 0.49,
+    coordination_risk_score: 0.24,
+    mobility_disruption_score: 0.16,
+    logistics_stress_score: 0.22,
+    household_stress_score: 0.44,
+    fuel_price_pressure: 0.37,
+    food_price_pressure: 0.32,
+    labor_stress_score: 0.27,
+    fx_pressure_score: 0.25,
+    remittance_stress_score: 0.11,
+    energy_stress_score: 0.3,
+    external_signal_freshness: 0.7,
+    direct_behavior_score: 0.5,
+    contextual_pressure_score: 0.35,
+    evidence_quality_score: 0.58,
+  },
+];
+
+const mockCoverage = (): RiskMapCoverage => ({
+  total: 233,
+  verified: MOCK_RISK_MAP.length,
+  no_data: 233 - MOCK_RISK_MAP.length,
+  stale: 0,
+  remaining: 233 - MOCK_RISK_MAP.length,
+  coverage_pct: Number(((MOCK_RISK_MAP.length / 233) * 100).toFixed(1)),
+  latest_validation: { status: "mock", sample_count: MOCK_RISK_MAP.length, brier_score: 0.0 },
+});
+
+const mockLiveFeed = (): LiveCommandFeed => ({
+  incidents: [
+    "Local API offline: showing synthetic dashboard data",
+    "Risk map is running in offline fallback mode",
+    "Start backend on :8000 to restore live intelligence feeds",
+  ],
+  ingestionHeartbeatSec: 0,
+  modelDrift: 0.21,
+  lastUpdated: new Date().toISOString(),
+});
+
+const mockLatestGlobal = (): LatestGlobalResponse => ({
+  timestamp: new Date().toISOString(),
+  mode: "offline-fallback",
+  version: 1,
+  features: {
+    timestamp: new Date().toISOString(),
+    news_sentiment: 0.12,
+    gdelt_sentiment: 0.09,
+    crypto_return: 0.01,
+    crypto_volatility: 0.34,
+    stock_return: 0.02,
+    stock_volatility: 0.28,
+    weather_anomaly: 0.19,
+    global_risk_score: 0.54,
+    global_mood_score: 0.58,
+    global_mood_confidence: 0.72,
+    global_mood_uncertainty: 0.11,
+    global_mood_verified_countries: MOCK_RISK_MAP.length,
+    global_mood_eligible_countries: 233,
+    global_mood_contributing_countries: MOCK_RISK_MAP.length,
+    global_mood_used_countries: MOCK_RISK_MAP.length,
+    global_mood_excluded_countries: 233 - MOCK_RISK_MAP.length,
+    forecast_risk_score: 0.56,
+    forecast_risk_delta: 0.02,
+    forecast_confidence: 0.64,
+    forecast_horizon_hours: 24,
+    top_topics: ["offline fallback", "synthetic dashboard", "backend unavailable"],
+  },
+});
+
+const mockCountryDrilldown = (country: string): CountryDrilldownData => {
+  const base = MOCK_RISK_MAP.find((entry) => entry.country === country.toUpperCase()) || MOCK_RISK_MAP[0];
+  return {
+    country: country.toUpperCase(),
+    risk: Number(base.risk || 0),
+    direct_behavior_score: base.direct_behavior_score,
+    contextual_pressure_score: base.contextual_pressure_score,
+    evidence_quality_score: base.evidence_quality_score,
+    mobility_disruption_score: base.mobility_disruption_score,
+    logistics_stress_score: base.logistics_stress_score,
+    household_stress_score: base.household_stress_score,
+    fuel_price_pressure: base.fuel_price_pressure,
+    food_price_pressure: base.food_price_pressure,
+    labor_stress_score: base.labor_stress_score,
+    fx_pressure_score: base.fx_pressure_score,
+    remittance_stress_score: base.remittance_stress_score,
+    energy_stress_score: base.energy_stress_score,
+    narrative_velocity_score: base.narrative_velocity_score,
+    coordination_risk_score: base.coordination_risk_score,
+    trend: [
+      { timestamp: new Date(Date.now() - 172800000).toISOString(), value: Math.max((base.risk || 0) - 0.05, 0) },
+      { timestamp: new Date(Date.now() - 86400000).toISOString(), value: Math.max((base.risk || 0) - 0.02, 0) },
+      { timestamp: new Date().toISOString(), value: Number(base.risk || 0) },
+    ],
+    drivers: [
+      { feature: 'public_attention_score', value: Number(base.public_attention_score || 0), contribution: 0.22 },
+      { feature: 'household_stress_score', value: Number(base.household_stress_score || 0), contribution: 0.19 },
+      { feature: 'fx_pressure_score', value: Number(base.fx_pressure_score || 0), contribution: 0.14 },
+    ],
+    events: [
+      { id: `${country}-offline-1`, title: 'Offline fallback mode active', timestamp: new Date().toISOString(), severity: 'medium' },
+    ],
+    confidenceInterval: { lower: Math.max(Number(base.risk || 0) - 0.08, 0), upper: Math.min(Number(base.risk || 0) + 0.08, 1) },
+  };
+};
+
+const mockGovernance = (): GovernanceData => ({
+  models: [
+    { name: 'baseline', latencyMs: 42, calibration: 0.72, driftHint: 'stable', vote: 0.54, confidence: 0.7 },
+    { name: 'contextual', latencyMs: 58, calibration: 0.69, driftHint: 'stable', vote: 0.57, confidence: 0.66 },
+  ],
+  disagreement: [{ left: 'baseline', right: 'contextual', value: 0.08 }],
+  calibrationTrend: [
+    { timestamp: new Date(Date.now() - 86400000).toISOString(), value: 0.7 },
+    { timestamp: new Date().toISOString(), value: 0.72 },
+  ],
+  calibrationTrendByModel: {},
+  selectedCalibrationModel: 'baseline',
+});
+
+const mockTrustReliability = (): TrustReliabilitySnapshot => ({
+  generated_at: new Date().toISOString(),
+  api_health: { status: 'offline-fallback' },
+  uptime: { service: 'frontend-only' },
+  data_freshness: { state: 'synthetic' },
+  latest_ingestion: { checkpoint: 'backend unavailable' },
+  source_health: {},
+  coverage: { verified: MOCK_RISK_MAP.length, total: 233 },
+  quality_gate: { degraded: false, reason: 'local fallback mode' },
+  confidence: { score: 0.42 },
+  mobility: { coverage_ratio: 0, status: 'offline' },
+  economic: { country_count: 0, status: 'offline' },
+  alerts: [{ severity: 'medium', source: 'frontend', message: 'Backend connection refused; using synthetic fallback data.' }],
+  validation: { status: 'mock' },
+});
+
+const isOfflineApiError = (error: unknown): boolean => {
+  if (!axios.isAxiosError(error)) return false;
+  if (error.response) return false;
+  const message = String(error.message || error.code || '').toLowerCase();
+  return message.includes('network error') || message.includes('econnrefused') || message.includes('err_connection_refused');
+};
 
 const AUTH_STORAGE_KEYS = ["token", "role", "user_type", "name", "email"] as const;
 let unauthorizedRedirectScheduled = false;
@@ -73,7 +375,7 @@ export const getAuthHeaders = (): Record<string, string> => {
 };
 
 const buildWebSocketBaseUrl = () => {
-  const wsBase = API_URL.replace(/^http/, "ws");
+  const wsBase = activeApiUrl.replace(/^http/, "ws");
   return wsBase.endsWith("/") ? wsBase : `${wsBase}/`;
 };
 
@@ -113,12 +415,13 @@ const responseCache = new Map<string, CacheEntry>();
 const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
 
 const API = axios.create({
-  baseURL: API_URL,
+  baseURL: activeApiUrl,
   timeout: 20000,
 });
 
 // Add auth headers and response caching interceptor
 API.interceptors.request.use((config) => {
+  config.baseURL = activeApiUrl;
   const cacheKey = `${config.method}:${config.url}:${JSON.stringify(config.params || {})}`;
   const cached = responseCache.get(cacheKey);
 
@@ -172,7 +475,7 @@ API.interceptors.response.use(
     if (error.__cached) {
       return Promise.resolve(error.response);
     }
-    const config = error?.config as (typeof error.config & { __retryCount?: number }) | undefined;
+    const config = error?.config as ((typeof error.config) & { __retryCount?: number; __usedFallback?: boolean }) | undefined;
     const method = String(config?.method || "").toLowerCase();
     const status = Number(error?.response?.status || 0);
 
@@ -183,12 +486,21 @@ API.interceptors.response.use(
       return Promise.reject(error);
     }
 
+    const url = String(config?.url || "");
+    const canFallbackMethod = method === "get" || url.startsWith("/auth/");
+
+    if (config && canFallbackMethod && shouldUseFallbackApi() && isNetworkFailure(error) && !config.__usedFallback) {
+      setActiveApiUrl(FALLBACK_API_URL);
+      config.__usedFallback = true;
+      config.baseURL = FALLBACK_API_URL;
+      return API.request(config);
+    }
+
     const isRetryableNetworkError =
-      error?.code === "ECONNABORTED" ||
-      error?.message === "Network Error" ||
+      isNetworkFailure(error) ||
       RETRYABLE_STATUS_CODES.has(status);
 
-    if (config && method === "get" && isRetryableNetworkError) {
+    if (config && canFallbackMethod && isRetryableNetworkError) {
       const retryCount = config.__retryCount ?? 0;
       if (retryCount < 2) {
         config.__retryCount = retryCount + 1;
@@ -196,7 +508,6 @@ API.interceptors.response.use(
         return API.request(config);
       }
     }
-
     return Promise.reject(error);
   }
 );
@@ -232,8 +543,23 @@ export type RiskMapPoint = {
   source_count?: number;
   social_unrest_score?: number;
   google_trends_pressure?: number;
+  public_attention_score?: number;
+  narrative_velocity_score?: number;
+  coordination_risk_score?: number;
+  mobility_disruption_score?: number;
+  logistics_stress_score?: number;
+  household_stress_score?: number;
+  fuel_price_pressure?: number;
+  food_price_pressure?: number;
+  labor_stress_score?: number;
+  fx_pressure_score?: number;
+  remittance_stress_score?: number;
+  energy_stress_score?: number;
   weather_stress?: number;
   external_signal_freshness?: number;
+  direct_behavior_score?: number;
+  contextual_pressure_score?: number;
+  evidence_quality_score?: number;
   war_state_rules?: string[];
 };
 
@@ -292,6 +618,20 @@ export type LatestGlobalResponse = {
 export type CountryDrilldownData = {
   country: string;
   risk: number;
+  direct_behavior_score?: number;
+  contextual_pressure_score?: number;
+  evidence_quality_score?: number;
+  mobility_disruption_score?: number;
+  logistics_stress_score?: number;
+  household_stress_score?: number;
+  fuel_price_pressure?: number;
+  food_price_pressure?: number;
+  labor_stress_score?: number;
+  fx_pressure_score?: number;
+  remittance_stress_score?: number;
+  energy_stress_score?: number;
+  narrative_velocity_score?: number;
+  coordination_risk_score?: number;
   trend: Array<{ timestamp: string; value: number }>;
   drivers: Array<{ feature: string; value: number; contribution: number }>;
   events: Array<{ id: string; title: string; timestamp: string; severity: "low" | "medium" | "high" }>;
@@ -390,8 +730,23 @@ const normalizeRiskMapPoint = (value: unknown): RiskMapPoint | null => {
     source_count: toOptionalFiniteNumber(value.source_count),
     social_unrest_score: toOptionalFiniteNumber(value.social_unrest_score),
     google_trends_pressure: toOptionalFiniteNumber(value.google_trends_pressure),
+    public_attention_score: toOptionalFiniteNumber(value.public_attention_score),
+    narrative_velocity_score: toOptionalFiniteNumber(value.narrative_velocity_score),
+    coordination_risk_score: toOptionalFiniteNumber(value.coordination_risk_score),
+    mobility_disruption_score: toOptionalFiniteNumber(value.mobility_disruption_score),
+    logistics_stress_score: toOptionalFiniteNumber(value.logistics_stress_score),
+    household_stress_score: toOptionalFiniteNumber(value.household_stress_score),
+    fuel_price_pressure: toOptionalFiniteNumber(value.fuel_price_pressure),
+    food_price_pressure: toOptionalFiniteNumber(value.food_price_pressure),
+    labor_stress_score: toOptionalFiniteNumber(value.labor_stress_score),
+    fx_pressure_score: toOptionalFiniteNumber(value.fx_pressure_score),
+    remittance_stress_score: toOptionalFiniteNumber(value.remittance_stress_score),
+    energy_stress_score: toOptionalFiniteNumber(value.energy_stress_score),
     weather_stress: toOptionalFiniteNumber(value.weather_stress),
     external_signal_freshness: toOptionalFiniteNumber(value.external_signal_freshness),
+    direct_behavior_score: toOptionalFiniteNumber(value.direct_behavior_score),
+    contextual_pressure_score: toOptionalFiniteNumber(value.contextual_pressure_score),
+    evidence_quality_score: toOptionalFiniteNumber(value.evidence_quality_score),
     war_state_rules: toStringArray(value.war_state_rules),
   };
 };
@@ -427,6 +782,17 @@ const normalizeCountryDrilldown = (value: unknown, fallbackCountry: string): Cou
     return {
       country: fallbackCountry,
       risk: 0,
+      mobility_disruption_score: 0,
+      logistics_stress_score: 0,
+      household_stress_score: 0,
+      fuel_price_pressure: 0,
+      food_price_pressure: 0,
+      labor_stress_score: 0,
+      fx_pressure_score: 0,
+      remittance_stress_score: 0,
+      energy_stress_score: 0,
+      narrative_velocity_score: 0,
+      coordination_risk_score: 0,
       trend: [],
       drivers: [],
       events: [],
@@ -478,6 +844,20 @@ const normalizeCountryDrilldown = (value: unknown, fallbackCountry: string): Cou
   return {
     country: typeof value.country === "string" ? value.country : fallbackCountry,
     risk: toFiniteNumber(value.risk),
+    mobility_disruption_score: toOptionalFiniteNumber(value.mobility_disruption_score),
+    logistics_stress_score: toOptionalFiniteNumber(value.logistics_stress_score),
+    household_stress_score: toOptionalFiniteNumber(value.household_stress_score),
+    fuel_price_pressure: toOptionalFiniteNumber(value.fuel_price_pressure),
+    food_price_pressure: toOptionalFiniteNumber(value.food_price_pressure),
+    labor_stress_score: toOptionalFiniteNumber(value.labor_stress_score),
+    fx_pressure_score: toOptionalFiniteNumber(value.fx_pressure_score),
+    remittance_stress_score: toOptionalFiniteNumber(value.remittance_stress_score),
+    energy_stress_score: toOptionalFiniteNumber(value.energy_stress_score),
+    narrative_velocity_score: toOptionalFiniteNumber(value.narrative_velocity_score),
+    coordination_risk_score: toOptionalFiniteNumber(value.coordination_risk_score),
+    direct_behavior_score: toOptionalFiniteNumber(value.direct_behavior_score),
+    contextual_pressure_score: toOptionalFiniteNumber(value.contextual_pressure_score),
+    evidence_quality_score: toOptionalFiniteNumber(value.evidence_quality_score),
     trend,
     drivers,
     events,
@@ -554,27 +934,51 @@ const normalizeGovernanceData = (value: unknown): GovernanceData => {
 };
 
 export async function getLiveCommandFeed(): Promise<LiveCommandFeed> {
-  const res = await API.get("/dashboard/live-feed", { headers: API_HEADERS, params: { mode: "online" } });
-  return normalizeLiveCommandFeed(res.data);
+  if (USE_MOCK_API) return mockLiveFeed();
+  try {
+    const res = await API.get("/dashboard/live-feed", { headers: API_HEADERS, params: { mode: "online" } });
+    return normalizeLiveCommandFeed(res.data);
+  } catch (error) {
+    if (isOfflineApiError(error)) return mockLiveFeed();
+    throw error;
+  }
 }
 
 export async function getRiskMap(): Promise<RiskMapPoint[]> {
-  const res = await API.get("/dashboard/risk-map", { headers: API_HEADERS, params: { mode: "online", verified_only: false } });
-  return Array.isArray(res.data)
-    ? res.data
-        .map(normalizeRiskMapPoint)
-        .filter((entry): entry is RiskMapPoint => Boolean(entry))
-    : [];
+  if (USE_MOCK_API) return MOCK_RISK_MAP;
+  try {
+    const res = await API.get("/dashboard/risk-map", { headers: API_HEADERS, params: { mode: "online", verified_only: false } });
+    return Array.isArray(res.data)
+      ? res.data
+          .map(normalizeRiskMapPoint)
+          .filter((entry): entry is RiskMapPoint => Boolean(entry))
+      : [];
+  } catch (error) {
+    if (isOfflineApiError(error)) return MOCK_RISK_MAP;
+    throw error;
+  }
 }
 
 export async function getRiskMapCoverage(): Promise<RiskMapCoverage> {
-  const res = await API.get("/dashboard/risk-map/coverage", { headers: API_HEADERS, params: { mode: "online" } });
-  return normalizeRiskMapCoverage(res.data);
+  if (USE_MOCK_API) return mockCoverage();
+  try {
+    const res = await API.get("/dashboard/risk-map/coverage", { headers: API_HEADERS, params: { mode: "online" } });
+    return normalizeRiskMapCoverage(res.data);
+  } catch (error) {
+    if (isOfflineApiError(error)) return mockCoverage();
+    throw error;
+  }
 }
 
 export async function getLatestGlobalFeatures(): Promise<LatestGlobalResponse> {
-  const res = await API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } });
-  return res.data as LatestGlobalResponse;
+  if (USE_MOCK_API) return mockLatestGlobal();
+  try {
+    const res = await API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } });
+    return res.data as LatestGlobalResponse;
+  } catch (error) {
+    if (isOfflineApiError(error)) return mockLatestGlobal();
+    throw error;
+  }
 }
 
 export async function refreshRiskMapBatch(batchSize = 50): Promise<boolean> {
@@ -587,13 +991,25 @@ export async function refreshRiskMapBatch(batchSize = 50): Promise<boolean> {
 }
 
 export async function getCountryDrilldown(country: string): Promise<CountryDrilldownData> {
-  const res = await API.get(`/dashboard/country/${country}`, { headers: API_HEADERS, params: { mode: "online" } });
-  return normalizeCountryDrilldown(res.data, country);
+  if (USE_MOCK_API) return mockCountryDrilldown(country);
+  try {
+    const res = await API.get(`/dashboard/country/${country}`, { headers: API_HEADERS, params: { mode: "online" } });
+    return normalizeCountryDrilldown(res.data, country);
+  } catch (error) {
+    if (isOfflineApiError(error)) return mockCountryDrilldown(country);
+    throw error;
+  }
 }
 
 export async function getGovernanceData(): Promise<GovernanceData> {
-  const res = await API.get("/dashboard/governance", { headers: API_HEADERS, params: { mode: "online" } });
-  return normalizeGovernanceData(res.data);
+  if (USE_MOCK_API) return mockGovernance();
+  try {
+    const res = await API.get("/dashboard/governance", { headers: API_HEADERS, params: { mode: "online" } });
+    return normalizeGovernanceData(res.data);
+  } catch (error) {
+    if (isOfflineApiError(error)) return mockGovernance();
+    throw error;
+  }
 }
 
 export async function postAlertAction(payload: AlertActionPayload): Promise<boolean> {
@@ -793,6 +1209,9 @@ export type TrustReliabilitySnapshot = {
   coverage?: Record<string, unknown>;
   quality_gate?: Record<string, unknown>;
   confidence?: Record<string, unknown>;
+  mobility?: Record<string, unknown>;
+  economic?: Record<string, unknown>;
+  alerts?: Array<Record<string, unknown>>;
   validation?: Record<string, unknown>;
 };
 
@@ -830,20 +1249,29 @@ export async function runObservabilityBacktests(days: number = 60): Promise<Reco
 }
 
 export async function getTrustReliability(mode: string = "online"): Promise<TrustReliabilitySnapshot> {
-  const res = await API.get("/trust/reliability", { headers: API_HEADERS, params: { mode } });
-  const payload = isRecord(res.data) ? res.data : {};
-  return {
-    generated_at: typeof payload.generated_at === "string" ? payload.generated_at : undefined,
-    api_health: isRecord(payload.api_health) ? payload.api_health : {},
-    uptime: isRecord(payload.uptime) ? payload.uptime : {},
-    data_freshness: isRecord(payload.data_freshness) ? payload.data_freshness : {},
-    latest_ingestion: isRecord(payload.latest_ingestion) ? payload.latest_ingestion : {},
-    source_health: isRecord(payload.source_health) ? payload.source_health : {},
-    coverage: isRecord(payload.coverage) ? payload.coverage : {},
-    quality_gate: isRecord(payload.quality_gate) ? payload.quality_gate : {},
-    confidence: isRecord(payload.confidence) ? payload.confidence : {},
-    validation: isRecord(payload.validation) ? payload.validation : {},
-  };
+  if (USE_MOCK_API) return mockTrustReliability();
+  try {
+    const res = await API.get("/trust/reliability", { headers: API_HEADERS, params: { mode } });
+    const payload = isRecord(res.data) ? res.data : {};
+    return {
+      generated_at: typeof payload.generated_at === "string" ? payload.generated_at : undefined,
+      api_health: isRecord(payload.api_health) ? payload.api_health : {},
+      uptime: isRecord(payload.uptime) ? payload.uptime : {},
+      data_freshness: isRecord(payload.data_freshness) ? payload.data_freshness : {},
+      latest_ingestion: isRecord(payload.latest_ingestion) ? payload.latest_ingestion : {},
+      source_health: isRecord(payload.source_health) ? payload.source_health : {},
+      coverage: isRecord(payload.coverage) ? payload.coverage : {},
+      quality_gate: isRecord(payload.quality_gate) ? payload.quality_gate : {},
+      confidence: isRecord(payload.confidence) ? payload.confidence : {},
+      mobility: isRecord(payload.mobility) ? payload.mobility : {},
+      economic: isRecord(payload.economic) ? payload.economic : {},
+      alerts: Array.isArray(payload.alerts) ? (payload.alerts as Array<Record<string, unknown>>) : [],
+      validation: isRecord(payload.validation) ? payload.validation : {},
+    };
+  } catch (error) {
+    if (isOfflineApiError(error)) return mockTrustReliability();
+    throw error;
+  }
 }
 
 export async function getTrustCountryBacktests(limit: number = 30): Promise<BacktestHistoryResponse> {
@@ -869,6 +1297,9 @@ export type SystemMonitoringResponse = {
   api_health?: Record<string, unknown>;
   data_pipeline_status?: Record<string, unknown>;
   uptime_statistics?: Record<string, unknown>;
+  mobility?: Record<string, unknown>;
+  economic?: Record<string, unknown>;
+  alerts?: Array<Record<string, unknown>>;
 };
 
 export type SecurityLogEvent = {
@@ -913,6 +1344,7 @@ export async function getAdminSystemMonitoring(mode: string = "online"): Promise
     api_health: isRecord(payload.api_health) ? payload.api_health : {},
     data_pipeline_status: isRecord(payload.data_pipeline_status) ? payload.data_pipeline_status : {},
     uptime_statistics: isRecord(payload.uptime_statistics) ? payload.uptime_statistics : {},
+    mobility: isRecord((isRecord(payload.data_pipeline_status) ? payload.data_pipeline_status.mobility : undefined)) ? (payload.data_pipeline_status as Record<string, unknown>).mobility as Record<string, unknown> : {},
   };
 }
 
@@ -1594,6 +2026,9 @@ export async function runPolicyReplay(
   );
   return res.data as PolicyReplayResponse;
 }
+
+
+
 
 
 

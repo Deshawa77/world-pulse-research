@@ -26,6 +26,16 @@ function safeNumber(value: unknown, fallback = 0): number {
 function deriveDriver(row: RiskMapPoint): string {
   const candidates = [
     { label: "Social unrest", value: safeNumber(row.social_unrest_score) },
+    { label: "Public attention", value: safeNumber(row.public_attention_score) },
+    { label: "Narrative velocity", value: safeNumber(row.narrative_velocity_score) },
+    { label: "Coordination risk", value: safeNumber(row.coordination_risk_score) },
+    { label: "Mobility disruption", value: safeNumber(row.mobility_disruption_score) },
+    { label: "Logistics stress", value: safeNumber(row.logistics_stress_score) },
+    { label: "Household stress", value: safeNumber(row.household_stress_score) },
+    { label: "Fuel pressure", value: safeNumber(row.fuel_price_pressure) },
+    { label: "Food pressure", value: safeNumber(row.food_price_pressure) },
+    { label: "Labor stress", value: safeNumber(row.labor_stress_score) },
+    { label: "FX pressure", value: safeNumber(row.fx_pressure_score) },
     { label: "Narrative pressure", value: safeNumber(row.google_trends_pressure) },
     { label: "Weather stress", value: safeNumber(row.weather_stress) },
     { label: "Signal freshness", value: safeNumber(row.external_signal_freshness) },
@@ -129,6 +139,26 @@ function generateIncidentHeadline(country: string, driver: string, status: strin
       return `Major unrest reported in ${name}`;
     case "Weather stress":
       return `Weather stress intensifies across ${name}`;
+    case "Public attention":
+      return `Public attention surging across ${name}`;
+    case "Narrative velocity":
+      return `Narrative activity is accelerating across ${name}`;
+    case "Coordination risk":
+      return `Coordinated messaging risk is rising in ${name}`;
+    case "Mobility disruption":
+      return `Population movement disruption intensifies across ${name}`;
+    case "Household stress":
+      return `Household stress is building across ${name}`;
+    case "Fuel pressure":
+      return `Fuel price pressure is climbing across ${name}`;
+    case "Food pressure":
+      return `Food price pressure is climbing across ${name}`;
+    case "Labor stress":
+      return `Labor stress is intensifying across ${name}`;
+    case "Logistics stress":
+      return `Logistics stress is intensifying across ${name}`;
+    case "FX pressure":
+      return `Currency stress is intensifying across ${name}`;
     case "Narrative pressure":
       return `Narrative pressure rising across ${name}`;
     case "Signal freshness":
@@ -167,8 +197,19 @@ export default function PriorityWatchlist({ rows, incidents, feedItems, selected
       const risk = safeNumber(row.risk);
       const momentum =
         safeNumber(row.social_unrest_score) * 18 +
+        safeNumber(row.public_attention_score) * 16 +
+        safeNumber(row.narrative_velocity_score) * 12 +
+        safeNumber(row.coordination_risk_score) * 10 +
+        safeNumber(row.mobility_disruption_score) * 18 +
+        safeNumber(row.logistics_stress_score) * 11 +
+        safeNumber(row.household_stress_score) * 15 +
+        safeNumber(row.fuel_price_pressure) * 9 +
+        safeNumber(row.food_price_pressure) * 9 +
+        safeNumber(row.labor_stress_score) * 11 +
+        safeNumber(row.fx_pressure_score) * 10 +
         safeNumber(row.google_trends_pressure) * 14 +
-        safeNumber(row.weather_stress) * 10;
+        safeNumber(row.weather_stress) * 10 +
+        safeNumber(row.direct_behavior_score) * 8;
       const rankingScore = risk + momentum + (incidentFlag ? 12 : 0) + (row.validated_today ? 5 : 0);
       return {
         country: row.country,

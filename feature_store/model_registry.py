@@ -70,7 +70,7 @@ def log_event(event_type: str, version: str, extra: Optional[Dict] = None):
 # Register Model
 # ==========================================================
 
-def register_model(model_file: str, version: str, metrics: dict, stage="staging"):
+def register_model(model_file: str, version: str, metrics: dict, stage="staging", extra_metadata: Optional[Dict] = None):
     metadata = load_metadata()
 
     if version in metadata:
@@ -98,11 +98,13 @@ def register_model(model_file: str, version: str, metrics: dict, stage="staging"
         "archived_at": None,
         "rolled_back_from": None
     }
+    if extra_metadata:
+        metadata[version].update(extra_metadata)
 
     save_metadata(metadata)
     log_event("registered", version)
 
-    print(f"✅ Model {version} registered in {stage}")
+    print(f"Model {version} registered in {stage}")
 
 # ==========================================================
 # Promote Model
@@ -147,7 +149,7 @@ def promote_model(version: str):
     save_metadata(metadata)
     log_event("promoted", version, {"previous_production": current_production})
 
-    print(f"🚀 Model {version} is now PRODUCTION")
+    print(f"Model {version} is now PRODUCTION")
 
 # ==========================================================
 # Rollback
@@ -177,7 +179,7 @@ def rollback_to_version(version: str):
     save_metadata(metadata)
     log_event("rollback", version, {"from": current_prod})
 
-    print(f"⏪ Rolled back to {version}")
+    print(f"Rolled back to {version}")
 
 # ==========================================================
 # Get Production Model

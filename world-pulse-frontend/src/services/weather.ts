@@ -1,6 +1,34 @@
 import { getAuthHeaders } from "./api";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const USE_MOCK_API = String(import.meta.env.VITE_USE_MOCK_API || "").trim().toLowerCase() === "true";
+
+function buildMockWeather(lat: number, lon: number): CountryWeatherSnapshot {
+  return {
+    latitude: lat,
+    longitude: lon,
+    observedAt: new Date().toISOString(),
+    conditionCode: 3,
+    conditionLabel: "Offline fallback",
+    temperatureC: 27,
+    feelsLikeC: 30,
+    humidityPct: 68,
+    precipitationMm: 0,
+    rainMm: 0,
+    windSpeedKmh: 14,
+    windGustKmh: 20,
+    windDirectionDeg: 220,
+    provider: "open-meteo",
+    cached: true,
+    stale: true,
+    cacheAgeSec: 0,
+    warning: "Backend unavailable; showing synthetic weather.",
+  };
+}
+
+function isOfflineWeatherError(error: unknown): boolean {
+  return error instanceof Error && /failed to fetch|network error|connection refused|err_connection_refused/i.test(String(error.message || ''));
+}
 
 export type CountryWeatherSnapshot = {
   latitude: number;
@@ -73,6 +101,10 @@ export async function getCountryWeatherByCoords(
     ...getAuthHeaders(),
   };
 
+  if (USE_MOCK_API) {
+    return buildMockWeather(latitude, longitude);
+  }
+
   let lastError: unknown = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
@@ -89,6 +121,10 @@ export async function getCountryWeatherByCoords(
         await new Promise((resolve) => setTimeout(resolve, 220 * (attempt + 1)));
       }
     }
+  }
+
+  if (isOfflineWeatherError(lastError)) {
+    return buildMockWeather(latitude, longitude);
   }
 
   throw lastError instanceof Error ? lastError : new Error("Live weather temporarily unavailable");

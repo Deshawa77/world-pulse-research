@@ -230,6 +230,7 @@ def build_country_mood_fields(country_code: str, feature_doc: dict[str, Any], mo
     regional_escalation = _clamp(feature_doc.get("regional_escalation"), 0.0, 1.0)
     social_unrest_score = _clamp(feature_doc.get("social_unrest_score"), 0.0, 1.0)
     google_trends_pressure = _clamp(feature_doc.get("google_trends_pressure"), 0.0, 1.0)
+    public_attention_score = _clamp(feature_doc.get("public_attention_score"), 0.0, 1.0)
     weather_stress = _clamp(feature_doc.get("weather_stress"), 0.0, 1.0)
     war_state_penalty = 10.0 if feature_doc.get("war_state_rules") else 0.0
 
@@ -238,8 +239,9 @@ def build_country_mood_fields(country_code: str, feature_doc: dict[str, Any], mo
         min(conflict_headline_count / 4.0, 1.0) * 8.0
         + weighted_keyword_severity * 18.0
         + regional_escalation * 12.0
-        + social_unrest_score * 14.0
+        + social_unrest_score * 8.0
         + google_trends_pressure * 11.0
+        + public_attention_score * 12.0
         + weather_stress * 9.0
         + war_state_penalty
     )
@@ -347,6 +349,7 @@ def _suspicion_downweight(point: dict[str, Any], median_score: float, mad_score:
         _clamp(features.get("weighted_keyword_severity"), 0.0, 1.0),
         _clamp(features.get("social_unrest_score"), 0.0, 1.0),
         _clamp(features.get("google_trends_pressure"), 0.0, 1.0),
+        _clamp(features.get("public_attention_score"), 0.0, 1.0),
         _clamp(features.get("weather_stress"), 0.0, 1.0),
     )
     low_confidence = max(0.0, 0.65 - observation_confidence) / 0.65
@@ -592,6 +595,30 @@ def compute_global_risk_forecast(
     }
 
 
+
+
+def _global_signal_indices(mode: str = "online") -> dict[str, float]:
+    rows = _load_latest_country_rows(mode)
+    if not rows:
+        return {
+            "global_behavior_index": 50.0,
+            "global_context_index": 50.0,
+            "global_attention_index": 0.0,
+            "global_disruption_index": 0.0,
+            "global_economic_stress_index": 0.0,
+        }
+    features = [dict((row.get("doc") or row).get("features") or {}) for row in rows]
+    def avg(key: str) -> float:
+        vals = [_safe_float(item.get(key), 0.0) for item in features]
+        return float(np.mean(vals)) if vals else 0.0
+    return {
+        "global_behavior_index": round(avg("direct_behavior_score"), 2),
+        "global_context_index": round(avg("contextual_pressure_score"), 2),
+        "global_attention_index": round(np.mean([avg("public_attention_score") * 100.0, avg("narrative_velocity_score") * 100.0]), 2),
+        "global_disruption_index": round(np.mean([avg("mobility_disruption_score") * 100.0, avg("logistics_stress_score") * 100.0]), 2),
+        "global_economic_stress_index": round(np.mean([avg("household_stress_score") * 100.0, avg("energy_stress_score") * 100.0, avg("remittance_stress_score") * 100.0]), 2),
+    }
+
 def compute_global_operational_features(
     current_risk_score: float | None,
     mode: str = "online",
@@ -619,7 +646,8 @@ def compute_global_operational_features(
         current_risk_score=current_risk_score,
         current_timestamp=current_timestamp,
     )
-    result = {**mood_summary, **forecast_summary}
+    signal_indices = _global_signal_indices(mode=mode)
+    result = {**mood_summary, **forecast_summary, **signal_indices}
 
     if use_cache and cache_signature is not None:
         _OPERATIONAL_CACHE[mode] = {

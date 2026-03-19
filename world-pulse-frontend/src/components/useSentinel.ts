@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import API, { API_HEADERS, buildWebSocketAuthUrl } from "../services/api";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const FALLBACK_API_URL = import.meta.env.VITE_API_FALLBACK_URL || "http://127.0.0.1:8010";
 
 const deriveWebSocketUrl = (explicitUrl?: string) => {
   if (explicitUrl && explicitUrl.trim().length > 0) return explicitUrl;
@@ -13,7 +14,7 @@ const deriveWebSocketUrl = (explicitUrl?: string) => {
     parsed.hash = "";
     return parsed.toString();
   } catch {
-    return "ws://127.0.0.1:8000/ws/sentinel";
+    return `${FALLBACK_API_URL.replace(/^http/, "ws")}/ws/sentinel`;
   }
 };
 

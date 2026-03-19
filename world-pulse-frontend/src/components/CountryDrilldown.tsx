@@ -4,6 +4,7 @@ import EventLog, { type OperatorEvent } from "./EventLog";
 import type { CountryWeatherSnapshot } from "../services/weather";
 import RiskWaterfallChart from "./RiskWaterfallChart";
 import TimeSeriesChart from "./TimeSeriesChart";
+import { formatDisplayScore, toDisplayScore } from "../utils/scoreFormatting";
 
 type Props = {
   open: boolean;
@@ -64,6 +65,7 @@ function driverReason(feature: string, contribution: number): string {
   if (key.includes("volatility")) return `Instability signals are ${direction}.`;
   if (key.includes("return")) return `Market movement is ${direction}.`;
   if (key.includes("weather")) return `Weather-linked anomalies are ${direction}.`;
+  if (key.includes("mobility")) return `Population movement disruption is ${direction}.`;
   return `This factor is ${direction}.`;
 }
 
@@ -119,6 +121,20 @@ export default function CountryDrilldown({
   const confidenceUpper = Number.isFinite(confidenceUpperValue) ? confidenceUpperValue : Math.min(100, risk + 4);
 
   const sortedDrivers = [...drivers].sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution));
+  const directBehavior = toDisplayScore(data?.direct_behavior_score, "absolute");
+  const contextualPressure = toDisplayScore(data?.contextual_pressure_score, "absolute");
+  const evidenceQuality = toDisplayScore(data?.evidence_quality_score, "absolute");
+  const mobilityDisruption = toDisplayScore(data?.mobility_disruption_score, "normalized");
+  const logisticsStress = toDisplayScore(data?.logistics_stress_score, "normalized");
+  const householdStress = toDisplayScore(data?.household_stress_score, "normalized");
+  const fuelPressure = toDisplayScore(data?.fuel_price_pressure, "normalized");
+  const foodPressure = toDisplayScore(data?.food_price_pressure, "normalized");
+  const laborStress = toDisplayScore(data?.labor_stress_score, "normalized");
+  const fxPressure = toDisplayScore(data?.fx_pressure_score, "normalized");
+  const remittanceStress = toDisplayScore(data?.remittance_stress_score, "normalized");
+  const energyStress = toDisplayScore(data?.energy_stress_score, "normalized");
+  const narrativeVelocity = toDisplayScore(data?.narrative_velocity_score, "normalized");
+  const coordinationRisk = toDisplayScore(data?.coordination_risk_score, "normalized");
   const driverLabels = topDrivers.length
     ? topDrivers.map(cleanDriverLabel)
     : sortedDrivers.map((driver) => cleanDriverLabel(driver.feature)).slice(0, 3);
@@ -181,6 +197,18 @@ export default function CountryDrilldown({
     { label: "Risk Score", value: `${risk.toFixed(1)} / 100`, detail: threatLabel },
     { label: "Trend", value: `${trendLabel}`, detail: `${riskDelta >= 0 ? "+" : ""}${riskDelta.toFixed(2)} delta` },
     { label: "Forecast", value: `${forecast.score.toFixed(1)}`, detail: `${forecast.horizonHours}h outlook` },
+    { label: "Direct Behavior", value: formatDisplayScore(directBehavior, "absolute"), detail: "Attention and population response" },
+    { label: "Context Pressure", value: formatDisplayScore(contextualPressure, "absolute"), detail: "Conflict, weather, and external stress" },
+    { label: "Evidence Quality", value: formatDisplayScore(evidenceQuality, "absolute"), detail: "Source diversity and freshness" },
+    { label: "Mobility", value: formatDisplayScore(mobilityDisruption, "absolute"), detail: "Displacement and movement disruption" },
+    { label: "Logistics", value: formatDisplayScore(logisticsStress, "absolute"), detail: "Port, air-freight, and logistics stress" },
+    { label: "Household Stress", value: formatDisplayScore(householdStress, "absolute"), detail: "Household strain and affordability" },
+    { label: "Fuel Pressure", value: formatDisplayScore(fuelPressure, "absolute"), detail: "Energy and transport cost pressure" },
+    { label: "Food Pressure", value: formatDisplayScore(foodPressure, "absolute"), detail: "Food inflation pressure" },
+    { label: "Labor Stress", value: formatDisplayScore(laborStress, "absolute"), detail: "Labor market strain" },
+    { label: "FX Pressure", value: formatDisplayScore(fxPressure, "absolute"), detail: "Currency and imported-cost pressure" },
+    { label: "Remittance Stress", value: formatDisplayScore(remittanceStress, "absolute"), detail: "Remittance-dependency pressure" },
+    { label: "Energy Stress", value: formatDisplayScore(energyStress, "absolute"), detail: "Energy dependency and price stress" },
     { label: "Trust", value: reliability.status, detail: `${(reliability.confidence * 100).toFixed(0)}% confidence` },
   ];
 
@@ -243,10 +271,25 @@ export default function CountryDrilldown({
                     <small>{implications[2].text}</small>
                   </article>
                 </div>
+                <article className="country-drilldown-mini-card">
+                  <span>Signal Split</span>
+                  <strong>D {directBehavior.toFixed(1)} | C {contextualPressure.toFixed(1)} | E {evidenceQuality.toFixed(1)} | M {mobilityDisruption.toFixed(1)} | L {logisticsStress.toFixed(1)}</strong>
+                  <small>Direct behavior, contextual pressure, evidence quality, mobility disruption, and logistics stress now travel through the country model as separate analyst-visible dimensions.</small>
+                </article>
+                <article className="country-drilldown-mini-card">
+                  <span>Economic Conditions</span>
+                  <strong>H {householdStress.toFixed(1)} | F {fuelPressure.toFixed(1)} | Food {foodPressure.toFixed(1)} | L {laborStress.toFixed(1)} | FX {fxPressure.toFixed(1)} | R {remittanceStress.toFixed(1)} | E {energyStress.toFixed(1)}</strong>
+                  <small>Household stress, fuel pressure, food pressure, labor stress, FX pressure, remittance stress, and energy stress give the country model a separate economic-behavior layer beyond market proxies.</small>
+                </article>
                 <article className="country-drilldown-mini-card country-drilldown-headline-card">
                   <span>Headline Read</span>
                   <strong>{topHeadline?.headline ?? "No current headline in focus"}</strong>
                   <small>{topHeadline ? `${topHeadline.source} - ${new Date(topHeadline.timestamp).toLocaleTimeString()}` : "Awaiting latest country-specific signal"}</small>
+                </article>
+                <article className="country-drilldown-mini-card">
+                  <span>Social Velocity</span>
+                  <strong>N {narrativeVelocity.toFixed(1)} | C {coordinationRisk.toFixed(1)}</strong>
+                  <small>Narrative velocity and coordination risk summarize cross-channel public attention pressure from YouTube and Telegram.</small>
                 </article>
                 <article className="country-drilldown-mini-card">
                   <span>Main Drivers</span>
@@ -364,6 +407,38 @@ export default function CountryDrilldown({
                   <div className="drilldown-list-row">
                     <strong>Model confidence</strong>
                     <span>{(reliability.confidence * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Direct behavior score</strong>
+                    <span>{formatDisplayScore(directBehavior, "absolute")}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Contextual pressure score</strong>
+                    <span>{formatDisplayScore(contextualPressure, "absolute")}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Evidence quality score</strong>
+                    <span>{formatDisplayScore(evidenceQuality, "absolute")}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Mobility disruption score</strong>
+                    <span>{formatDisplayScore(mobilityDisruption, "absolute")}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Household stress score</strong>
+                    <span>{formatDisplayScore(householdStress, "absolute")}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Fuel price pressure</strong>
+                    <span>{formatDisplayScore(fuelPressure, "absolute")}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Food price pressure</strong>
+                    <span>{formatDisplayScore(foodPressure, "absolute")}</span>
+                  </div>
+                  <div className="drilldown-list-row">
+                    <strong>Labor stress score</strong>
+                    <span>{formatDisplayScore(laborStress, "absolute")}</span>
                   </div>
                   <div className="drilldown-list-row">
                     <strong>Uncertainty</strong>

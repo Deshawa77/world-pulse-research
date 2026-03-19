@@ -8,8 +8,8 @@
    ---------------------------------------- */
 .advanced-streaming-trends {
   position: relative;
-  background: linear-gradient(135deg, rgba(5, 15, 30, 0.95), rgba(8, 20, 40, 0.9));
-  border: 1px solid rgba(0, 245, 255, 0.3);
+  background: linear-gradient(180deg, rgba(10, 20, 36, 0.96), rgba(6, 12, 24, 0.98));
+  border: 1px solid rgba(56, 189, 248, 0.22);
   border-radius: 16px;
   padding: 16px;
   overflow: hidden;
@@ -66,19 +66,19 @@
 .trends-title h4 {
   margin: 0;
   font-size: 1.1rem;
-  color: #00f5ff;
+  color: #e7f1ff;
   text-transform: uppercase;
   letter-spacing: 1px;
-  text-shadow: 0 0 10px rgba(0, 245, 255, 0.5);
+  text-shadow: none;
 }
 
 .pulse-indicator {
   width: 8px;
   height: 8px;
-  background: #00ff88;
+  background: #22d3ee;
   border-radius: 50%;
   animation: pulseDot 1.5s ease-in-out infinite;
-  box-shadow: 0 0 8px #00ff88;
+  box-shadow: 0 0 8px rgba(34, 211, 238, 0.45);
 }
 
 @keyframes pulseDot {
@@ -93,8 +93,8 @@
 }
 
 .live-badge {
-  background: linear-gradient(90deg, #ff0040, #ff4080);
-  color: white;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.18), rgba(56, 189, 248, 0.12));
+  color: #7dd3fc;
   padding: 3px 10px;
   border-radius: 4px;
   font-size: 0.7rem;
@@ -102,7 +102,7 @@
   text-transform: uppercase;
   letter-spacing: 1px;
   animation: livePulse 2s ease-in-out infinite;
-  box-shadow: 0 0 10px rgba(255, 0, 64, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.18);
 }
 
 @keyframes livePulse {
@@ -118,13 +118,11 @@
 
 .trends-chart-container {
   position: relative;
-  background: rgba(0, 0, 0, 0.3);
+  background: linear-gradient(180deg, rgba(5, 12, 24, 0.98), rgba(4, 10, 20, 0.98));
   border-radius: 12px;
-  border: 1px solid rgba(0, 245, 255, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.16);
   overflow: hidden;
-  box-shadow: 
-    inset 0 0 30px rgba(0, 245, 255, 0.05),
-    0 0 20px rgba(0, 245, 255, 0.1);
+  box-shadow: inset 0 0 30px rgba(34, 211, 238, 0.04);
 }
 
 /* Clean Chart Line Styling - No Neon Glow */
@@ -183,7 +181,7 @@
 /* Anomaly Badge */
 .anomaly-badge {
   background: linear-gradient(90deg, #ff6b6b, #ee5a5a);
-  color: white;
+  color: #7dd3fc;
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 0.65rem;
@@ -218,7 +216,7 @@
   gap: 12px;
   background: rgba(5, 15, 30, 0.9);
   z-index: 10;
-  color: #00f5ff;
+  color: #e7f1ff;
   font-size: 0.9rem;
 }
 
@@ -226,7 +224,7 @@
   width: 40px;
   height: 40px;
   border: 3px solid rgba(0, 245, 255, 0.2);
-  border-top-color: #00f5ff;
+  border-top-color: #e7f1ff;
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -255,8 +253,8 @@
 }
 
 .metric-name {
-  font-size: 0.75rem;
-  color: #a0d0e0;
+  font-size: 0.72rem;
+  color: #8fb0cf;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -288,9 +286,9 @@
   gap: 12px;
   margin-top: 12px;
   padding: 10px 14px;
-  background: rgba(0, 0, 0, 0.3);
+  background: linear-gradient(180deg, rgba(5, 12, 24, 0.98), rgba(4, 10, 20, 0.98));
   border-radius: 8px;
-  border: 1px solid rgba(0, 245, 255, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.16);
 }
 
 .topics-label {
@@ -311,10 +309,10 @@
 .topic-chip {
   padding: 4px 12px;
   background: linear-gradient(135deg, rgba(0, 245, 255, 0.15), rgba(170, 0, 255, 0.15));
-  border: 1px solid rgba(0, 245, 255, 0.3);
+  border: 1px solid rgba(56, 189, 248, 0.22);
   border-radius: 20px;
   font-size: 0.8rem;
-  color: #00f5ff;
+  color: #e7f1ff;
   animation: fadeInUp 0.5s ease-out forwards;
   opacity: 0;
   transform: translateY(10px);
@@ -351,7 +349,7 @@
 }
 
 .streaming-trends-panel .panel-head h3 {
-  color: #00f5ff;
+  color: #e7f1ff;
   text-shadow: 0 0 15px rgba(0, 245, 255, 0.5);
   display: flex;
   align-items: center;
@@ -411,7 +409,7 @@
   align-items: center;
   gap: 10px;
   font-size: 1rem;
-  color: #00f5ff;
+  color: #e7f1ff;
   text-transform: uppercase;
   letter-spacing: 1px;
 }
@@ -434,7 +432,7 @@
   border-radius: 4px;
   font-size: 0.65rem;
   font-weight: 700;
-  color: #00f5ff;
+  color: #e7f1ff;
   text-transform: uppercase;
   letter-spacing: 1px;
 }
@@ -520,8 +518,8 @@
 }
 
 .governance-badge {
-  background: linear-gradient(135deg, #aa00ff, #ff00ff);
-  color: white;
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.16), rgba(56, 189, 248, 0.12));
+  color: #7dd3fc;
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 0.65rem;
@@ -554,24 +552,24 @@
 }
 
 .section-label {
-  font-size: 0.75rem;
-  color: #a0d0e0;
+  font-size: 0.72rem;
+  color: #8fb0cf;
   text-transform: uppercase;
   letter-spacing: 1px;
   margin-bottom: 10px;
   opacity: 0.8;
 }
 
-/* Radar Chart Section */
-.governance-radar-section {
+.governance-comparison-section {
   margin-bottom: 16px;
-  padding: 12px;
-  background: rgba(0, 0, 0, 0.2);
+  padding: 14px;
+  background: linear-gradient(180deg, rgba(5, 12, 24, 0.98), rgba(4, 10, 20, 0.98));
   border-radius: 12px;
-  border: 1px solid rgba(170, 0, 255, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  box-shadow: inset 0 0 30px rgba(34, 211, 238, 0.04);
 }
 
-.governance-radar-chart {
+.governance-comparison-chart {
   width: 100%;
 }
 
@@ -587,7 +585,7 @@
 }
 
 .model-metric-card {
-  background: rgba(0, 0, 0, 0.3);
+  background: linear-gradient(180deg, rgba(5, 12, 24, 0.98), rgba(4, 10, 20, 0.98));
   border: 1px solid rgba(0, 245, 255, 0.2);
   border-radius: 10px;
   padding: 12px;
@@ -596,18 +594,18 @@
 }
 
 .model-metric-card:hover {
-  border-color: rgba(0, 245, 255, 0.4);
-  box-shadow: 0 0 20px rgba(0, 245, 255, 0.1);
+  border-color: rgba(56, 189, 248, 0.28);
+  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.34), 0 0 0 1px rgba(34, 211, 238, 0.12);
   transform: translateY(-2px);
 }
 
 .model-metric-card.selected {
-  border-color: rgba(0, 245, 255, 0.6);
+  border-color: rgba(56, 189, 248, 0.32);
 }
 
 .model-name {
   font-size: 0.85rem;
-  color: #00f5ff;
+  color: #e7f1ff;
   font-weight: 600;
   margin-bottom: 8px;
   text-transform: uppercase;
@@ -620,8 +618,8 @@
 }
 
 .gauge-label {
-  font-size: 0.7rem;
-  color: #a0d0e0;
+  font-size: 0.68rem;
+  color: #8fb0cf;
   text-transform: uppercase;
   margin-bottom: 4px;
 }
@@ -629,7 +627,7 @@
 .gauge-bar-container {
   position: relative;
   height: 6px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(148, 163, 184, 0.14);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -651,7 +649,7 @@
 .gauge-grid-lines span {
   width: 1px;
   height: 100%;
-  background: rgba(0, 0, 0, 0.3);
+  background: linear-gradient(180deg, rgba(5, 12, 24, 0.98), rgba(4, 10, 20, 0.98));
 }
 
 .gauge-value {
@@ -680,8 +678,8 @@
 }
 
 .drift-value {
-  font-size: 0.75rem;
-  color: #a0d0e0;
+  font-size: 0.72rem;
+  color: #8fb0cf;
   font-family: monospace;
 }
 
@@ -730,10 +728,10 @@
 
 /* Calibration Trend */
 .governance-trend {
-  background: rgba(0, 0, 0, 0.2);
+  background: linear-gradient(180deg, rgba(5, 12, 24, 0.98), rgba(4, 10, 20, 0.98));
   border-radius: 10px;
   padding: 12px;
-  border: 1px solid rgba(0, 255, 136, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.16);
 }
 
 .trend-stats {
@@ -749,8 +747,8 @@
 }
 
 .stat-label {
-  font-size: 0.7rem;
-  color: #a0d0e0;
+  font-size: 0.68rem;
+  color: #8fb0cf;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -767,7 +765,7 @@
   gap: 3px;
   height: 40px;
   padding: 4px;
-  background: rgba(0, 0, 0, 0.3);
+  background: linear-gradient(180deg, rgba(5, 12, 24, 0.98), rgba(4, 10, 20, 0.98));
   border-radius: 6px;
 }
 

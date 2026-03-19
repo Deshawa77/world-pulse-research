@@ -87,18 +87,22 @@ def record_prediction(
     model_monitoring_collection,
     model_version: str,
     features: list[float],
-    prediction: int,
+    prediction: float,
     probability: float,
     drift_score: float | None,
     role: str,
     logger: logging.Logger,
+    feature_names: list[str] | None = None,
+    schema_version: str | None = None,
 ) -> None:
     timestamp = datetime.utcnow()
     prediction_doc = {
         "timestamp": timestamp,
         "model_version": model_version,
         "features": features,
-        "prediction": int(prediction),
+        "feature_names": feature_names or [],
+        "schema_version": schema_version,
+        "prediction": float(prediction),
         "probability": float(probability),
     }
     prediction_collection.insert_one(prediction_doc)
@@ -106,7 +110,9 @@ def record_prediction(
     monitoring_doc = {
         "timestamp": timestamp,
         "model_version": model_version,
-        "prediction": int(prediction),
+        "schema_version": schema_version,
+        "feature_names": feature_names or [],
+        "prediction": float(prediction),
         "probability": float(probability),
         "drift_score": drift_score,
         "role": role,
@@ -118,7 +124,7 @@ def record_prediction(
         extra={
             "event": {
                 "model_version": model_version,
-                "prediction": int(prediction),
+                "prediction": float(prediction),
                 "probability": float(probability),
                 "drift_score": drift_score,
                 "role": role,

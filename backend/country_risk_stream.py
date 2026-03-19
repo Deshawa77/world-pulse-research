@@ -1,4 +1,5 @@
 import hashlib
+import math
 import json
 import os
 import time
@@ -12,9 +13,10 @@ from database.mongo import db, write_country_features_v2
 from processing.country_incremental_risk import recompute_country_risk
 from processing.nlp_analysis import analyze_text, clean_text
 from processing.country_signal_fusion import CITY_TO_COUNTRY, COMMON_COUNTRY_ALIASES
+from processing.signal_taxonomy import build_signal_metadata
 
 RAW_SOURCE_TOPICS = [
-    'news_topic', 'gdelt_topic', 'reddit_topic', 'trends_topic', 'weather_topic', 'stocks_topic', 'crypto_topic',
+    'news_topic', 'gdelt_topic', 'reddit_topic', 'trends_topic', 'weather_topic', 'stocks_topic', 'crypto_topic', 'wiki_pageviews', 'wiki', 'telegram_public_topic', 'telegram_public', 'youtube_trends_topic', 'youtube_trends', 'mobility_topic', 'mobility', 'aviation_topic', 'aviation', 'logistics_topic', 'logistics', 'economic_behavior_topic', 'economic_behavior', 'worldbank_behavior_topic', 'worldbank_behavior', 'energy_stress_topic', 'energy_stress',
     'news', 'media', 'trends', 'weather', 'stocks', 'crypto',
 ]
 NORMALIZED_TOPIC = 'country_source_events'
@@ -127,11 +129,19 @@ def normalize_record(topic, record):
                 'query': data.get('query'),
                 'sentiment': data.get('sentiment') or _enrich_sentiment(title, description),
             }
+            normalized_source = 'gdelt' if 'gdelt' in source or topic == 'gdelt_topic' else 'newsapi'
             events.append({
                 'country': country,
                 'timestamp': timestamp.isoformat(),
-                'source': 'gdelt' if 'gdelt' in source or topic == 'gdelt_topic' else 'newsapi',
+                'source': normalized_source,
                 'topic': topic,
+                **build_signal_metadata(
+                    source=normalized_source,
+                    observed_at=timestamp,
+                    language=payload.get('language'),
+                    confidence=0.72 if normalized_source == 'newsapi' else 0.78,
+                    coverage_weight=1.0,
+                ),
                 'payload': payload,
             })
 
@@ -154,6 +164,260 @@ def normalize_record(topic, record):
                 'timestamp': timestamp.isoformat(),
                 'source': 'reddit',
                 'topic': topic,
+                **build_signal_metadata(
+                    source='reddit',
+                    observed_at=timestamp,
+                    language='en',
+                    confidence=0.55,
+                    coverage_weight=0.65,
+                ),
+                'payload': payload,
+            })
+
+    elif topic in {'telegram_public_topic', 'telegram_public'}:
+        data = record.get('data') or {}
+        country = str(record.get('country') or '').strip().upper()
+        if country:
+            timestamp = _parse_timestamp(record.get('collected_at') or record.get('timestamp'))
+            payload = {
+                'post_count': int(data.get('post_count') or 0),
+                'unique_channels': int(data.get('unique_channels') or 0),
+                'narrative_velocity_score': float(data.get('narrative_velocity_score') or 0.0),
+                'coordination_risk_score': float(data.get('coordination_risk_score') or 0.0),
+                'social_unrest_score': float(data.get('social_unrest_score') or 0.0),
+            }
+            events.append({
+                'country': country,
+                'timestamp': timestamp.isoformat(),
+                'source': 'telegram_public',
+                'topic': topic,
+                **build_signal_metadata(source='telegram_public', observed_at=timestamp, language='und', confidence=0.62, coverage_weight=0.55),
+                'payload': payload,
+            })
+
+    elif topic in {'youtube_trends_topic', 'youtube_trends'}:
+        data = record.get('data') or {}
+        country = str(record.get('country') or '').strip().upper()
+        if country:
+            timestamp = _parse_timestamp(record.get('collected_at') or record.get('timestamp'))
+            payload = {
+                'video_count': int(data.get('video_count') or 0),
+                'unique_channels': int(data.get('unique_channels') or 0),
+                'public_attention_score': float(data.get('public_attention_score') or 0.0),
+                'narrative_velocity_score': float(data.get('narrative_velocity_score') or 0.0),
+            }
+            events.append({
+                'country': country,
+                'timestamp': timestamp.isoformat(),
+                'source': 'youtube_public',
+                'topic': topic,
+                **build_signal_metadata(source='youtube_public', observed_at=timestamp, language='und', confidence=0.64, coverage_weight=0.58),
+                'payload': payload,
+            })
+
+    elif topic in {'wiki_pageviews', 'wiki'}:
+        data = record.get('data') or {}
+        article = str(data.get('article') or data.get('title') or '')
+        timestamp = _parse_timestamp(record.get('collected_at') or data.get('date'))
+        explicit_country = str(record.get('country') or '').strip().upper()
+        countries = {explicit_country} if explicit_country else _match_countries(article)
+        for country in countries:
+            payload = {
+                'article': article,
+                'views': float(data.get('views') or 0.0),
+                'previous_views': float(data.get('previous_views') or 0.0),
+                'view_delta_ratio': float(data.get('view_delta_ratio') or 0.0),
+            }
+            events.append({
+                'country': country,
+                'timestamp': timestamp.isoformat(),
+                'source': 'wikipedia',
+                'topic': topic,
+                **build_signal_metadata(
+                    source='wikipedia',
+                    observed_at=timestamp,
+                    language='en',
+                    confidence=0.66,
+                    coverage_weight=0.75,
+                ),
+                'payload': payload,
+            })
+
+    elif topic in {'aviation_topic', 'aviation'}:
+        data = record.get('data') or {}
+        country = str(record.get('country') or '').strip().upper()
+        if country:
+            timestamp = _parse_timestamp(record.get('collected_at') or record.get('timestamp') or data.get('snapshot_at'))
+            payload = {
+                'aircraft_count': float(data.get('aircraft_count') or 0.0),
+                'on_ground_count': float(data.get('on_ground_count') or 0.0),
+                'avg_velocity_mps': float(data.get('avg_velocity_mps') or 0.0),
+                'aviation_disruption_score': float(data.get('aviation_disruption_score') or 0.0),
+            }
+            events.append({
+                'country': country,
+                'timestamp': timestamp.isoformat(),
+                'source': 'opensky',
+                'topic': topic,
+                **build_signal_metadata(
+                    source='opensky',
+                    observed_at=timestamp,
+                    language='und',
+                    confidence=0.71,
+                    coverage_weight=0.72,
+                ),
+                'payload': payload,
+            })
+
+    elif topic in {'mobility_topic', 'mobility'}:
+        data = record.get('data') or {}
+        country = str(record.get('country') or data.get('origin_country') or '').strip().upper()
+        if country:
+            timestamp = _parse_timestamp(record.get('collected_at') or record.get('timestamp') or data.get('year'))
+            payload = {
+                'year': int(data.get('year') or 0),
+                'origin_country': country,
+                'host_country': data.get('host_country'),
+                'displaced_people': float(data.get('displaced_people') or 0.0),
+                'previous_displaced_people': float(data.get('previous_displaced_people') or 0.0) if data.get('previous_displaced_people') not in (None, '') else 0.0,
+                'displacement_delta_ratio': float(data.get('displacement_delta_ratio') or 0.0),
+            }
+            events.append({
+                'country': country,
+                'timestamp': timestamp.isoformat(),
+                'source': 'unhcr_idmc',
+                'topic': topic,
+                **build_signal_metadata(
+                    source='unhcr_idmc',
+                    observed_at=timestamp,
+                    language='und',
+                    confidence=0.82,
+                    coverage_weight=0.88,
+                ),
+                'payload': payload,
+            })
+
+    elif topic in {'logistics_topic', 'logistics'}:
+        data = record.get('data') or {}
+        country = str(record.get('country') or '').strip().upper()
+        if country:
+            timestamp = _parse_timestamp(record.get('collected_at') or record.get('timestamp'))
+            payload = {
+                'logistics_stress_score': float(data.get('logistics_stress_score') or 0.0),
+                'logistics_performance': float(data.get('logistics_performance') or 0.0),
+                'container_port_traffic': float(data.get('container_port_traffic') or 0.0),
+                'air_freight': float(data.get('air_freight') or 0.0),
+            }
+            events.append({
+                'country': country,
+                'timestamp': timestamp.isoformat(),
+                'source': 'logistics',
+                'topic': topic,
+                **build_signal_metadata(source='logistics', observed_at=timestamp, language='und', confidence=0.68, coverage_weight=0.62),
+                'payload': payload,
+            })
+
+    elif topic in {'economic_behavior_topic', 'economic_behavior'}:
+        data = record.get('data') or {}
+        country = str(record.get('country') or '').strip().upper()
+        if country:
+            timestamp = _parse_timestamp(record.get('collected_at') or record.get('timestamp') or data.get('fuel_price_date') or data.get('food_price_date'))
+            payload = {
+                'household_stress_score': float(data.get('household_stress_score') or 0.0),
+                'fuel_price_pressure': float(data.get('fuel_price_pressure') or 0.0),
+                'food_price_pressure': float(data.get('food_price_pressure') or 0.0),
+                'labor_stress_score': float(data.get('labor_stress_score') or 0.0),
+                'fx_pressure_score': float(data.get('fx_pressure_score') or 0.0),
+                'remittance_stress_score': float(data.get('remittance_stress_score') or 0.0),
+                'energy_stress_score': float(data.get('energy_stress_score') or 0.0),
+                'inflation_rate': float(data.get('inflation_rate') or 0.0),
+                'unemployment_rate': float(data.get('unemployment_rate') or 0.0),
+            }
+            events.append({
+                'country': country,
+                'timestamp': timestamp.isoformat(),
+                'source': 'economic_behavior',
+                'topic': topic,
+                **build_signal_metadata(
+                    source='economic_behavior',
+                    observed_at=timestamp,
+                    language='und',
+                    confidence=0.76,
+                    coverage_weight=0.8,
+                    signal_domain='economic_behavior',
+                    signal_type='household_labor_pressure',
+                    signal_class='direct',
+                    source_tier='public_institution',
+                ),
+                'payload': payload,
+            })
+
+    elif topic in {'worldbank_behavior_topic', 'worldbank_behavior'}:
+        data = record.get('data') or {}
+        country = str(record.get('country') or '').strip().upper()
+        if country:
+            timestamp = _parse_timestamp(record.get('collected_at') or record.get('timestamp'))
+            payload = {
+                'household_stress_score': 0.0,
+                'fuel_price_pressure': 0.0,
+                'food_price_pressure': 0.0,
+                'labor_stress_score': 0.0,
+                'fx_pressure_score': 0.0,
+                'remittance_stress_score': float(data.get('remittance_stress_score') or 0.0),
+                'energy_stress_score': float(data.get('energy_dependency_score') or 0.0),
+                'inflation_rate': float(data.get('inflation_rate') or 0.0),
+                'unemployment_rate': float(data.get('unemployment_rate') or 0.0),
+            }
+            events.append({
+                'country': country,
+                'timestamp': timestamp.isoformat(),
+                'source': 'economic_behavior',
+                'topic': topic,
+                **build_signal_metadata(
+                    source='economic_behavior',
+                    observed_at=timestamp,
+                    language='und',
+                    confidence=0.79,
+                    coverage_weight=0.72,
+                    signal_domain='economic_behavior',
+                    signal_type='remittance_energy_pressure',
+                    signal_class='direct',
+                    source_tier='public_institution',
+                ),
+                'payload': payload,
+            })
+
+    elif topic in {'energy_stress_topic', 'energy_stress'}:
+        data = record.get('data') or {}
+        timestamp = _parse_timestamp(record.get('collected_at') or record.get('timestamp') or data.get('fuel_price_date') or data.get('energy_price_date'))
+        for country in get_country_catalog().keys():
+            payload = {
+                'household_stress_score': 0.0,
+                'fuel_price_pressure': float(data.get('fuel_price_pressure') or 0.0),
+                'food_price_pressure': 0.0,
+                'labor_stress_score': 0.0,
+                'fx_pressure_score': 0.0,
+                'remittance_stress_score': 0.0,
+                'energy_stress_score': float(data.get('energy_stress_score') or 0.0),
+                'inflation_rate': 0.0,
+                'unemployment_rate': 0.0,
+            }
+            events.append({
+                'country': country,
+                'timestamp': timestamp.isoformat(),
+                'source': 'economic_behavior',
+                'topic': topic,
+                **build_signal_metadata(
+                    source='economic_behavior',
+                    observed_at=timestamp,
+                    language='und',
+                    confidence=0.74,
+                    coverage_weight=0.66,
+                    signal_domain='economic_behavior',
+                    signal_type='energy_cost_pressure',
+                    signal_class='contextual',
+                    source_tier='public_institution',
+                ),
                 'payload': payload,
             })
 
@@ -172,6 +436,13 @@ def normalize_record(topic, record):
                 'timestamp': timestamp.isoformat(),
                 'source': 'google_trends',
                 'topic': topic,
+                **build_signal_metadata(
+                    source='google_trends',
+                    observed_at=timestamp,
+                    language='und',
+                    confidence=0.68,
+                    coverage_weight=0.85,
+                ),
                 'payload': payload,
             })
 
@@ -192,6 +463,13 @@ def normalize_record(topic, record):
                 'timestamp': timestamp.isoformat(),
                 'source': 'weather',
                 'topic': topic,
+                **build_signal_metadata(
+                    source='weather',
+                    observed_at=timestamp,
+                    language='und',
+                    confidence=0.81,
+                    coverage_weight=0.9,
+                ),
                 'payload': payload,
             })
 
@@ -211,6 +489,13 @@ def normalize_record(topic, record):
                 'timestamp': timestamp.isoformat(),
                 'source': 'stocks',
                 'topic': topic,
+                **build_signal_metadata(
+                    source='stocks',
+                    observed_at=timestamp,
+                    language='und',
+                    confidence=0.84,
+                    coverage_weight=0.7,
+                ),
                 'payload': payload,
             })
 
@@ -229,6 +514,13 @@ def normalize_record(topic, record):
                 'timestamp': timestamp.isoformat(),
                 'source': 'crypto',
                 'topic': topic,
+                **build_signal_metadata(
+                    source='crypto',
+                    observed_at=timestamp,
+                    language='und',
+                    confidence=0.76,
+                    coverage_weight=0.65,
+                ),
                 'payload': payload,
             })
 
@@ -256,6 +548,16 @@ def _store_country_side_effects(event):
                 'country': country,
                 'country_name': get_country_catalog().get(country, country),
                 'collected_at': datetime.now(timezone.utc).isoformat(),
+                'signal_domain': event.get('signal_domain'),
+                'signal_type': event.get('signal_type'),
+                'signal_class': event.get('signal_class'),
+                'source_tier': event.get('source_tier'),
+                'geo_scope': event.get('geo_scope'),
+                'language': event.get('language'),
+                'observed_at': event.get('observed_at'),
+                'ingested_at': event.get('ingested_at'),
+                'confidence': event.get('confidence'),
+                'coverage_weight': event.get('coverage_weight'),
                 'data': {
                     'title': payload.get('title'),
                     'description': payload.get('description'),
@@ -289,6 +591,37 @@ def _update_rollup(event):
         update['$max']['social_unrest_score'] = round(score, 4)
     elif source == 'google_trends':
         update['$max']['google_trends_pressure'] = round(min((payload.get('interest') or 0) / 100.0, 1.0), 4)
+    elif source == 'wikipedia':
+        views = float(payload.get('views') or 0.0)
+        delta_ratio = max(float(payload.get('view_delta_ratio') or 0.0), 0.0)
+        attention_score = min((math.log1p(max(views, 0.0)) / 12.0) + (delta_ratio * 0.35), 1.0)
+        update['$max']['public_attention_score'] = round(attention_score, 4)
+    elif source == 'telegram_public':
+        update['$max']['narrative_velocity_score'] = round(min(max(float(payload.get('narrative_velocity_score') or 0.0), 0.0), 1.0), 4)
+        update['$max']['coordination_risk_score'] = round(min(max(float(payload.get('coordination_risk_score') or 0.0), 0.0), 1.0), 4)
+        update['$max']['social_unrest_score'] = round(min(max(float(payload.get('social_unrest_score') or 0.0), 0.0), 1.0), 4)
+    elif source == 'youtube_public':
+        update['$max']['public_attention_score'] = round(min(max(float(payload.get('public_attention_score') or 0.0), 0.0), 1.0), 4)
+        update['$max']['narrative_velocity_score'] = round(min(max(float(payload.get('narrative_velocity_score') or 0.0), 0.0), 1.0), 4)
+    elif source == 'opensky':
+        aviation_score = min(max(float(payload.get('aviation_disruption_score') or 0.0), 0.0), 1.0)
+        update['$max']['aviation_disruption_score'] = round(aviation_score, 4)
+        update['$max']['mobility_disruption_score'] = round(max(update['$max'].get('mobility_disruption_score', 0.0), aviation_score), 4)
+    elif source == 'unhcr_idmc':
+        displaced_people = float(payload.get('displaced_people') or 0.0)
+        delta_ratio = max(float(payload.get('displacement_delta_ratio') or 0.0), 0.0)
+        mobility_score = min((math.log1p(max(displaced_people, 0.0)) / 13.0) + (delta_ratio * 0.2), 1.0)
+        update['$max']['mobility_disruption_score'] = round(mobility_score, 4)
+    elif source == 'economic_behavior':
+        update['$max']['household_stress_score'] = round(min(max(float(payload.get('household_stress_score') or 0.0), 0.0), 1.0), 4)
+        update['$max']['fuel_price_pressure'] = round(min(max(float(payload.get('fuel_price_pressure') or 0.0), 0.0), 1.0), 4)
+        update['$max']['food_price_pressure'] = round(min(max(float(payload.get('food_price_pressure') or 0.0), 0.0), 1.0), 4)
+        update['$max']['labor_stress_score'] = round(min(max(float(payload.get('labor_stress_score') or 0.0), 0.0), 1.0), 4)
+        update['$max']['fx_pressure_score'] = round(min(max(float(payload.get('fx_pressure_score') or 0.0), 0.0), 1.0), 4)
+        update['$max']['remittance_stress_score'] = round(min(max(float(payload.get('remittance_stress_score') or 0.0), 0.0), 1.0), 4)
+        update['$max']['energy_stress_score'] = round(min(max(float(payload.get('energy_stress_score') or 0.0), 0.0), 1.0), 4)
+    elif source == 'logistics':
+        update['$max']['logistics_stress_score'] = round(min(max(float(payload.get('logistics_stress_score') or 0.0), 0.0), 1.0), 4)
     elif source == 'weather':
         update['$max']['weather_stress'] = round(min(abs((payload.get('temperature_normalized') or 0.5) - 0.5) * 1.4, 1.0), 4)
     elif source == 'stocks':
@@ -324,8 +657,24 @@ def _publish_risk_update(country_code):
         'war_state_rules': feature_doc.get('war_state_rules', []),
         'social_unrest_score': feature_doc.get('social_unrest_score', 0.0),
         'google_trends_pressure': feature_doc.get('google_trends_pressure', 0.0),
+        'public_attention_score': feature_doc.get('public_attention_score', 0.0),
+        'narrative_velocity_score': feature_doc.get('narrative_velocity_score', 0.0),
+        'coordination_risk_score': feature_doc.get('coordination_risk_score', 0.0),
+        'mobility_disruption_score': feature_doc.get('mobility_disruption_score', 0.0),
+        'aviation_disruption_score': feature_doc.get('aviation_disruption_score', 0.0),
+        'logistics_stress_score': feature_doc.get('logistics_stress_score', 0.0),
+        'household_stress_score': feature_doc.get('household_stress_score', 0.0),
+        'fuel_price_pressure': feature_doc.get('fuel_price_pressure', 0.0),
+        'food_price_pressure': feature_doc.get('food_price_pressure', 0.0),
+        'labor_stress_score': feature_doc.get('labor_stress_score', 0.0),
+        'fx_pressure_score': feature_doc.get('fx_pressure_score', 0.0),
+        'remittance_stress_score': feature_doc.get('remittance_stress_score', 0.0),
+        'energy_stress_score': feature_doc.get('energy_stress_score', 0.0),
         'weather_stress': feature_doc.get('weather_stress', 0.0),
         'external_signal_freshness': feature_doc.get('external_signal_freshness', 0.0),
+        'direct_behavior_score': feature_doc.get('direct_behavior_score', 0.0),
+        'contextual_pressure_score': feature_doc.get('contextual_pressure_score', 0.0),
+        'evidence_quality_score': feature_doc.get('evidence_quality_score', 0.0),
         'validated_today': True if feature_doc.get('top_topics') != ['no data'] or feature_doc.get('war_state_rules') else False,
         'data_quality': 'verified' if feature_doc.get('top_topics') != ['no data'] or feature_doc.get('war_state_rules') else 'unknown',
     }
