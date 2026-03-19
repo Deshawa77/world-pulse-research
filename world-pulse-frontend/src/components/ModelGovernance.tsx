@@ -13,6 +13,9 @@ function clamp(value: number, min = 0, max = 100) {
 
 export default function ModelGovernance({ data }: Props) {
   const comparisonChartRef = useRef<HTMLDivElement | null>(null);
+  const healthDonutRef = useRef<HTMLDivElement | null>(null);
+  const pulseAreaRef = useRef<HTMLDivElement | null>(null);
+  const trendAreaRef = useRef<HTMLDivElement | null>(null);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [pulseState, setPulseState] = useState(0);
 
@@ -37,6 +40,29 @@ export default function ModelGovernance({ data }: Props) {
     setSelectedModel(data.models[0]?.name ?? null);
   }, [data.models, data.selectedCalibrationModel, selectedModel]);
 
+  const trendModelName = selectedModel && data.models.some((m) => m.name === selectedModel)
+    ? selectedModel
+    : data.selectedCalibrationModel && data.models.some((m) => m.name === data.selectedCalibrationModel)
+    ? data.selectedCalibrationModel
+    : data.models[0]?.name;
+
+  const trendSeries = trendModelName
+    ? data.calibrationTrendByModel[trendModelName] ?? data.calibrationTrend
+    : data.calibrationTrend;
+
+  const trendCurrent = trendSeries[trendSeries.length - 1]?.value ?? 0;
+  const trendAverage = trendSeries.length > 0
+    ? trendSeries.reduce((sum, point) => sum + point.value, 0) / trendSeries.length
+    : 0;
+  const trendIsUp = trendSeries.length > 1
+    ? trendCurrent >= (trendSeries[0]?.value ?? trendCurrent)
+    : true;
+
+  const selectedModelEntry = useMemo(() => {
+    if (!data.models.length) return null;
+    return data.models.find((m) => m.name === trendModelName) ?? data.models[0];
+  }, [data.models, trendModelName]);
+
   useEffect(() => {
     let closed = false;
 
@@ -47,72 +73,119 @@ export default function ModelGovernance({ data }: Props) {
       if (closed || !comparisonChartRef.current) return;
 
       const models = data.models.slice(0, 5);
-      const labels = models.map((m) => m.name);
       const latencyScores = models.map((m) => clamp(100 - (m.latencyMs / 8)));
       const calibrationScores = models.map((m) => clamp((m.calibration || 0) * 100));
       const stabilityScores = models.map((m) => clamp(100 - ((parseFloat(m.driftHint) || 0) * 120)));
+      const pointCounts = new Map<string, number>();
+      const plottedPoints = models.map((_, idx) => {
+        const baseX = latencyScores[idx];
+        const baseY = calibrationScores[idx];
+        const bucket = `${Math.round(baseX * 2) / 2}:${Math.round(baseY * 2) / 2}`;
+        const seen = pointCounts.get(bucket) ?? 0;
+        pointCounts.set(bucket, seen + 1);
+        const spread = Math.floor(seen / 2) + 1;
+        const sign = seen % 2 === 0 ? 1 : -1;
+        return {
+          x: clamp(baseX + (sign * spread * 1.8), 3, 99),
+          y: clamp(baseY + ((-sign) * spread * 2.2), 2, 98),
+        };
+      });
 
-      const traces = [
-        {
-          type: "bar",
-          orientation: "h",
-          y: labels,
-          x: latencyScores,
-          name: "Latency Readiness",
-          marker: { color: "rgba(34, 211, 238, 0.88)" },
-          hovertemplate: "%{y}<br>Latency readiness: %{x:.1f}<extra></extra>",
+      const traces = models.map((m, idx) => ({
+        type: "scatter",
+        mode: "markers+text",
+        x: [plottedPoints[idx].x],
+        y: [plottedPoints[idx].y],
+        text: [m.name],
+        textposition: plottedPoints[idx].x > 90 ? "middle left" : plottedPoints[idx].x < 12 ? "middle right" : "top center",
+        textfont: { color: "#c9dcf8", size: 10 },
+        cliponaxis: false,
+        marker: {
+          size: [12 + (stabilityScores[idx] * 0.28)],
+          color: MODEL_COLORS[idx % MODEL_COLORS.length],
+          opacity: 0.86,
+          line: { color: "rgba(8, 15, 28, 0.94)", width: 2 },
+          sizemode: "diameter",
         },
-        {
-          type: "bar",
-          orientation: "h",
-          y: labels,
-          x: calibrationScores,
-          name: "Calibration",
-          marker: { color: "rgba(56, 189, 248, 0.72)" },
-          hovertemplate: "%{y}<br>Calibration: %{x:.1f}<extra></extra>",
-        },
-        {
-          type: "scatter",
-          mode: "lines+markers",
-          y: labels,
-          x: stabilityScores,
-          name: "Stability",
-          marker: {
-            color: "#fbbf24",
-            size: 9,
-            line: { color: "rgba(8, 15, 28, 0.95)", width: 2 },
-          },
-          line: { color: "#fbbf24", width: 2 },
-          hovertemplate: "%{y}<br>Stability: %{x:.1f}<extra></extra>",
-        },
-      ];
+        customdata: [stabilityScores[idx]],
+        name: m.name,
+        hovertemplate:
+          "<b>%{text}</b><br>" +
+          "Latency readiness: %{x:.1f}<br>" +
+          "Calibration: %{y:.1f}<br>" +
+          "Stability: %{customdata:.1f}<extra></extra>",
+      }));
 
       const layout = {
-        barmode: "group",
         paper_bgcolor: "rgba(0,0,0,0)",
         plot_bgcolor: "rgba(0,0,0,0)",
         font: { color: "#9fb0cf", family: '"Segoe UI", "Helvetica Neue", Arial, sans-serif' },
-        margin: { l: 180, r: 28, t: 14, b: 36 },
+        margin: { l: 40, r: 20, t: 16, b: 42 },
         legend: {
-          orientation: "h",
-          x: 0,
-          y: 1.18,
-          font: { color: "#a9bfd9", size: 11 },
-          bgcolor: "rgba(7, 12, 22, 0.82)",
+          orientation: "v",
+          x: 1.02,
+          y: 1.0,
+          font: { color: "#a9bfd9", size: 10 },
+          bgcolor: "rgba(7, 12, 22, 0.72)",
           bordercolor: "rgba(56, 189, 248, 0.16)",
           borderwidth: 1,
         },
         xaxis: {
-          range: [0, 100],
+          range: [0, 104],
           gridcolor: "rgba(148, 163, 184, 0.14)",
           zeroline: false,
           tickfont: { color: "#90a4c4", size: 10 },
-          title: { text: "Normalized Health", font: { color: "#7dd3fc", size: 11 } },
+          automargin: true,
+          title: { text: "Latency Readiness", font: { color: "#7dd3fc", size: 11 } },
         },
         yaxis: {
-          tickfont: { color: "#d6e6fb", size: 11 },
+          range: [0, 100],
+          gridcolor: "rgba(148, 163, 184, 0.14)",
           automargin: true,
+          tickfont: { color: "#d6e6fb", size: 10 },
+          title: { text: "Calibration", font: { color: "#8fdcff", size: 11 } },
         },
+        shapes: [
+          {
+            type: "rect",
+            x0: 65,
+            y0: 65,
+            x1: 100,
+            y1: 100,
+            fillcolor: "rgba(34, 197, 94, 0.08)",
+            line: { width: 0 },
+          },
+          {
+            type: "line",
+            x0: 0,
+            y0: 50,
+            x1: 100,
+            y1: 50,
+            line: { color: "rgba(148, 163, 184, 0.16)", width: 1, dash: "dot" },
+          },
+          {
+            type: "line",
+            x0: 50,
+            y0: 0,
+            x1: 50,
+            y1: 100,
+            line: { color: "rgba(148, 163, 184, 0.16)", width: 1, dash: "dot" },
+          },
+        ],
+        annotations: [
+          {
+            x: 98,
+            y: 98,
+            xref: "x",
+            yref: "y",
+            text: "High confidence zone",
+            showarrow: false,
+            xanchor: "right",
+            font: { color: "#4ade80", size: 10 },
+          },
+        ],
+        showlegend: false,
+        hovermode: "closest",
       };
 
       await Plotly.react(comparisonChartRef.current, traces, layout, {
@@ -126,6 +199,126 @@ export default function ModelGovernance({ data }: Props) {
       closed = true;
     };
   }, [data.models]);
+
+  useEffect(() => {
+    let closed = false;
+
+    async function renderHealthDonut() {
+      if (!healthDonutRef.current || !selectedModelEntry) return;
+      const mod = await import("plotly.js-dist-min");
+      const Plotly = (mod as any).default ?? mod;
+      if (closed || !healthDonutRef.current) return;
+      const targetHeight = Math.max(160, healthDonutRef.current.clientHeight || 210);
+
+      const latencyReadiness = clamp(100 - (selectedModelEntry.latencyMs / 8));
+      const calibration = clamp((selectedModelEntry.calibration || 0) * 100);
+      const stability = clamp(100 - ((parseFloat(selectedModelEntry.driftHint) || 0) * 120));
+
+      const trace = {
+        type: "pie",
+        labels: ["Latency", "Calibration", "Stability"],
+        values: [latencyReadiness, calibration, stability],
+        hole: 0.68,
+        sort: false,
+        textinfo: "none",
+        marker: {
+          colors: ["#22d3ee", "#a78bfa", "#fbbf24"],
+          line: { color: "rgba(3, 10, 20, 0.96)", width: 2 },
+        },
+        hovertemplate: "%{label}: %{value:.1f}<extra></extra>",
+      };
+
+      const layout = {
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+        margin: { l: 6, r: 6, t: 6, b: 28 },
+        height: targetHeight,
+        showlegend: true,
+        legend: {
+          orientation: "h",
+          x: 0.5,
+          xanchor: "center",
+          y: -0.1,
+          font: { color: "#9fb0cf", size: 10 },
+        },
+        annotations: [
+          {
+            text: `<b>${Math.round((latencyReadiness + calibration + stability) / 3)}</b><br>health`,
+            showarrow: false,
+            font: { color: "#d7ecff", size: 12 },
+          },
+        ],
+      };
+
+      await Plotly.react(healthDonutRef.current, [trace], layout, {
+        displayModeBar: false,
+        responsive: true,
+      });
+    }
+
+    renderHealthDonut().catch(() => {});
+    return () => {
+      closed = true;
+    };
+  }, [selectedModelEntry]);
+
+  useEffect(() => {
+    let closed = false;
+
+    async function renderTrendArea() {
+      if (trendSeries.length === 0) return;
+      const mod = await import("plotly.js-dist-min");
+      const Plotly = (mod as any).default ?? mod;
+      const targets = [pulseAreaRef.current, trendAreaRef.current].filter(Boolean) as HTMLDivElement[];
+      if (closed || targets.length === 0) return;
+
+      const xValues = trendSeries.map((point) => point.timestamp);
+      const yValues = trendSeries.map((point) => clamp(point.value * 100, 0, 100));
+
+      const trace = {
+        type: "scatter",
+        mode: "lines+markers",
+        x: xValues,
+        y: yValues,
+        line: { color: "#a78bfa", width: 2.5, shape: "spline" },
+        marker: { color: "#22d3ee", size: 6 },
+        fill: "tozeroy",
+        fillcolor: "rgba(167, 139, 250, 0.18)",
+        hovertemplate: "Calibration %{y:.1f}%<extra></extra>",
+      };
+
+      await Promise.all(targets.map((target) => {
+        const targetHeight = Math.max(160, target.clientHeight || 210);
+        const layout = {
+          paper_bgcolor: "rgba(0,0,0,0)",
+          plot_bgcolor: "rgba(0,0,0,0)",
+          margin: { l: 36, r: 12, t: 8, b: 30 },
+          height: targetHeight,
+          xaxis: {
+            showgrid: false,
+            tickfont: { color: "#8ea6c8", size: 10 },
+            nticks: 4,
+          },
+          yaxis: {
+            range: [0, 100],
+            gridcolor: "rgba(148, 163, 184, 0.14)",
+            tickfont: { color: "#8ea6c8", size: 10 },
+            ticksuffix: "%",
+          },
+        };
+
+        return Plotly.react(target, [trace], layout, {
+          displayModeBar: false,
+          responsive: true,
+        });
+      }));
+    }
+
+    renderTrendArea().catch(() => {});
+    return () => {
+      closed = true;
+    };
+  }, [trendSeries]);
 
   const hasAlert = useMemo(
     () => data.models.some((m) => (parseFloat(m.driftHint) || 0) > 0.3),
@@ -145,24 +338,6 @@ export default function ModelGovernance({ data }: Props) {
     if (drift < 0.3) return "Watch";
     return "Alert";
   };
-
-  const trendModelName = selectedModel && data.models.some((m) => m.name === selectedModel)
-    ? selectedModel
-    : data.selectedCalibrationModel && data.models.some((m) => m.name === data.selectedCalibrationModel)
-    ? data.selectedCalibrationModel
-    : data.models[0]?.name;
-
-  const trendSeries = trendModelName
-    ? data.calibrationTrendByModel[trendModelName] ?? data.calibrationTrend
-    : data.calibrationTrend;
-
-  const trendCurrent = trendSeries[trendSeries.length - 1]?.value ?? 0;
-  const trendAverage = trendSeries.length > 0
-    ? trendSeries.reduce((sum, point) => sum + point.value, 0) / trendSeries.length
-    : 0;
-  const trendIsUp = trendSeries.length > 1
-    ? trendCurrent >= (trendSeries[0]?.value ?? trendCurrent)
-    : true;
 
   return (
     <div className="futuristic-governance">
@@ -189,6 +364,17 @@ export default function ModelGovernance({ data }: Props) {
       <div className="governance-comparison-section">
         <div className="section-label">Model Comparison</div>
         <div ref={comparisonChartRef} className="governance-comparison-chart" style={{ height: 240 }} />
+      </div>
+
+      <div className="governance-visual-grid">
+        <div className="governance-visual-card">
+          <div className="section-label">Health Composition</div>
+          <div ref={healthDonutRef} className="governance-donut-chart" />
+        </div>
+        <div className="governance-visual-card">
+          <div className="section-label">Calibration Area Pulse</div>
+          <div ref={pulseAreaRef} className="governance-area-chart" />
+        </div>
       </div>
 
       <div className="governance-metrics">
@@ -352,24 +538,7 @@ export default function ModelGovernance({ data }: Props) {
               </div>
             </div>
           </div>
-          <div className="trend-sparkline">
-            {trendSeries.slice(-20).map((point, i) => {
-              const height = Math.max(4, point.value * 40);
-              const isHigh = point.value > 0.85;
-              return (
-                <div
-                  key={i}
-                  className={`spark-bar ${isHigh ? "high" : ""}`}
-                  style={{
-                    height: `${height}px`,
-                    background: isHigh ? "#fbbf24" : "#22d3ee",
-                    boxShadow: isHigh ? "0 0 8px rgba(251, 191, 36, 0.35)" : "none",
-                  }}
-                  title={`${(point.value * 100).toFixed(1)}%`}
-                />
-              );
-            })}
-          </div>
+          <div ref={trendAreaRef} className="trend-area-chart" />
         </div>
       )}
     </div>

@@ -573,6 +573,35 @@
   width: 100%;
 }
 
+.governance-visual-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.governance-visual-card {
+  background: linear-gradient(180deg, rgba(5, 12, 24, 0.98), rgba(4, 10, 20, 0.98));
+  border-radius: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  padding: 12px;
+  box-shadow: inset 0 0 24px rgba(34, 211, 238, 0.04);
+  overflow: hidden;
+}
+
+.governance-donut-chart,
+.governance-area-chart {
+  width: 100%;
+  height: 210px;
+  min-height: 160px;
+  position: relative;
+  overflow: hidden;
+}
+
+.governance-donut-chart {
+  will-change: filter;
+}
+
 /* Metrics Grid */
 .governance-metrics {
   margin-bottom: 16px;
@@ -732,6 +761,7 @@
   border-radius: 10px;
   padding: 12px;
   border: 1px solid rgba(56, 189, 248, 0.16);
+  overflow: hidden;
 }
 
 .trend-stats {
@@ -783,6 +813,33 @@
 
 .spark-bar.high {
   box-shadow: 0 0 8px currentColor;
+}
+
+.trend-area-chart {
+  width: 100%;
+  height: 210px;
+  min-height: 160px;
+  position: relative;
+  overflow: hidden;
+}
+
+.governance-donut-chart .js-plotly-plot,
+.governance-area-chart .js-plotly-plot,
+.trend-area-chart .js-plotly-plot {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+@media (max-width: 980px) {
+  .governance-visual-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .governance-donut-chart,
+  .governance-area-chart,
+  .trend-area-chart {
+    height: 180px;
+  }
 }
 
 /* Governance Panel */
