@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Backend syntax and import safety
+        run: |
+          python -m py_compile backend/main.py
+          python -m py_compile backend/country_risk_stream.py
+          python -m py_compile backend/run_secure.py
+          python -m py_compile processing/country_daily_risk.py
+          python -m py_compile processing/country_incremental_risk.py
+          python -m py_compile processing/global_mood.py
+          python -m py_compile processing/country_risk_validation.py
+          python -m py_compile processing/spillover_graph.py
+          python -m py_compile orchestrator.py
+          python -m py_compile collectors/network_resilience.py
+
+      - name: Backend unit tests
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: world-pulse-frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: world-pulse-frontend
+        run: npm ci
+
+      - name: Frontend typecheck
+        run: npx --prefix world-pulse-frontend tsc --noEmit -p world-pulse-frontend/tsconfig.app.json
+
+      - name: Frontend build
+        working-directory: world-pulse-frontend
+        run: npm run build
