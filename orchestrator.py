@@ -512,12 +512,14 @@ def run_ml_engine():
         # -------------------------
         now_iso = datetime.utcnow().isoformat()
         now_dt = datetime.utcnow()
+        legacy_model_risk_score = round(prob * 100, 2)
         operational_features = compute_global_operational_features(
-            current_risk_score=round(prob * 100, 2),
+            current_risk_score=legacy_model_risk_score,
             mode="online",
             current_timestamp=now_iso,
             use_cache=False,
         )
+        aligned_global_risk_score = float(operational_features.get("system_global_risk_score", legacy_model_risk_score) or legacy_model_risk_score)
         global_doc = {
             "timestamp": now_dt,
             "version": int(time.time()),
@@ -525,7 +527,8 @@ def run_ml_engine():
             "features": {
                 **{k: float(v) for k, v in latest[FEATURE_COLUMNS].to_dict().items()},
                 "timestamp": now_iso,
-                "global_risk_score": round(prob * 100, 2),
+                "global_risk_score": round(aligned_global_risk_score, 2),
+                "legacy_model_global_risk_score": legacy_model_risk_score,
                 "top_topics": top_topics,
                 "top_topic_pressure": topic_pressure,
                 "topic_pipeline_observability": topic_obs,
@@ -763,13 +766,15 @@ if __name__=="__main__":
                 risk_score = compute_model_risk_score(models, features)
                 top_topics, topic_pressure, topic_obs = extract_recent_topic_intelligence(db, top_n=5)
 
-                # 5Ã¯Â¸ÂÃ¢Æ’Â£ Build global_features document
+                # 5ï¸âƒ£ Build global_features document
+                legacy_model_risk_score = float(risk_score)
                 operational_features = compute_global_operational_features(
-                    current_risk_score=risk_score,
+                    current_risk_score=legacy_model_risk_score,
                     mode="online",
                     current_timestamp=now_iso,
                     use_cache=False,
                 )
+                aligned_global_risk_score = float(operational_features.get("system_global_risk_score", legacy_model_risk_score) or legacy_model_risk_score)
                 global_doc = {
                     "timestamp": now_dt,
                     "version": int(time.time()),
@@ -780,7 +785,8 @@ if __name__=="__main__":
                             for k in FEATURE_COLUMNS
                         },
                         "timestamp": now_iso,
-                        "global_risk_score": risk_score,
+                        "global_risk_score": round(aligned_global_risk_score, 2),
+                        "legacy_model_global_risk_score": legacy_model_risk_score,
                         "top_topics": top_topics,
                         "top_topic_pressure": topic_pressure,
                         "topic_pipeline_observability": topic_obs,
@@ -808,10 +814,10 @@ if __name__=="__main__":
     # -------------------------------
     # Daily country risk refresh from country_news/GDELT
     # -------------------------------
-    def country_risk_loop(interval_sec=3600):
+    def country_risk_loop(interval_sec=900):
         while True:
             try:
-                summary = country_daily_refresh_if_due(max_records=12, batch_size=50)
+                summary = country_daily_refresh_if_due(max_records=24, batch_size=120)
                 log_event(f"Country daily risk refresh: {summary}")
             except Exception as e:
                 log_event(f"Country daily risk loop error: {e}")

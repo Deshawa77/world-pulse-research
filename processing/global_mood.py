@@ -10,7 +10,23 @@ from collectors.country_news import get_country_catalog
 from database.mongo import db
 
 PLACEHOLDER_TOPICS = {"global_expansion", "no data"}
+COUNTRY_VALIDATION_FRESHNESS_WINDOW_HOURS = 30.0
 DEFAULT_FORECAST_HORIZON_HOURS = 24
+MEANINGFUL_EXTERNAL_FIELDS = (
+    "public_attention_score",
+    "narrative_velocity_score",
+    "coordination_risk_score",
+    "mobility_disruption_score",
+    "logistics_stress_score",
+    "household_stress_score",
+    "fuel_price_pressure",
+    "food_price_pressure",
+    "labor_stress_score",
+    "fx_pressure_score",
+    "remittance_stress_score",
+    "energy_stress_score",
+    "weather_stress",
+)
 
 SOURCE_RELIABILITY_HINTS = {
     "reuters": 0.98,
@@ -112,12 +128,35 @@ def _normalized_topics(features: dict[str, Any]) -> list[str]:
     return topics
 
 
+def _is_recent_country_feature_timestamp(feature_timestamp: datetime | None, *, window_hours: float = COUNTRY_VALIDATION_FRESHNESS_WINDOW_HOURS) -> bool:
+    if not feature_timestamp:
+        return False
+    age_hours = (datetime.now(timezone.utc) - feature_timestamp).total_seconds() / 3600.0
+    return 0.0 <= age_hours <= float(window_hours)
+
+
 def is_verified_country_feature(features: dict[str, Any], doc_timestamp: Any = None) -> dict[str, Any]:
     topics = _normalized_topics(features)
     feature_timestamp = _parse_timestamp(features.get("timestamp") or doc_timestamp)
-    updated_today = bool(feature_timestamp and feature_timestamp.date() == datetime.now(timezone.utc).date())
+    updated_today = _is_recent_country_feature_timestamp(feature_timestamp)
     is_placeholder = (not topics) or any(topic in PLACEHOLDER_TOPICS for topic in topics)
-    validated_today = updated_today and not is_placeholder
+
+    source_count_value = max(int(features.get("source_count") or 0), 0)
+    external_sources = features.get("external_sources") if isinstance(features.get("external_sources"), list) else []
+    external_source_count = len(external_sources)
+    freshness_value = _clamp(features.get("external_signal_freshness"), 0.0, 1.0)
+    evidence_value = _clamp(_safe_float(features.get("evidence_quality_score"), 0.0), 0.0, 100.0)
+    strongest_non_news_signal = max((_safe_float(features.get(field), 0.0) for field in MEANINGFUL_EXTERNAL_FIELDS), default=0.0)
+    has_war_rules = bool(features.get("war_state_rules"))
+
+    multi_signal_verified = (
+        has_war_rules
+        or source_count_value >= 1
+        or (external_source_count >= 3 and freshness_value >= 0.33 and strongest_non_news_signal >= 0.45)
+        or (evidence_value >= 32.0 and strongest_non_news_signal >= 0.55)
+    )
+    validated_today = updated_today and ((not is_placeholder) or multi_signal_verified)
+
     if validated_today:
         data_quality = "verified"
     elif is_placeholder:
@@ -130,6 +169,7 @@ def is_verified_country_feature(features: dict[str, Any], doc_timestamp: Any = N
         "validated_today": validated_today,
         "data_quality": data_quality,
         "feature_timestamp": feature_timestamp,
+        "verification_mode": "multi_signal" if validated_today and is_placeholder else ("topic" if validated_today else "none"),
     }
 
 
@@ -310,17 +350,26 @@ def _weighted_std(points: list[dict[str, Any]], mean_value: float) -> float:
 
 def _observation_confidence(features: dict[str, Any], feature_timestamp: datetime | None) -> float:
     freshness = _freshness_weight(feature_timestamp)
-    source_confidence = _clamp(features.get("source_confidence"), 0.0, 1.0)
+    raw_source_confidence = _clamp(features.get("source_confidence"), 0.0, 1.0)
     source_diversity = _clamp(features.get("source_diversity_score"), 0.0, 1.0)
     source_reliability = _clamp(features.get("source_reliability_score"), 0.3, 1.0)
     source_count = max(_safe_float(features.get("source_count"), 0.0), 0.0)
-    source_count_weight = min(max(source_count / 4.0, 0.25), 1.0)
+    external_sources = features.get("external_sources") if isinstance(features.get("external_sources"), list) else []
+    external_source_count = float(len(external_sources))
+    effective_source_count = max(source_count, external_source_count)
+    source_count_weight = min(max(effective_source_count / 4.0, 0.25), 1.0)
+    source_diversity = max(source_diversity, min(max(external_source_count / 4.0, 0.0), 1.0))
+    evidence_quality = _clamp(_safe_float(features.get("evidence_quality_score"), 0.0) / 100.0, 0.0, 1.0)
+    strongest_non_news_signal = max((_safe_float(features.get(field), 0.0) for field in MEANINGFUL_EXTERNAL_FIELDS), default=0.0)
+    source_confidence = max(raw_source_confidence, freshness, evidence_quality, min(strongest_non_news_signal, 1.0) * 0.8)
     observation_confidence = (
-        (0.3 * freshness)
-        + (0.25 * source_confidence)
-        + (0.2 * source_diversity)
-        + (0.15 * source_reliability)
-        + (0.1 * source_count_weight)
+        (0.22 * freshness)
+        + (0.18 * source_confidence)
+        + (0.16 * source_diversity)
+        + (0.12 * source_reliability)
+        + (0.12 * source_count_weight)
+        + (0.12 * evidence_quality)
+        + (0.08 * min(strongest_non_news_signal, 1.0))
     )
     return round(_clamp(observation_confidence, 0.0, 1.0), 4)
 
@@ -372,6 +421,28 @@ def _dynamic_trim_ratio(eligible_count: int, coverage_ratio: float) -> float:
     if eligible_count < 80 or coverage_ratio < 0.35:
         return 0.05
     return 0.1
+
+
+def _is_meaningful_global_candidate(
+    features: dict[str, Any],
+    quality: dict[str, Any],
+    *,
+    risk: float,
+    observation_confidence: float,
+    evidence_quality: float,
+    strongest_non_news_signal: float,
+) -> bool:
+    if bool(quality.get("validated_today")):
+        return True
+    if bool(features.get("war_state_rules")):
+        return True
+    if risk >= 70.0:
+        return True
+    if risk >= 55.0 and observation_confidence >= 0.45:
+        return True
+    if evidence_quality >= 0.42 and strongest_non_news_signal >= 0.45:
+        return True
+    return False
 
 
 def _trim_points(points: list[dict[str, Any]], trim_ratio: float = 0.0) -> list[dict[str, Any]]:
@@ -607,16 +678,143 @@ def _global_signal_indices(mode: str = "online") -> dict[str, float]:
             "global_disruption_index": 0.0,
             "global_economic_stress_index": 0.0,
         }
-    features = [dict((row.get("doc") or row).get("features") or {}) for row in rows]
+
+    filtered_features: list[dict[str, Any]] = []
+    all_features = [dict((row.get("doc") or row).get("features") or {}) for row in rows]
+    for row in rows:
+        doc = row.get("doc") or row
+        features = dict(doc.get("features") or {})
+        quality = is_verified_country_feature(features, doc.get("timestamp"))
+        feature_timestamp = quality.get("feature_timestamp")
+        observation_confidence = _observation_confidence(features, feature_timestamp)
+        evidence_quality = _clamp(_safe_float(features.get("evidence_quality_score"), 0.0) / 100.0, 0.0, 1.0)
+        strongest_non_news_signal = max((_safe_float(features.get(field), 0.0) for field in MEANINGFUL_EXTERNAL_FIELDS), default=0.0)
+        risk = _clamp(features.get("global_risk_score"), 0.0, 100.0)
+        if _is_meaningful_global_candidate(features, quality, risk=risk, observation_confidence=observation_confidence, evidence_quality=evidence_quality, strongest_non_news_signal=strongest_non_news_signal):
+            filtered_features.append(features)
+
+    features = filtered_features or all_features
     def avg(key: str) -> float:
         vals = [_safe_float(item.get(key), 0.0) for item in features]
         return float(np.mean(vals)) if vals else 0.0
+
     return {
         "global_behavior_index": round(avg("direct_behavior_score"), 2),
         "global_context_index": round(avg("contextual_pressure_score"), 2),
         "global_attention_index": round(np.mean([avg("public_attention_score") * 100.0, avg("narrative_velocity_score") * 100.0]), 2),
         "global_disruption_index": round(np.mean([avg("mobility_disruption_score") * 100.0, avg("logistics_stress_score") * 100.0]), 2),
         "global_economic_stress_index": round(np.mean([avg("household_stress_score") * 100.0, avg("energy_stress_score") * 100.0, avg("remittance_stress_score") * 100.0]), 2),
+    }
+
+
+def _compute_global_risk_consensus(current_risk_score: float | None, mode: str, mood_summary: dict[str, Any], signal_indices: dict[str, float]) -> dict[str, Any]:
+    rows = _load_latest_country_rows(mode)
+    legacy_score = _clamp(current_risk_score, 0.0, 100.0)
+    if not rows:
+        return {
+            "legacy_model_global_risk_score": round(legacy_score, 2),
+            "country_aggregate_global_risk": round(legacy_score, 2),
+            "system_global_risk_score": round(legacy_score, 2),
+            "global_risk_confidence": 0.0,
+            "global_risk_definition": "legacy-global-model-fallback",
+            "global_risk_alignment_gap": 0.0,
+        }
+
+    region_counts: Counter[str] = Counter()
+    candidates: list[dict[str, Any]] = []
+    meaningful_support_count = 0
+    for row in rows:
+        doc = row.get("doc") or row
+        country = str(doc.get("country") or row.get("_id") or "").strip().upper()
+        if not country:
+            continue
+        features = dict(doc.get("features") or {})
+        quality = is_verified_country_feature(features, doc.get("timestamp"))
+        feature_timestamp = quality.get("feature_timestamp")
+        observation_confidence = _observation_confidence(features, feature_timestamp)
+        evidence_quality = _clamp(_safe_float(features.get("evidence_quality_score"), 0.0) / 100.0, 0.0, 1.0)
+        freshness = _freshness_weight(feature_timestamp)
+        risk = _clamp(features.get("global_risk_score"), 0.0, 100.0)
+        strongest_non_news_signal = max((_safe_float(features.get(field), 0.0) for field in MEANINGFUL_EXTERNAL_FIELDS), default=0.0)
+        meaningful_support = _is_meaningful_global_candidate(features, quality, risk=risk, observation_confidence=observation_confidence, evidence_quality=evidence_quality, strongest_non_news_signal=strongest_non_news_signal)
+        if not meaningful_support and observation_confidence < 0.5 and risk < 45.0:
+            continue
+        region = _country_region(country)
+        region_counts[region] += 1
+        if meaningful_support:
+            meaningful_support_count += 1
+        candidates.append({
+            "country": country,
+            "region": region,
+            "risk": risk,
+            "observation_confidence": observation_confidence,
+            "evidence_quality": evidence_quality,
+            "freshness": freshness,
+            "meaningful_support": meaningful_support,
+        })
+
+    if not candidates:
+        return {
+            "legacy_model_global_risk_score": round(legacy_score, 2),
+            "country_aggregate_global_risk": round(legacy_score, 2),
+            "system_global_risk_score": round(legacy_score, 2),
+            "global_risk_confidence": 0.0,
+            "global_risk_definition": "legacy-global-model-fallback",
+            "global_risk_alignment_gap": 0.0,
+        }
+
+    weighted_points: list[dict[str, float]] = []
+    for item in candidates:
+        region_balance = 1.0 / max(region_counts.get(item["region"], 1), 1)
+        base_weight = ((0.34 * item["freshness"]) + (0.36 * item["observation_confidence"]) + (0.3 * item["evidence_quality"]))
+        support_multiplier = 1.0 if item["meaningful_support"] else 0.4
+        risk_emphasis = 1.0 + max(item["risk"] - 55.0, 0.0) / 120.0
+        weight = base_weight * region_balance * support_multiplier * risk_emphasis
+        if weight <= 0:
+            continue
+        weighted_points.append({"score": item["risk"], "weight": weight})
+
+    if not weighted_points:
+        country_aggregate = legacy_score
+        aggregate_confidence = 0.0
+        high_risk_band = legacy_score
+    else:
+        country_aggregate = _weighted_mean(weighted_points)
+        aggregate_confidence = float(np.mean([point["weight"] for point in weighted_points]))
+        ranked_points = sorted(weighted_points, key=lambda point: point["score"], reverse=True)
+        top_band_size = max(3, min(len(ranked_points), int(np.ceil(len(ranked_points) * 0.15))))
+        high_risk_band = _weighted_mean(ranked_points[:top_band_size])
+
+    mood_pressure = _clamp(100.0 - _safe_float(mood_summary.get("global_mood_score"), 50.0), 0.0, 100.0)
+    structural_pressure = ((_safe_float(signal_indices.get("global_behavior_index"), 50.0) * 0.24) + (_safe_float(signal_indices.get("global_context_index"), 50.0) * 0.28) + (_safe_float(signal_indices.get("global_attention_index"), 0.0) * 0.14) + (_safe_float(signal_indices.get("global_disruption_index"), 0.0) * 0.18) + (_safe_float(signal_indices.get("global_economic_stress_index"), 0.0) * 0.16))
+    escalation_bias = max(high_risk_band - country_aggregate, 0.0)
+    consensus_score = ((country_aggregate * 0.34) + (high_risk_band * 0.28) + (structural_pressure * 0.2) + (mood_pressure * 0.06) + (legacy_score * 0.12) + min(escalation_bias * 0.4, 12.0))
+    coverage_ratio = _clamp(_safe_float(mood_summary.get("global_mood_coverage_ratio"), 0.0), 0.0, 1.0)
+    mood_confidence = _clamp(_safe_float(mood_summary.get("global_mood_confidence"), 0.0), 0.0, 1.0)
+    meaningful_support_ratio = meaningful_support_count / float(len(candidates)) if candidates else 0.0
+    confidence = _clamp((aggregate_confidence * 0.34) + (coverage_ratio * 0.24) + (mood_confidence * 0.22) + (meaningful_support_ratio * 0.2), 0.0, 1.0)
+
+    if confidence < 0.28:
+        system_global_risk_score = (legacy_score * 0.82) + (consensus_score * 0.18)
+    elif confidence < 0.45 and consensus_score < legacy_score:
+        system_global_risk_score = (legacy_score * 0.68) + (consensus_score * 0.32)
+    else:
+        blend_weight = 0.18 + (confidence * 0.52)
+        system_global_risk_score = (legacy_score * (1.0 - blend_weight)) + (consensus_score * blend_weight)
+
+    if high_risk_band > system_global_risk_score and (high_risk_band - system_global_risk_score) > 8.0:
+        system_global_risk_score = max(system_global_risk_score, (system_global_risk_score * 0.7) + (high_risk_band * 0.3))
+    if confidence < 0.35:
+        system_global_risk_score = max(system_global_risk_score, legacy_score - 6.0)
+    system_global_risk_score = _clamp(system_global_risk_score, 0.0, 100.0)
+
+    return {
+        "legacy_model_global_risk_score": round(legacy_score, 2),
+        "country_aggregate_global_risk": round(country_aggregate, 2),
+        "system_global_risk_score": round(system_global_risk_score, 2),
+        "global_risk_confidence": round(confidence, 4),
+        "global_risk_definition": "country-intelligence-consensus-v3",
+        "global_risk_alignment_gap": round(system_global_risk_score - legacy_score, 2),
     }
 
 def compute_global_operational_features(
@@ -647,7 +845,13 @@ def compute_global_operational_features(
         current_timestamp=current_timestamp,
     )
     signal_indices = _global_signal_indices(mode=mode)
-    result = {**mood_summary, **forecast_summary, **signal_indices}
+    risk_consensus = _compute_global_risk_consensus(
+        current_risk_score=current_risk_score,
+        mode=mode,
+        mood_summary=mood_summary,
+        signal_indices=signal_indices,
+    )
+    result = {**mood_summary, **forecast_summary, **signal_indices, **risk_consensus}
 
     if use_cache and cache_signature is not None:
         _OPERATIONAL_CACHE[mode] = {

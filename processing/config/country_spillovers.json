@@ -1,0 +1,194 @@
+{
+  "IRN": [
+    {
+      "country": "IRQ",
+      "relationship": "Western frontier"
+    },
+    {
+      "country": "TUR",
+      "relationship": "Northern corridor"
+    },
+    {
+      "country": "PAK",
+      "relationship": "Eastern frontier"
+    },
+    {
+      "country": "AFG",
+      "relationship": "Eastern frontier"
+    },
+    {
+      "country": "ARE",
+      "relationship": "Gulf exposure"
+    },
+    {
+      "country": "QAT",
+      "relationship": "Gulf exposure"
+    },
+    {
+      "country": "KWT",
+      "relationship": "Gulf exposure"
+    },
+    {
+      "country": "SAU",
+      "relationship": "Regional spillover"
+    },
+    {
+      "country": "ISR",
+      "relationship": "Conflict-linked"
+    }
+  ],
+  "ISR": [
+    {
+      "country": "LBN",
+      "relationship": "Northern frontier"
+    },
+    {
+      "country": "JOR",
+      "relationship": "Eastern frontier"
+    },
+    {
+      "country": "EGY",
+      "relationship": "Southern frontier"
+    },
+    {
+      "country": "SYR",
+      "relationship": "Northern frontier"
+    },
+    {
+      "country": "IRN",
+      "relationship": "Conflict-linked"
+    }
+  ],
+  "USA": [
+    {
+      "country": "CAN",
+      "relationship": "Northern border"
+    },
+    {
+      "country": "MEX",
+      "relationship": "Southern border"
+    }
+  ],
+  "UKR": [
+    {
+      "country": "POL",
+      "relationship": "Western corridor"
+    },
+    {
+      "country": "RUS",
+      "relationship": "Eastern frontier"
+    },
+    {
+      "country": "DEU",
+      "relationship": "European spillover"
+    }
+  ],
+  "RUS": [
+    {
+      "country": "UKR",
+      "relationship": "Conflict-linked"
+    },
+    {
+      "country": "POL",
+      "relationship": "European spillover"
+    },
+    {
+      "country": "FIN",
+      "relationship": "Northern frontier"
+    },
+    {
+      "country": "CHN",
+      "relationship": "Eastern frontier"
+    }
+  ],
+  "IND": [
+    {
+      "country": "PAK",
+      "relationship": "Western frontier"
+    },
+    {
+      "country": "BGD",
+      "relationship": "Eastern frontier"
+    },
+    {
+      "country": "NPL",
+      "relationship": "Northern corridor"
+    },
+    {
+      "country": "LKA",
+      "relationship": "Maritime spillover"
+    },
+    {
+      "country": "CHN",
+      "relationship": "Northern frontier"
+    }
+  ],
+  "PAK": [
+    {
+      "country": "IND",
+      "relationship": "Eastern frontier"
+    },
+    {
+      "country": "AFG",
+      "relationship": "Western frontier"
+    },
+    {
+      "country": "IRN",
+      "relationship": "Western corridor"
+    },
+    {
+      "country": "CHN",
+      "relationship": "Northern corridor"
+    }
+  ],
+  "MMR": [
+    {
+      "country": "THA",
+      "relationship": "Eastern frontier"
+    },
+    {
+      "country": "IND",
+      "relationship": "Western corridor"
+    },
+    {
+      "country": "BGD",
+      "relationship": "Western corridor"
+    },
+    {
+      "country": "CHN",
+      "relationship": "Northern frontier"
+    }
+  ],
+  "ETH": [
+    {
+      "country": "KEN",
+      "relationship": "Southern corridor"
+    },
+    {
+      "country": "EGY",
+      "relationship": "Regional spillover"
+    },
+    {
+      "country": "DZA",
+      "relationship": "Regional spillover"
+    }
+  ],
+  "AZE": [
+    {
+      "country": "ARM",
+      "relationship": "Conflict-linked"
+    },
+    {
+      "country": "GEO",
+      "relationship": "Northern corridor"
+    },
+    {
+      "country": "IRN",
+      "relationship": "Southern frontier"
+    },
+    {
+      "country": "TUR",
+      "relationship": "Regional corridor"
+    }
+  ]
+}

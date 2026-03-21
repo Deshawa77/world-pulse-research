@@ -11,9 +11,9 @@ const ACTIVE_API_URL_STORAGE_KEY = "wp_active_api_url";
 function readPersistedApiUrl(): string {
   if (typeof window === "undefined") return PRIMARY_API_URL;
   const stored = String(window.localStorage.getItem(ACTIVE_API_URL_STORAGE_KEY) || "").trim();
-  if (!stored) return PRIMARY_API_URL;
-  if (stored === PRIMARY_API_URL || (FALLBACK_API_URL && stored === FALLBACK_API_URL)) return stored;
-  // Reset stale/invalid stored API URL to primary so app can recover automatically.
+  if (!stored || stored === PRIMARY_API_URL) return PRIMARY_API_URL;
+  // Always recover to primary on a fresh page load. Fallback should only be used
+  // transiently for in-session network failure, not persisted across reloads.
   window.localStorage.setItem(ACTIVE_API_URL_STORAGE_KEY, PRIMARY_API_URL);
   return PRIMARY_API_URL;
 }
@@ -256,8 +256,8 @@ const mockCountryDrilldown = (country: string): CountryDrilldownData => {
     narrative_velocity_score: base.narrative_velocity_score,
     coordination_risk_score: base.coordination_risk_score,
     trend: [
-      { timestamp: new Date(Date.now() - 172800000).toISOString(), value: Math.max((base.risk || 0) - 0.05, 0) },
-      { timestamp: new Date(Date.now() - 86400000).toISOString(), value: Math.max((base.risk || 0) - 0.02, 0) },
+      { timestamp: new Date(Date.now() - 172800000).toISOString(), value: Math.max(Number(base.risk || 0) - 5, 0) },
+      { timestamp: new Date(Date.now() - 86400000).toISOString(), value: Math.max(Number(base.risk || 0) - 2, 0) },
       { timestamp: new Date().toISOString(), value: Number(base.risk || 0) },
     ],
     drivers: [
@@ -268,7 +268,23 @@ const mockCountryDrilldown = (country: string): CountryDrilldownData => {
     events: [
       { id: `${country}-offline-1`, title: 'Offline fallback mode active', timestamp: new Date().toISOString(), severity: 'medium' },
     ],
-    confidenceInterval: { lower: Math.max(Number(base.risk || 0) - 0.08, 0), upper: Math.min(Number(base.risk || 0) + 0.08, 1) },
+    display_risk: Number(base.risk || 0),
+    raw_risk_score: Number(base.risk || 0),
+    confidence_score: Math.max(24, Math.min(92, Math.round((Number(base.evidence_quality_score || 48) * 0.7) + (Number(base.external_signal_freshness || 0) * 30)))),
+    risk_band: Number(base.risk || 0) >= 75 ? "critical" : Number(base.risk || 0) >= 55 ? "elevated" : Number(base.risk || 0) >= 35 ? "guarded" : "stable",
+    confidence_band: "moderate",
+    source_status: base.validated_today ? "verified_live" : (base.data_quality === "stale" ? "stale_observation" : "derived_estimate"),
+    gating_action: base.validated_today ? "allow" : "downgrade",
+    country_quality_status: base.validated_today ? "country_ready" : "country_degraded",
+    country_quality_reasons: base.validated_today ? [] : ["mock fallback data"],
+    advisory: base.validated_today ? "Mock live country intelligence" : "Mock downgraded country intelligence",
+    evidence_count: 3,
+    score_semantics: {
+      risk_score: "0-100 composite country risk score",
+      confidence_score: "0-100 calibrated intelligence confidence",
+      component_signals: "0-1 normalized signal intensity unless otherwise labeled",
+    },
+    confidenceInterval: { lower: Math.max(Number(base.risk || 0) - 8, 0), upper: Math.min(Number(base.risk || 0) + 8, 100) },
   };
 };
 
@@ -540,6 +556,19 @@ export type LiveCommandFeed = {
 export type RiskMapPoint = {
   country: string;
   risk: number | null;
+  display_risk?: number | null;
+  raw_risk_score?: number | null;
+  confidence_score?: number;
+  risk_band?: "critical" | "escalating" | "elevated" | "guarded" | "stable" | string;
+  confidence_band?: "high" | "moderate" | "limited" | "weak" | string;
+  source_status?: string;
+  gating_action?: "allow" | "downgrade" | "suppress" | string;
+  country_quality_status?: string;
+  country_quality_reasons?: string[];
+  advisory?: string;
+  evidence_count?: number;
+  component_coverage_ratio?: number;
+  score_semantics?: Record<string, string>;
   timestamp?: string;
   feature_timestamp?: string | null;
   validated_today?: boolean;
@@ -565,6 +594,11 @@ export type RiskMapPoint = {
   contextual_pressure_score?: number;
   evidence_quality_score?: number;
   war_state_rules?: string[];
+  risk_delta_24h?: number;
+  risk_delta_7d?: number;
+  risk_trend_direction?: "worsening" | "improving" | "stable" | string;
+  score_change_contributors?: Array<{ feature: string; value: number; delta?: number; contribution?: number }>;
+  spillover_links?: Array<{ country: string; risk?: number; relationship?: string }>;
 };
 
 export type RiskMapCoverage = {
@@ -572,6 +606,7 @@ export type RiskMapCoverage = {
   verified: number;
   no_data: number;
   stale: number;
+  suppressed?: number;
   remaining: number;
   coverage_pct: number;
   latest_validation?: {
@@ -579,6 +614,35 @@ export type RiskMapCoverage = {
     sample_count?: number;
     brier_score?: number;
   };
+};
+
+export type GlobalForecastContract = {
+  source?: string;
+  source_status?: string;
+  calibration_status?: string;
+  gating_action?: string;
+  prediction_available?: boolean;
+  withheld?: boolean;
+  risk_score?: number | null;
+  confidence_ratio?: number;
+  confidence_score?: number;
+  risk_delta?: number;
+  horizon_hours?: number;
+  horizons?: Array<{
+    hours?: number;
+    label?: string;
+    risk_score?: number;
+    delta?: number;
+    threat_label?: string;
+  }>;
+  prediction_interval?: { p10?: number; p50?: number; p90?: number } | null;
+  advisory?: string;
+  reasons?: string[];
+  quality_status?: string;
+  basis?: string;
+  model_version?: string;
+  generated_at?: string;
+  score_semantics?: Record<string, string>;
 };
 
 export type GlobalOperationalFeatures = {
@@ -604,11 +668,23 @@ export type GlobalOperationalFeatures = {
   global_mood_coverage_ratio?: number;
   global_mood_active_regions?: number;
   global_mood_method?: string;
-  forecast_risk_score?: number;
+  forecast_risk_score?: number | null;
   forecast_risk_delta?: number;
   forecast_confidence?: number;
+  forecast_confidence_score?: number;
   forecast_horizon_hours?: number;
   forecast_basis?: string;
+  forecast_source_status?: string;
+  forecast_calibration_status?: string;
+  forecast_gating_action?: string;
+  forecast_prediction_available?: boolean;
+  forecast_withheld?: boolean;
+  forecast_prediction_interval?: { p10?: number; p50?: number; p90?: number } | null;
+  forecast_advisory?: string;
+  forecast_reasons?: string[];
+  forecast_model_version?: string;
+  forecast_generated_at?: string;
+  forecast_contract?: GlobalForecastContract;
   top_topics: string[];
 };
 
@@ -622,6 +698,18 @@ export type LatestGlobalResponse = {
 export type CountryDrilldownData = {
   country: string;
   risk: number;
+  display_risk?: number | null;
+  raw_risk_score?: number | null;
+  confidence_score?: number;
+  risk_band?: string;
+  confidence_band?: string;
+  source_status?: string;
+  gating_action?: string;
+  country_quality_status?: string;
+  country_quality_reasons?: string[];
+  advisory?: string;
+  evidence_count?: number;
+  score_semantics?: Record<string, string>;
   direct_behavior_score?: number;
   contextual_pressure_score?: number;
   evidence_quality_score?: number;
@@ -643,7 +731,7 @@ export type CountryDrilldownData = {
 };
 
 export type GovernanceData = {
-  models: Array<{ name: string; latencyMs: number; calibration: number; driftHint: string; vote?: number; confidence?: number }>;
+  models: Array<{ name: string; stage?: string; latencyMs: number; calibration: number; driftHint: string; vote?: number; confidence?: number }>;
   disagreement: Array<{ left: string; right: string; value: number }>;
   calibrationTrend: Array<{ timestamp: string; value: number }>;
   calibrationTrendByModel: Record<string, Array<{ timestamp: string; value: number }>>;
@@ -723,10 +811,28 @@ const normalizeRiskMapPoint = (value: unknown): RiskMapPoint | null => {
 
   const timestamp = typeof value.timestamp === "string" ? value.timestamp : undefined;
   const featureTimestamp = typeof value.feature_timestamp === "string" ? value.feature_timestamp : undefined;
+  const rawRisk = toNullableFiniteNumber(value.raw_risk_score ?? value.risk);
+  const displayRisk = toNullableFiniteNumber(value.display_risk);
+  const effectiveRisk = displayRisk ?? rawRisk;
 
   return {
     country,
-    risk: toNullableFiniteNumber(value.risk),
+    risk: effectiveRisk,
+    display_risk: displayRisk,
+    raw_risk_score: rawRisk,
+    confidence_score: toOptionalFiniteNumber(value.confidence_score),
+    risk_band: typeof value.risk_band === "string" ? value.risk_band : undefined,
+    confidence_band: typeof value.confidence_band === "string" ? value.confidence_band : undefined,
+    source_status: typeof value.source_status === "string" ? value.source_status : undefined,
+    gating_action: typeof value.gating_action === "string" ? value.gating_action : undefined,
+    country_quality_status: typeof value.country_quality_status === "string" ? value.country_quality_status : undefined,
+    country_quality_reasons: toStringArray(value.country_quality_reasons),
+    advisory: typeof value.advisory === "string" ? value.advisory : undefined,
+    evidence_count: toOptionalFiniteNumber(value.evidence_count),
+    component_coverage_ratio: toOptionalFiniteNumber(value.component_coverage_ratio),
+    score_semantics: isRecord(value.score_semantics)
+      ? Object.fromEntries(Object.entries(value.score_semantics).filter(([, entry]) => typeof entry === "string")) as Record<string, string>
+      : undefined,
     timestamp,
     feature_timestamp: featureTimestamp,
     validated_today: Boolean(value.validated_today),
@@ -752,12 +858,35 @@ const normalizeRiskMapPoint = (value: unknown): RiskMapPoint | null => {
     contextual_pressure_score: toOptionalFiniteNumber(value.contextual_pressure_score),
     evidence_quality_score: toOptionalFiniteNumber(value.evidence_quality_score),
     war_state_rules: toStringArray(value.war_state_rules),
+    risk_delta_24h: toOptionalFiniteNumber(value.risk_delta_24h),
+    risk_delta_7d: toOptionalFiniteNumber(value.risk_delta_7d),
+    risk_trend_direction: typeof value.risk_trend_direction === "string" ? value.risk_trend_direction : undefined,
+    score_change_contributors: Array.isArray(value.score_change_contributors)
+      ? value.score_change_contributors
+          .filter(isRecord)
+          .map((item) => ({
+            feature: typeof item.feature === "string" ? item.feature : "unknown",
+            value: toFiniteNumber(item.value),
+            delta: toOptionalFiniteNumber(item.delta),
+            contribution: toOptionalFiniteNumber(item.contribution),
+          }))
+      : undefined,
+    spillover_links: Array.isArray(value.spillover_links)
+      ? value.spillover_links
+          .filter(isRecord)
+          .map((item) => ({
+            country: typeof item.country === "string" ? item.country : "",
+            risk: toOptionalFiniteNumber(item.risk),
+            relationship: typeof item.relationship === "string" ? item.relationship : undefined,
+          }))
+          .filter((item) => item.country)
+      : undefined,
   };
 };
 
 const normalizeRiskMapCoverage = (value: unknown): RiskMapCoverage => {
   if (!isRecord(value)) {
-    return { total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 };
+    return { total: 0, verified: 0, no_data: 0, stale: 0, suppressed: 0, remaining: 0, coverage_pct: 0 };
   }
 
   const latestValidation = isRecord(value.latest_validation)
@@ -773,6 +902,7 @@ const normalizeRiskMapCoverage = (value: unknown): RiskMapCoverage => {
     verified: Math.max(0, Math.round(toFiniteNumber(value.verified))),
     no_data: Math.max(0, Math.round(toFiniteNumber(value.no_data))),
     stale: Math.max(0, Math.round(toFiniteNumber(value.stale))),
+    suppressed: Math.max(0, Math.round(toFiniteNumber(value.suppressed))),
     remaining: Math.max(0, Math.round(toFiniteNumber(value.remaining))),
     coverage_pct: Math.max(0, toFiniteNumber(value.coverage_pct)),
     latest_validation: latestValidation,
@@ -786,6 +916,10 @@ const normalizeCountryDrilldown = (value: unknown, fallbackCountry: string): Cou
     return {
       country: fallbackCountry,
       risk: 0,
+      display_risk: 0,
+      raw_risk_score: 0,
+      confidence_score: 0,
+      country_quality_reasons: [],
       mobility_disruption_score: 0,
       logistics_stress_score: 0,
       household_stress_score: 0,
@@ -845,9 +979,25 @@ const normalizeCountryDrilldown = (value: unknown, fallbackCountry: string): Cou
       }
     : { lower: 0, upper: 0 };
 
+  const rawRisk = toFiniteNumber(value.raw_risk_score ?? value.risk);
+  const displayRisk = toOptionalFiniteNumber(value.display_risk);
   return {
     country: typeof value.country === "string" ? value.country : fallbackCountry,
-    risk: toFiniteNumber(value.risk),
+    risk: Number.isFinite(Number(displayRisk)) ? Number(displayRisk) : rawRisk,
+    display_risk: displayRisk,
+    raw_risk_score: rawRisk,
+    confidence_score: toOptionalFiniteNumber(value.confidence_score),
+    risk_band: typeof value.risk_band === "string" ? value.risk_band : undefined,
+    confidence_band: typeof value.confidence_band === "string" ? value.confidence_band : undefined,
+    source_status: typeof value.source_status === "string" ? value.source_status : undefined,
+    gating_action: typeof value.gating_action === "string" ? value.gating_action : undefined,
+    country_quality_status: typeof value.country_quality_status === "string" ? value.country_quality_status : undefined,
+    country_quality_reasons: toStringArray(value.country_quality_reasons),
+    advisory: typeof value.advisory === "string" ? value.advisory : undefined,
+    evidence_count: toOptionalFiniteNumber(value.evidence_count),
+    score_semantics: isRecord(value.score_semantics)
+      ? Object.fromEntries(Object.entries(value.score_semantics).filter(([, entry]) => typeof entry === "string")) as Record<string, string>
+      : undefined,
     mobility_disruption_score: toOptionalFiniteNumber(value.mobility_disruption_score),
     logistics_stress_score: toOptionalFiniteNumber(value.logistics_stress_score),
     household_stress_score: toOptionalFiniteNumber(value.household_stress_score),
@@ -939,50 +1089,30 @@ const normalizeGovernanceData = (value: unknown): GovernanceData => {
 
 export async function getLiveCommandFeed(): Promise<LiveCommandFeed> {
   if (USE_MOCK_API) return mockLiveFeed();
-  try {
-    const res = await API.get("/dashboard/live-feed", { headers: API_HEADERS, params: { mode: "online" } });
-    return normalizeLiveCommandFeed(res.data);
-  } catch (error) {
-    if (isOfflineApiError(error)) return mockLiveFeed();
-    throw error;
-  }
+  const res = await API.get("/dashboard/live-feed", { headers: API_HEADERS, params: { mode: "online" } });
+  return normalizeLiveCommandFeed(res.data);
 }
 
 export async function getRiskMap(): Promise<RiskMapPoint[]> {
   if (USE_MOCK_API) return MOCK_RISK_MAP;
-  try {
-    const res = await API.get("/dashboard/risk-map", { headers: API_HEADERS, params: { mode: "online", verified_only: false } });
-    return Array.isArray(res.data)
-      ? res.data
-          .map(normalizeRiskMapPoint)
-          .filter((entry): entry is RiskMapPoint => Boolean(entry))
-      : [];
-  } catch (error) {
-    if (isOfflineApiError(error)) return MOCK_RISK_MAP;
-    throw error;
-  }
+  const res = await API.get("/country-intelligence/latest", { headers: API_HEADERS, params: { mode: "online", verified_only: false } });
+  return Array.isArray(res.data)
+    ? res.data
+        .map(normalizeRiskMapPoint)
+        .filter((entry): entry is RiskMapPoint => Boolean(entry))
+    : [];
 }
 
 export async function getRiskMapCoverage(): Promise<RiskMapCoverage> {
   if (USE_MOCK_API) return mockCoverage();
-  try {
-    const res = await API.get("/dashboard/risk-map/coverage", { headers: API_HEADERS, params: { mode: "online" } });
-    return normalizeRiskMapCoverage(res.data);
-  } catch (error) {
-    if (isOfflineApiError(error)) return mockCoverage();
-    throw error;
-  }
+  const res = await API.get("/dashboard/risk-map/coverage", { headers: API_HEADERS, params: { mode: "online" } });
+  return normalizeRiskMapCoverage(res.data);
 }
 
 export async function getLatestGlobalFeatures(): Promise<LatestGlobalResponse> {
   if (USE_MOCK_API) return mockLatestGlobal();
-  try {
-    const res = await API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } });
-    return res.data as LatestGlobalResponse;
-  } catch (error) {
-    if (isOfflineApiError(error)) return mockLatestGlobal();
-    throw error;
-  }
+  const res = await API.get("/features/global/latest", { headers: API_HEADERS, params: { mode: "online" } });
+  return res.data as LatestGlobalResponse;
 }
 
 export async function refreshRiskMapBatch(batchSize = 50): Promise<boolean> {
@@ -997,7 +1127,7 @@ export async function refreshRiskMapBatch(batchSize = 50): Promise<boolean> {
 export async function getCountryDrilldown(country: string): Promise<CountryDrilldownData> {
   if (USE_MOCK_API) return mockCountryDrilldown(country);
   try {
-    const res = await API.get(`/dashboard/country/${country}`, { headers: API_HEADERS, params: { mode: "online" } });
+    const res = await API.get(`/country-intelligence/${country}`, { headers: API_HEADERS, params: { mode: "online" } });
     return normalizeCountryDrilldown(res.data, country);
   } catch (error) {
     if (isOfflineApiError(error)) return mockCountryDrilldown(country);
@@ -1425,11 +1555,18 @@ export type IntelligenceFeedItem = {
   risk_score: number;
   timestamp: string;
   category: string;
+  relevance_score?: number;
 };
 
-export async function getGlobalIntelligenceFeed(): Promise<IntelligenceFeedItem[]> {
+export async function getGlobalIntelligenceFeed(params?: { country?: string | null; limit?: number }): Promise<IntelligenceFeedItem[]> {
   try {
-    const res = await API.get("/dashboard/global-intelligence-feed", { headers: API_HEADERS });
+    const res = await API.get("/dashboard/global-intelligence-feed", {
+      headers: API_HEADERS,
+      params: {
+        country: params?.country || undefined,
+        limit: params?.limit,
+      },
+    });
     return Array.isArray(res.data) ? (res.data as IntelligenceFeedItem[]) : [];
   } catch {
     return [];
@@ -1839,6 +1976,10 @@ export type MLPrediction = {
 export type MLPredictionsData = {
   predictions: MLPrediction[];
   model_type: string;
+  source?: string;
+  source_status?: string;
+  calibration_status?: string;
+  fallback_reason?: string | null;
 };
 
 export type AdvancedMLObservability = {
@@ -1890,14 +2031,32 @@ export type AIReportData = {
   risk_level: string;
 };
 
+export type AdvancedFeatureSnapshotEntry = {
+  key: string;
+  label: string;
+  value: number;
+  raw_value?: number;
+  normalized_value?: number;
+  importance?: number;
+  direction?: "positive" | "negative" | string;
+  scale?: "normalized" | "absolute_100" | "return" | "volatility" | "sentiment" | string;
+};
+
 export type AdvancedInsightsData = {
   timestamp: string;
+  generated_at?: string;
   predictions: MLPredictionsData;
+  forecast_contract?: GlobalForecastContract;
   anomalies: AnomalyData[];
   causal_graph: CausalLink[];
   sentiment_momentum: SentimentMomentumData;
   ai_report: AIReportData;
+  feature_snapshot?: AdvancedFeatureSnapshotEntry[];
+  governance?: GovernanceData;
   ml_observability?: AdvancedMLObservability;
+  data_quality_status?: string;
+  advisory?: string;
+  reasons?: string[];
 };
 
 export async function getMLPredictions(): Promise<MLPredictionsData> {
@@ -1933,23 +2092,65 @@ export async function getAdvancedInsights(): Promise<AdvancedInsightsData> {
     const res = await API.get("/analytics/advanced/insights", { headers: API_HEADERS, timeout: 35000 });
     return res.data as AdvancedInsightsData;
   } catch (primaryError) {
-    const [predictions, anomalies, causal, momentum, report] = await Promise.allSettled([
+    const timedOut = axios.isAxiosError(primaryError) && String(primaryError.code || "").toUpperCase() === "ECONNABORTED";
+    if (isOfflineApiError(primaryError) || timedOut) {
+      throw primaryError;
+    }
+
+    const [predictions, anomalies, causal, momentum, report, governance] = await Promise.allSettled([
       API.get("/analytics/advanced/ml-predictions", { headers: API_HEADERS, timeout: 25000 }),
       API.get("/analytics/advanced/anomalies", { headers: API_HEADERS, timeout: 15000 }),
       API.get("/analytics/advanced/causal", { headers: API_HEADERS, timeout: 15000 }),
       API.get("/analytics/advanced/sentiment-momentum", { headers: API_HEADERS, timeout: 15000 }),
       API.get("/analytics/advanced/report", { headers: API_HEADERS, params: { report_type: "brief" }, timeout: 20000 }),
+      API.get("/dashboard/governance", { headers: API_HEADERS, params: { mode: "online" }, timeout: 15000 }),
     ]);
 
-    const hasAny = [predictions, anomalies, causal, momentum, report].some((r) => r.status === "fulfilled");
+    const hasAny = [predictions, anomalies, causal, momentum, report, governance].some((r) => r.status === "fulfilled");
     if (!hasAny) throw primaryError;
 
+    const fallbackPredictions = predictions.status === "fulfilled"
+      ? ({
+          source: "advanced_analytics",
+          source_status: "fallback",
+          calibration_status: "fallback",
+          fallback_reason: "Canonical advanced insights endpoint was unavailable, so stitched endpoint fallbacks were used.",
+          ...(predictions.value.data as MLPredictionsData),
+        } as MLPredictionsData)
+      : {
+          predictions: [],
+          model_type: "unavailable",
+          source: "advanced_analytics",
+          source_status: "model_unavailable",
+          calibration_status: "fallback",
+          fallback_reason: "Canonical advanced insights endpoint was unavailable.",
+        };
+
+    const firstPrediction = Array.isArray(fallbackPredictions.predictions) ? fallbackPredictions.predictions[0] : undefined;
     return {
       timestamp: new Date().toISOString(),
-      predictions:
-        predictions.status === "fulfilled"
-          ? (predictions.value.data as MLPredictionsData)
-          : { predictions: [], model_type: "unavailable" },
+      generated_at: new Date().toISOString(),
+      predictions: fallbackPredictions,
+      forecast_contract: {
+        source: "advanced_analytics",
+        source_status: fallbackPredictions.source_status,
+        calibration_status: fallbackPredictions.calibration_status,
+        gating_action: "downgrade",
+        prediction_available: Boolean(firstPrediction),
+        withheld: !firstPrediction,
+        risk_score: firstPrediction?.risk_score ?? null,
+        confidence_ratio: firstPrediction?.confidence ?? 0,
+        confidence_score: Math.round((firstPrediction?.confidence ?? 0) * 10000) / 100,
+        risk_delta: 0,
+        horizon_hours: 24,
+        prediction_interval: firstPrediction?.interval ?? null,
+        advisory: "Canonical advanced insights endpoint unavailable; page is using stitched advanced fallbacks.",
+        reasons: ["canonical advanced insights unavailable"],
+        quality_status: "fallback",
+        basis: "stitched_fallback",
+        model_version: fallbackPredictions.model_type,
+        generated_at: new Date().toISOString(),
+      },
       anomalies: anomalies.status === "fulfilled" && Array.isArray(anomalies.value.data)
         ? (anomalies.value.data as AnomalyData[])
         : [],
@@ -1970,6 +2171,10 @@ export async function getAdvancedInsights(): Promise<AdvancedInsightsData> {
               recommendations: [],
               risk_level: "moderate",
             },
+      governance: governance.status === "fulfilled" ? (governance.value.data as GovernanceData) : undefined,
+      data_quality_status: "fallback",
+      advisory: "Canonical advanced insights endpoint unavailable; page is using stitched advanced fallbacks.",
+      reasons: ["canonical advanced insights unavailable"],
     };
   }
 }

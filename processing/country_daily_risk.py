@@ -222,7 +222,84 @@ WAR_STATE_RULES = [
         "regional_floor": 72.0,
     },
 ]
+
+LOW_CONFLICT_SENSITIVITY_COUNTRIES = {
+    "AUS", "AUT", "BEL", "CAN", "CHE", "DEU", "DNK", "FIN", "ISL", "IRL", "JPN", "LUX", "NLD", "NOR", "NZL", "SGP", "SWE",
+}
+HIGH_CONFLICT_SENSITIVITY_COUNTRIES = {
+    "AFG", "IRN", "IRQ", "ISR", "LBN", "MMR", "PSE", "RUS", "SDN", "SYR", "UKR", "USA", "YEM",
+}
+HIGH_ECONOMIC_SENSITIVITY_COUNTRIES = {
+    "BGD", "EGY", "ETH", "GHA", "JOR", "KEN", "LKA", "MEX", "NGA", "PAK", "PHL", "TUN", "TUR", "ZAF",
+}
+CHRONIC_INSTABILITY_COUNTRIES = {
+    "AFG", "ETH", "HTI", "IRQ", "LBY", "MMR", "PSE", "SDN", "SOM", "SSD", "SYR", "UKR", "YEM",
+}
 fs = FeatureStore()
+
+PLACEHOLDER_TOPICS = {'no data', 'global_expansion'}
+MEANINGFUL_EXTERNAL_FIELDS = (
+    'social_unrest_score',
+    'google_trends_pressure',
+    'public_attention_score',
+    'narrative_velocity_score',
+    'coordination_risk_score',
+    'mobility_disruption_score',
+    'aviation_disruption_score',
+    'logistics_stress_score',
+    'household_stress_score',
+    'fuel_price_pressure',
+    'food_price_pressure',
+    'labor_stress_score',
+    'fx_pressure_score',
+    'remittance_stress_score',
+    'energy_stress_score',
+    'weather_stress',
+)
+
+
+def _clamp(value, low=0.0, high=1.0):
+    try:
+        parsed = float(value)
+    except Exception:
+        return low
+    if not np.isfinite(parsed):
+        return low
+    return max(low, min(high, parsed))
+
+
+def _country_signal_profile(country_code, external_signals):
+    normalized = str(country_code or "").strip().upper()
+    profile = {
+        "conflict_weight": 1.0,
+        "attention_weight": 1.0,
+        "mobility_weight": 1.0,
+        "economic_weight": 1.0,
+        "soft_cap": 96.0,
+    }
+    if normalized in LOW_CONFLICT_SENSITIVITY_COUNTRIES:
+        profile.update({
+            "conflict_weight": 0.72,
+            "attention_weight": 0.88,
+            "mobility_weight": 0.9,
+            "economic_weight": 0.96,
+            "soft_cap": 93.0,
+        })
+    elif normalized in HIGH_CONFLICT_SENSITIVITY_COUNTRIES:
+        profile.update({
+            "conflict_weight": 1.14,
+            "attention_weight": 1.06,
+            "mobility_weight": 1.08,
+            "economic_weight": 1.02,
+            "soft_cap": 98.5,
+        })
+    if normalized in HIGH_ECONOMIC_SENSITIVITY_COUNTRIES:
+        profile["economic_weight"] = max(profile["economic_weight"], 1.08)
+
+    weather_stress = _clamp(external_signals.get("weather_stress"), 0.0, 1.0)
+    if weather_stress >= 0.8:
+        profile["soft_cap"] = min(99.0, profile["soft_cap"] + 1.0)
+    return profile
 
 
 def _utc_day_bounds(day: datetime | None = None):
@@ -505,25 +582,38 @@ def _detect_open_war_states(grouped_news):
     return results
 
 
-def _apply_war_state_floor(country_code, score, local_indicators, regional_escalation, war_state_results):
-    adjusted = score
+def _compute_war_state_escalation(country_code, score, local_indicators, regional_escalation, war_state_results, evidence_quality_score):
+    adjusted = float(score)
     active_rules = []
-    local_has_conflict = (
-        local_indicators.get("conflict_headline_count", 0) > 0
-        or local_indicators.get("weighted_keyword_severity", 0.0) >= 0.2
+    max_intensity = 0.0
+    local_conflict = max(
+        _clamp(local_indicators.get("weighted_keyword_severity"), 0.0, 1.0),
+        _clamp((local_indicators.get("conflict_headline_count", 0) or 0) / 4.0, 0.0, 1.0),
+        _clamp(local_indicators.get("recency_weight"), 0.0, 1.0),
     )
+    evidence_factor = _clamp((evidence_quality_score or 0.0) / 100.0, 0.0, 1.0)
     for rule_name, result in war_state_results.items():
         if not result.get("triggered"):
             continue
+        direct_pair_hits = _clamp((result.get("direct_pair_hits", 0) or 0) / 2.0, 0.0, 1.0)
+        conflict_docs = _clamp((result.get("conflict_docs", 0) or 0) / 6.0, 0.0, 1.0)
+        actor_hits = _clamp((result.get("actor_hits", {}).get(country_code, 0) or 0) / 3.0, 0.0, 1.0)
+        rule_intensity = _clamp((direct_pair_hits * 0.45) + (conflict_docs * 0.35) + (actor_hits * 0.2), 0.0, 1.0)
+        max_intensity = max(max_intensity, rule_intensity)
+
         if country_code in result.get("active_belligerents", set()):
-            adjusted = max(adjusted, result.get("belligerent_floor", 85.0))
-            active_rules.append(f"{rule_name}:belligerent")
-        elif country_code in result.get("active_regional", set()) and (
-            local_has_conflict or regional_escalation >= 0.2
-        ):
-            adjusted = max(adjusted, result.get("regional_floor", 72.0))
-            active_rules.append(f"{rule_name}:regional")
-    return round(min(adjusted, 100.0), 2), active_rules
+            dynamic_floor = 66.0 + (rule_intensity * 15.0) + (local_conflict * 10.0) + (evidence_factor * 6.0)
+            adjusted = max(adjusted + (rule_intensity * (7.5 + (local_conflict * 4.0))), dynamic_floor)
+            active_rules.append(f"{rule_name}:belligerent:{rule_intensity:.2f}")
+        elif country_code in result.get("active_regional", set()):
+            regional_intensity = _clamp((rule_intensity * 0.78) + (regional_escalation * 0.35), 0.0, 1.0)
+            if regional_intensity <= 0:
+                continue
+            dynamic_floor = 56.0 + (regional_intensity * 12.0) + (max(local_conflict, regional_escalation) * 8.0) + (evidence_factor * 4.0)
+            adjusted = max(adjusted + (regional_intensity * (4.0 + (max(local_conflict, regional_escalation) * 3.0))), dynamic_floor)
+            active_rules.append(f"{rule_name}:regional:{regional_intensity:.2f}")
+    effective_intensity = round(max_intensity, 4) if active_rules else 0.0
+    return round(min(adjusted, 99.0), 2), active_rules, effective_intensity
 
 
 def _compute_regional_escalation(country_code, indicators_by_country):
@@ -548,7 +638,8 @@ def _compute_regional_escalation(country_code, indicators_by_country):
     return min(escalation, 0.35), triggered_regions
 
 
-def _apply_external_signal_overlay(score, external_signals):
+def _apply_external_signal_overlay(score, external_signals, evidence_quality_score=100.0):
+    evidence_factor = _clamp((evidence_quality_score or 0.0) / 100.0, 0.0, 1.0)
     social_unrest_score = float(external_signals.get("social_unrest_score", 0.0) or 0.0)
     google_trends_pressure = float(external_signals.get("google_trends_pressure", 0.0) or 0.0)
     public_attention_score = float(external_signals.get("public_attention_score", 0.0) or 0.0)
@@ -567,28 +658,30 @@ def _apply_external_signal_overlay(score, external_signals):
     external_signal_freshness = float(external_signals.get("external_signal_freshness", 0.0) or 0.0)
 
     overlay = (
-        social_unrest_score * 8.0
-        + google_trends_pressure * 8.0
-        + public_attention_score * 6.0
-        + narrative_velocity_score * 7.0
-        + coordination_risk_score * 6.0
-        + mobility_disruption_score * 10.0
-        + logistics_stress_score * 6.0
-        + household_stress_score * 8.0
-        + labor_stress_score * 6.0
-        + fx_pressure_score * 6.0
-        + remittance_stress_score * 5.0
-        + energy_stress_score * 6.0
-        + fuel_price_pressure * 7.0
-        + food_price_pressure * 7.0
-        + weather_stress * 12.0
-        + external_signal_freshness * 4.0
-    )
-    return round(min(score + overlay, 100.0), 2)
+        max(0.0, social_unrest_score - 0.45) * 3.0
+        + max(0.0, google_trends_pressure - 0.55) * 3.2
+        + max(0.0, public_attention_score - 0.55) * 2.5
+        + max(0.0, narrative_velocity_score - 0.55) * 3.0
+        + max(0.0, coordination_risk_score - 0.55) * 2.5
+        + max(0.0, mobility_disruption_score - 0.55) * 3.6
+        + max(0.0, logistics_stress_score - 0.55) * 2.8
+        + max(0.0, household_stress_score - 0.55) * 3.0
+        + max(0.0, labor_stress_score - 0.55) * 2.4
+        + max(0.0, fx_pressure_score - 0.55) * 2.4
+        + max(0.0, remittance_stress_score - 0.55) * 2.0
+        + max(0.0, energy_stress_score - 0.55) * 2.5
+        + max(0.0, fuel_price_pressure - 0.6) * 2.4
+        + max(0.0, food_price_pressure - 0.6) * 2.4
+        + max(0.0, weather_stress - 0.6) * 3.5
+        + external_signal_freshness * 1.8
+    ) * (0.45 + (evidence_factor * 0.55))
+    soft_cap = 92.0 + (evidence_factor * 6.0)
+    return round(min(score + overlay, soft_cap), 2)
 
 
 def compute_country_signal_scores(
     *,
+    country_code: str,
     base_risk_score: float,
     conflict_indicators: dict,
     external_signals: dict,
@@ -620,39 +713,40 @@ def compute_country_signal_scores(
     conflict_count = float(conflict_indicators.get("conflict_headline_count", 0.0) or 0.0)
     source_count_weight = min(max(float(source_count) / 6.0, 0.0), 1.0)
     war_pressure = 1.0 if war_state_rules else 0.0
+    profile = _country_signal_profile(country_code, external_signals)
 
     direct_behavior_score = min(
         100.0,
         (
-            social_unrest_score * 18.0
-            + google_trends_pressure * 28.0
-            + public_attention_score * 24.0
-            + narrative_velocity_score * 18.0
-            + coordination_risk_score * 12.0
-            + mobility_disruption_score * 18.0
-            + household_stress_score * 16.0
-            + labor_stress_score * 14.0
-            + fx_pressure_score * 12.0
-            + remittance_stress_score * 10.0
-            + external_signal_freshness * 12.0
+            social_unrest_score * 16.0 * profile["attention_weight"]
+            + google_trends_pressure * 24.0 * profile["attention_weight"]
+            + public_attention_score * 22.0 * profile["attention_weight"]
+            + narrative_velocity_score * 18.0 * profile["attention_weight"]
+            + coordination_risk_score * 12.0 * profile["attention_weight"]
+            + mobility_disruption_score * 17.0 * profile["mobility_weight"]
+            + household_stress_score * 14.0 * profile["economic_weight"]
+            + labor_stress_score * 12.0 * profile["economic_weight"]
+            + fx_pressure_score * 10.0 * profile["economic_weight"]
+            + remittance_stress_score * 8.0 * profile["economic_weight"]
+            + external_signal_freshness * 10.0
             + source_count_weight * 8.0
         ),
     )
     contextual_pressure_score = min(
         100.0,
         (
-            min(max(base_risk_score, 0.0), 100.0) * 0.34
-            + weather_stress * 16.0
-            + mobility_disruption_score * 8.0
-            + logistics_stress_score * 10.0
-            + fuel_price_pressure * 14.0
-            + food_price_pressure * 14.0
-            + fx_pressure_score * 10.0
-            + energy_stress_score * 12.0
-            + weighted_keyword_severity * 20.0
-            + min(conflict_count / 4.0, 1.0) * 16.0
-            + regional_escalation * 16.0
-            + war_pressure * 10.0
+            min(max(base_risk_score, 0.0), 100.0) * 0.28
+            + weather_stress * 15.0
+            + mobility_disruption_score * 9.0 * profile["mobility_weight"]
+            + logistics_stress_score * 11.0 * profile["mobility_weight"]
+            + fuel_price_pressure * 13.0 * profile["economic_weight"]
+            + food_price_pressure * 13.0 * profile["economic_weight"]
+            + fx_pressure_score * 9.0 * profile["economic_weight"]
+            + energy_stress_score * 11.0 * profile["economic_weight"]
+            + weighted_keyword_severity * 22.0 * profile["conflict_weight"]
+            + min(conflict_count / 4.0, 1.0) * 17.0 * profile["conflict_weight"]
+            + regional_escalation * 18.0 * profile["conflict_weight"]
+            + war_pressure * 12.0 * profile["conflict_weight"]
         ),
     )
     evidence_quality_score = min(
@@ -660,18 +754,34 @@ def compute_country_signal_scores(
         max(
             0.0,
             (
-                source_diversity_score * 28.0
+                source_diversity_score * 26.0
                 + source_reliability_score * 24.0
                 + source_confidence * 18.0
                 + recency_weight * 18.0
-                + external_signal_freshness * 12.0
+                + external_signal_freshness * 14.0
             ),
         ),
+    )
+    conflict_escalation_score = min(
+        100.0,
+        (
+            weighted_keyword_severity * 42.0 * profile["conflict_weight"]
+            + min(conflict_count / 4.0, 1.0) * 22.0 * profile["conflict_weight"]
+            + regional_escalation * 18.0 * profile["conflict_weight"]
+            + war_pressure * 18.0 * profile["conflict_weight"]
+            + social_unrest_score * 8.0 * profile["attention_weight"]
+        ),
+    )
+    calibrated_signal_score = min(
+        100.0,
+        (direct_behavior_score * 0.42) + (contextual_pressure_score * 0.44) + (conflict_escalation_score * 0.14),
     )
     return {
         "direct_behavior_score": round(direct_behavior_score, 2),
         "contextual_pressure_score": round(contextual_pressure_score, 2),
         "evidence_quality_score": round(evidence_quality_score, 2),
+        "conflict_escalation_score": round(conflict_escalation_score, 2),
+        "calibrated_signal_score": round(calibrated_signal_score, 2),
     }
 
 
@@ -703,6 +813,184 @@ def _apply_conflict_overlay(base_score, indicators, regional_escalation):
     return round(min(adjusted, 100.0), 2)
 
 
+def _compose_country_risk(country_code, base_risk_score, conflict_indicators, external_signals, regional_escalation, signal_scores, war_state_results):
+    profile = _country_signal_profile(country_code, external_signals)
+    evidence_quality_score = float(signal_scores.get("evidence_quality_score", 0.0) or 0.0)
+    direct_behavior_score = float(signal_scores.get("direct_behavior_score", 0.0) or 0.0)
+    contextual_pressure_score = float(signal_scores.get("contextual_pressure_score", 0.0) or 0.0)
+    conflict_escalation_score = float(signal_scores.get("conflict_escalation_score", 0.0) or 0.0)
+    calibrated_signal_score = float(signal_scores.get("calibrated_signal_score", 0.0) or 0.0)
+
+    evidence_gate = _clamp((evidence_quality_score / 100.0), 0.0, 1.0)
+    source_confidence = _clamp(conflict_indicators.get("source_confidence"), 0.0, 1.0)
+    source_diversity = _clamp(external_signals.get("external_signal_freshness"), 0.0, 1.0)
+    confidence_gate = _clamp((evidence_gate * 0.55) + (source_confidence * 0.3) + (source_diversity * 0.15), 0.2, 1.0)
+
+    signal_core = (
+        direct_behavior_score * 0.34
+        + contextual_pressure_score * 0.38
+        + conflict_escalation_score * 0.18
+        + calibrated_signal_score * 0.10
+    )
+    legacy_conflict_overlay = _apply_conflict_overlay(base_risk_score, conflict_indicators, regional_escalation)
+    calibrated = (
+        base_risk_score * (0.68 - (0.24 * confidence_gate))
+        + signal_core * (0.18 + (0.26 * confidence_gate))
+        + legacy_conflict_overlay * 0.16
+    )
+
+    adjusted = _apply_external_signal_overlay(calibrated, external_signals, evidence_quality_score=evidence_quality_score)
+    adjusted, war_state_rules, war_escalation_score = _compute_war_state_escalation(
+        country_code,
+        adjusted,
+        conflict_indicators,
+        regional_escalation,
+        war_state_results,
+        evidence_quality_score,
+    )
+
+    soft_cap = profile["soft_cap"] + (confidence_gate * 1.5)
+    final_score = round(min(max(adjusted, 0.0), min(99.0, soft_cap)), 2)
+    return final_score, war_state_rules, war_escalation_score
+
+
+def _parse_feature_timestamp(value):
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except Exception:
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _has_meaningful_external_signals(external_signals: dict | None) -> bool:
+    data = external_signals or {}
+    return any(float(data.get(field, 0.0) or 0.0) > 0.0 for field in MEANINGFUL_EXTERNAL_FIELDS)
+
+
+def _is_placeholder_topics(topics) -> bool:
+    normalized = [str(topic).strip().lower() for topic in (topics or []) if str(topic).strip()]
+    return (not normalized) or any(topic in PLACEHOLDER_TOPICS for topic in normalized)
+
+
+def _load_preservable_country_features(country_code: str, mode: str, target_day: datetime) -> dict | None:
+    docs = list(db.country_features.find({'country': country_code, 'mode': mode}).sort('timestamp', -1).limit(12))
+    target_date = target_day.astimezone(timezone.utc).date()
+    for doc in docs:
+        features = doc.get('features') or {}
+        feature_ts = _parse_feature_timestamp(features.get('timestamp'))
+        if feature_ts is None or feature_ts.date() != target_date:
+            continue
+        if int(features.get('source_count') or 0) <= 0:
+            continue
+        if _is_placeholder_topics(features.get('top_topics')):
+            continue
+        return dict(features)
+    return None
+
+
+def _is_meaningful_country_state(features: dict | None) -> bool:
+    if not features:
+        return False
+    if int(features.get('source_count') or 0) > 0 and not _is_placeholder_topics(features.get('top_topics')):
+        return True
+    if _has_meaningful_external_signals(features):
+        return True
+    if float(features.get('conflict_headline_count', 0) or 0.0) > 0:
+        return True
+    if float(features.get('weighted_keyword_severity', 0.0) or 0.0) >= 0.2:
+        return True
+    if float(features.get('regional_escalation', 0.0) or 0.0) > 0.0:
+        return True
+    return bool(features.get('war_state_rules'))
+
+
+def _load_recent_country_support_state(country_code: str, candidate_risk: float, target_day: datetime, mode: str = 'online') -> dict | None:
+    target_dt = target_day.astimezone(timezone.utc)
+    docs = list(db.country_features.find({'country': country_code, 'mode': mode}).sort('timestamp', -1).limit(40))
+    best_state = None
+    best_risk = max(float(candidate_risk or 0.0), 0.0)
+    best_ts = None
+    for doc in docs:
+        features = doc.get('features') or {}
+        feature_ts = _parse_feature_timestamp(features.get('timestamp'))
+        if feature_ts is None:
+            continue
+        if feature_ts > target_dt + timedelta(hours=6):
+            continue
+        if (target_dt.date() - feature_ts.date()).days > 5:
+            continue
+        if not _is_meaningful_country_state(features):
+            continue
+        previous_risk = float(features.get('global_risk_score', 0.0) or 0.0)
+        if previous_risk < best_risk:
+            continue
+        if previous_risk == best_risk and best_ts is not None and feature_ts <= best_ts:
+            continue
+        best_state = dict(features)
+        best_risk = previous_risk
+        best_ts = feature_ts
+    return best_state
+
+
+def _apply_country_risk_persistence(country_code: str, current_risk: float, feature_doc: dict, previous_state: dict | None, target_day: datetime) -> float:
+    current = float(current_risk or 0.0)
+    if not previous_state:
+        return round(current, 2)
+
+    previous = float(previous_state.get('global_risk_score', 0.0) or 0.0)
+    if previous <= current:
+        return round(current, 2)
+
+    current_conflict = max(
+        _clamp((feature_doc.get('conflict_headline_count', 0) or 0.0) / 4.0, 0.0, 1.0),
+        _clamp(feature_doc.get('weighted_keyword_severity', 0.0), 0.0, 1.0),
+        _clamp(feature_doc.get('regional_escalation', 0.0), 0.0, 1.0),
+        1.0 if feature_doc.get('war_state_rules') else 0.0,
+    )
+    external_support = _clamp((feature_doc.get('external_signal_freshness', 0.0) or 0.0), 0.0, 1.0)
+    evidence_quality = _clamp((feature_doc.get('evidence_quality_score', 0.0) or 0.0) / 100.0, 0.0, 1.0)
+    source_confidence = _clamp(feature_doc.get('source_confidence', 0.0), 0.0, 1.0)
+    current_evidence = _clamp(
+        (evidence_quality * 0.4) + (source_confidence * 0.25) + (external_support * 0.2) + (current_conflict * 0.15),
+        0.0,
+        1.0,
+    )
+    if current_evidence >= 0.62 and current_conflict >= 0.2:
+        return round(current, 2)
+
+    previous_ts = _parse_feature_timestamp(previous_state.get('timestamp'))
+    target_dt = target_day.astimezone(timezone.utc)
+    day_gap = max((target_dt.date() - previous_ts.date()).days, 0) if previous_ts else 1
+    decay = 10.0 + (day_gap * 2.0)
+    if country_code in CHRONIC_INSTABILITY_COUNTRIES:
+        decay -= 3.0
+    if country_code in HIGH_CONFLICT_SENSITIVITY_COUNTRIES:
+        decay -= 2.0
+    decay = max(decay, 4.0)
+
+    carry_weight = 0.58 - (current_evidence * 0.38)
+    if country_code in CHRONIC_INSTABILITY_COUNTRIES:
+        carry_weight += 0.08
+    if country_code in HIGH_CONFLICT_SENSITIVITY_COUNTRIES:
+        carry_weight += 0.06
+    carry_weight = _clamp(carry_weight, 0.18, 0.72)
+
+    decayed_floor = max(current, previous - decay)
+    blended = (current * (1.0 - carry_weight)) + (previous * carry_weight)
+    stabilized = max(decayed_floor, blended)
+
+    if country_code in CHRONIC_INSTABILITY_COUNTRIES and previous >= 70.0 and current_evidence < 0.45:
+        stabilized = max(stabilized, 62.0)
+    if country_code in HIGH_CONFLICT_SENSITIVITY_COUNTRIES and previous >= 78.0 and current_evidence < 0.5:
+        stabilized = max(stabilized, 68.0)
+
+    return round(min(99.0, stabilized), 2)
+
+
 def _load_today_country_news(day: datetime | None = None):
     start, end = _utc_day_bounds(day)
     docs = list(db.country_news.find({"timestamp": {"$gte": start, "$lt": end}}))
@@ -712,7 +1000,7 @@ def _load_today_country_news(day: datetime | None = None):
     return grouped
 
 
-def build_daily_country_features(day: datetime | None = None, ensure_fresh_news: bool = True, max_records: int = 4, batch_size: int = 50):
+def build_daily_country_features(day: datetime | None = None, ensure_fresh_news: bool = True, max_records: int = 12, batch_size: int = 120):
     target_day = day or datetime.now(timezone.utc)
     refresh_summary = None
     attention_summary = None
@@ -760,6 +1048,15 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
         news_mean = round(float(np.mean(sentiments)), 5) if sentiments else 0.0
         gdelt_mean = news_mean
         external_signals = external_signals_by_country.get(country_code, {})
+        has_meaningful_external = _has_meaningful_external_signals(external_signals)
+        if not country_docs and _is_placeholder_topics(topics) and not has_meaningful_external:
+            preservable_features = _load_preservable_country_features(country_code, 'online', target_day)
+            if preservable_features is not None:
+                augment_country_mood_fields(country_code, preservable_features, mode="online")
+                write_country_features_v2(country_code, preservable_features, mode="online")
+                rows.append({"country": country_code, **preservable_features})
+                summary["written"] += 1
+                continue
         features = {
             **neutral_defaults,
             "news_sentiment": news_mean,
@@ -769,10 +1066,28 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
         base_risk_score = _score_country(models, features)
         conflict_indicators = indicators_by_country[country_code]
         regional_escalation, triggered_regions = _compute_regional_escalation(country_code, indicators_by_country)
-        risk_score = _apply_conflict_overlay(base_risk_score, conflict_indicators, regional_escalation)
-        risk_score = _apply_external_signal_overlay(risk_score, external_signals)
-        risk_score, war_state_rules = _apply_war_state_floor(country_code, risk_score, conflict_indicators, regional_escalation, war_state_results)
         signal_scores = compute_country_signal_scores(
+            country_code=country_code,
+            base_risk_score=base_risk_score,
+            conflict_indicators=conflict_indicators,
+            external_signals=external_signals,
+            source_count=len(country_docs),
+            source_diversity_score=source_diversity_score,
+            source_reliability_score=source_reliability_score,
+            regional_escalation=regional_escalation,
+            war_state_rules=[],
+        )
+        risk_score, war_state_rules, war_escalation_score = _compose_country_risk(
+            country_code,
+            base_risk_score,
+            conflict_indicators,
+            external_signals,
+            regional_escalation,
+            signal_scores,
+            war_state_results,
+        )
+        signal_scores = compute_country_signal_scores(
+            country_code=country_code,
             base_risk_score=base_risk_score,
             conflict_indicators=conflict_indicators,
             external_signals=external_signals,
@@ -782,6 +1097,7 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             regional_escalation=regional_escalation,
             war_state_rules=war_state_rules,
         )
+        previous_state = _load_recent_country_support_state(country_code, risk_score, target_day, mode='online')
         feature_doc = {
             **features,
             "timestamp": timestamp_iso,
@@ -818,16 +1134,22 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             "external_signal_freshness": float(external_signals.get("external_signal_freshness", 0.0) or 0.0),
             "external_sources": list(external_signals.get("external_sources", [])),
             **signal_scores,
+            "war_escalation_score": war_escalation_score,
+            "legacy_conflict_overlay_score": _apply_conflict_overlay(base_risk_score, conflict_indicators, regional_escalation),
+            "risk_definition": "country-intelligence-calibrated-v2",
             "war_state_rules": war_state_rules,
-            "risk_category": "HIGH" if risk_score >= 70 else "MEDIUM" if risk_score >= 40 else "LOW",
+            "risk_category": "CRITICAL" if risk_score >= 85 else "HIGH" if risk_score >= 65 else "MEDIUM" if risk_score >= 40 else "LOW",
         }
+        stabilized_risk = _apply_country_risk_persistence(country_code, risk_score, feature_doc, previous_state, target_day)
+        feature_doc["global_risk_score"] = stabilized_risk
+        feature_doc["risk_category"] = "CRITICAL" if stabilized_risk >= 85 else "HIGH" if stabilized_risk >= 65 else "MEDIUM" if stabilized_risk >= 40 else "LOW"
         augment_country_mood_fields(country_code, feature_doc, mode="online")
         write_country_features_v2(country_code, feature_doc, mode="online")
         rows.append({
             "country": country_code,
             "timestamp": timestamp_iso,
             **{col: feature_doc[col] for col in FEATURE_COLUMNS},
-            "global_risk_score": risk_score,
+            "global_risk_score": stabilized_risk,
             "base_model_risk_score": base_risk_score,
             "top_topics": topics,
             "country_name": country_name,
@@ -863,6 +1185,11 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             "direct_behavior_score": feature_doc["direct_behavior_score"],
             "contextual_pressure_score": feature_doc["contextual_pressure_score"],
             "evidence_quality_score": feature_doc["evidence_quality_score"],
+            "conflict_escalation_score": feature_doc["conflict_escalation_score"],
+            "calibrated_signal_score": feature_doc["calibrated_signal_score"],
+            "war_escalation_score": feature_doc["war_escalation_score"],
+            "legacy_conflict_overlay_score": feature_doc["legacy_conflict_overlay_score"],
+            "risk_definition": feature_doc["risk_definition"],
             "war_state_rules": war_state_rules,
             "source": "country_news_multi_source_daily",
         })
@@ -878,14 +1205,14 @@ def build_daily_country_features(day: datetime | None = None, ensure_fresh_news:
             "country", "timestamp", *FEATURE_COLUMNS, "global_risk_score", "base_model_risk_score", "top_topics",
             "country_name", "source_count", "source_diversity_score", "source_reliability_score", "country_mood_score", "country_mood_baseline", "country_mood_sentiment_delta", "country_mood_sentiment_zscore", "conflict_headline_count", "weighted_keyword_severity",
             "source_confidence", "recency_weight", "regional_escalation", "social_unrest_score",
-            "google_trends_pressure", "public_attention_score", "narrative_velocity_score", "coordination_risk_score", "mobility_disruption_score", "aviation_disruption_score", "logistics_stress_score", "household_stress_score", "fuel_price_pressure", "food_price_pressure", "labor_stress_score", "fx_pressure_score", "remittance_stress_score", "energy_stress_score", "weather_stress", "external_signal_freshness", "direct_behavior_score", "contextual_pressure_score", "evidence_quality_score", "war_state_rules", "source"
+            "google_trends_pressure", "public_attention_score", "narrative_velocity_score", "coordination_risk_score", "mobility_disruption_score", "aviation_disruption_score", "logistics_stress_score", "household_stress_score", "fuel_price_pressure", "food_price_pressure", "labor_stress_score", "fx_pressure_score", "remittance_stress_score", "energy_stress_score", "weather_stress", "external_signal_freshness", "direct_behavior_score", "contextual_pressure_score", "evidence_quality_score", "conflict_escalation_score", "calibrated_signal_score", "war_escalation_score", "legacy_conflict_overlay_score", "risk_definition", "war_state_rules", "source"
         ]
         fs.write_country(df[write_cols])
         df.to_csv(COUNTRY_FEATURE_CSV, index=False)
     return summary
 
 
-def country_daily_refresh_if_due(day: datetime | None = None, max_records: int = 4, batch_size: int = 50):
+def country_daily_refresh_if_due(day: datetime | None = None, max_records: int = 12, batch_size: int = 120):
     result = build_daily_country_features(day=day, ensure_fresh_news=True, max_records=max_records, batch_size=batch_size)
     result["skipped"] = False
     return result

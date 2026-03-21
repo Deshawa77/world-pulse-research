@@ -40,7 +40,7 @@ const METRICS: MetricDefinition[] = [
   { key: "weather_anomaly", label: "Weather Anomaly", format: (v: number) => v.toFixed(2), signed: false },
 ];
 
-function toNiceUpperBound(value: number, floor: number = 0.1): number {
+function toNiceUpperBound(value: number, floor: number = 1): number {
   const safe = Math.max(Math.abs(value), floor);
   const exponent = Math.floor(Math.log10(safe));
   const magnitude = 10 ** exponent;
@@ -66,12 +66,12 @@ function buildRadarIndicator(
 
   if (metric.signed) {
     const maxAbs = Math.max(Math.abs(valueA), Math.abs(valueB));
-    const bound = toNiceUpperBound(maxAbs * 1.25, 0.1);
+    const bound = toNiceUpperBound(maxAbs * 1.25, 1);
     return { name: metric.label, min: -bound, max: bound };
   }
 
   const maxValue = Math.max(valueA, valueB);
-  const upper = toNiceUpperBound(maxValue * 1.25, 0.1);
+  const upper = toNiceUpperBound(maxValue * 1.25, 1);
   return { name: metric.label, min: 0, max: upper };
 }
 

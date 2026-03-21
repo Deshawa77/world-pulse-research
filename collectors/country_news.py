@@ -11,7 +11,11 @@ from database.mongo import db, insert
 from collectors.gdelt import fetch_gdelt_articles
 from processing.country_catalog import COUNTRY_NAMES
 from processing.signal_taxonomy import build_signal_metadata
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+except ImportError:  # pragma: no cover - optional runtime dependency
+    SentimentIntensityAnalyzer = None
 
 load_dotenv()
 NEWS_API_KEY = (os.getenv("NEWS_API_KEY") or "").strip()
@@ -30,7 +34,7 @@ GDELT_QUERY_BUDGET = int(os.getenv("COUNTRY_NEWS_GDELT_QUERY_BUDGET") or 3)
 NEWSAPI_QUERY_BUDGET = int(os.getenv("COUNTRY_NEWS_NEWSAPI_QUERY_BUDGET") or 4)
 QUERY_CACHE_TTL_HOURS = int(os.getenv("COUNTRY_NEWS_QUERY_CACHE_TTL_HOURS") or 12)
 REFRESH_STATE_SERVICE = "country_news_refresh"
-analyzer = SentimentIntensityAnalyzer()
+analyzer = SentimentIntensityAnalyzer() if SentimentIntensityAnalyzer is not None else None
 
 LANGUAGE_ALIASES = {
     "english": "en", "en": "en",
@@ -275,7 +279,7 @@ def _normalize_country_articles(country_code: str, country_name: str, raw_record
             continue
         description = str(data.get("description") or "").strip()
         observed_at = _parse_timestamp(data.get("published_at"), collected_at)
-        sentiment = analyzer.polarity_scores(f"{title}. {description}")["compound"]
+        sentiment = analyzer.polarity_scores(f"{title}. {description}")["compound"] if analyzer is not None else 0.0
         language = _normalize_language(data.get("language") or "und")
         text_original = ". ".join(part for part in [title, description] if part)
         title_translated_en, translation_provider, title_conf = _translate_text(title, language)

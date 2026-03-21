@@ -34,6 +34,31 @@ const BehavioralAnalyticsPanel = lazy(() => import("../components/BehavioralAnal
 const MobilityObservabilityPanel = lazy(() => import("../components/MobilityObservabilityPanel"));
 const SystemEventStream = lazy(() => import("../components/SystemEventStream"));
 
+type ForecastHorizon = {
+  label?: string;
+  hours?: number;
+  risk_score?: number | null;
+  risk_delta?: number;
+};
+
+type ForecastContract = {
+  source_status?: string;
+  calibration_status?: string;
+  gating_action?: string;
+  prediction_available?: boolean;
+  withheld?: boolean;
+  risk_score?: number | null;
+  confidence_ratio?: number;
+  confidence_score?: number;
+  risk_delta?: number;
+  horizon_hours?: number;
+  prediction_interval?: { p10?: number; p50?: number; p90?: number } | null;
+  advisory?: string;
+  reasons?: string[];
+  generated_at?: string;
+  horizons?: ForecastHorizon[];
+};
+
 type Features = {
   news_sentiment: number;
   gdelt_sentiment: number;
@@ -43,6 +68,9 @@ type Features = {
   stock_volatility: number;
   weather_anomaly: number;
   global_risk_score: number;
+  legacy_model_global_risk_score?: number;
+  global_risk_definition?: string;
+  global_risk_alignment_gap?: number;
   global_mood_score?: number;
   global_mood_confidence?: number;
   global_mood_uncertainty?: number;
@@ -51,10 +79,20 @@ type Features = {
   global_mood_contributing_countries?: number;
   global_mood_used_countries?: number;
   global_mood_excluded_countries?: number;
-  forecast_risk_score?: number;
+  forecast_risk_score?: number | null;
   forecast_risk_delta?: number;
   forecast_confidence?: number;
+  forecast_confidence_score?: number;
   forecast_horizon_hours?: number;
+  forecast_source_status?: string;
+  forecast_calibration_status?: string;
+  forecast_gating_action?: string;
+  forecast_prediction_available?: boolean;
+  forecast_withheld?: boolean;
+  forecast_advisory?: string;
+  forecast_reasons?: string[];
+  forecast_generated_at?: string;
+  forecast_contract?: ForecastContract;
   top_topics: string[];
   timestamp: string;
 };
@@ -66,6 +104,9 @@ type GlobalDoc = {
 type Snapshot = {
   timestamp: string;
   riskScore: number;
+  legacyRiskScore: number;
+  riskDefinition: string;
+  riskAlignmentGap: number;
   moodScore: number;
   moodConfidence: number;
   moodUncertainty: number;
@@ -73,10 +114,17 @@ type Snapshot = {
   moodEligibleCountries: number;
   moodUsedCountries: number;
   moodExcludedCountries: number;
-  forecastRiskScore: number;
+  forecastRiskScore: number | null;
   forecastRiskDelta: number;
   forecastConfidence: number;
   forecastHorizonHours: number;
+  forecastSourceStatus: string;
+  forecastCalibrationStatus: string;
+  forecastGatingAction: string;
+  forecastWithheld: boolean;
+  forecastAdvisory: string;
+  forecastGeneratedAt: string;
+  forecastHorizons: Array<{ label: string; hours: number; score: number; delta: number }>;
   features: Record<string, number>;
   topics: string[];
 };
@@ -101,11 +149,13 @@ type LiveRiskWsPayload = {
 
 type ConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
 type PanelKey = "risk" | "map" | "stream";
+type AnalysisDockTab = "escalation" | "behavior" | "reliability" | "mobility";
 
 const HISTORY_KEY = "wp_v3_history";
 const MAX_HISTORY = 1200;
 const GLOBAL_MAP_WORLD_SCALE = 1.12;
 const GLOBAL_MAP_ROTATION_DEG_PER_SEC = 4;
+const CONSENSUS_HEADLINE_MIN_VERIFIED_COUNTRIES = 40;
 
 const DRIVER_LABELS: Record<string, string> = {
   news_sentiment: "News Sentiment",
@@ -116,6 +166,15 @@ const DRIVER_LABELS: Record<string, string> = {
   stock_volatility: "Stock Volatility",
   weather_anomaly: "Weather Anomaly",
 };
+const DOCK_REGION_GROUPS: Array<{ label: string; countries: string[] }> = [
+  { label: "North America", countries: ["USA", "CAN", "MEX"] },
+  { label: "Europe", countries: ["GBR", "FRA", "DEU", "ESP", "ITA", "POL", "NLD", "SWE", "NOR", "FIN", "UKR"] },
+  { label: "Middle East", countries: ["IRN", "ISR", "IRQ", "SAU", "ARE", "QAT", "KWT", "JOR", "LBN", "TUR", "EGY"] },
+  { label: "Asia", countries: ["CHN", "IND", "JPN", "KOR", "IDN", "PAK", "BGD", "THA", "VNM", "PHL", "MMR", "LKA"] },
+  { label: "Africa", countries: ["ZAF", "NGA", "EGY", "KEN", "ETH", "GHA", "MAR", "TUN", "DZA"] },
+  { label: "Oceania", countries: ["AUS", "NZL"] },
+];
+
 const COUNTRY_FOCUS_COORDS: Record<string, { lat: number; lon: number }> = {
   USA: { lat: 39.8, lon: -98.6 },
   CAN: { lat: 56.1, lon: -106.3 },
@@ -211,21 +270,37 @@ function deriveTrendMeta(delta: number): { label: string; tone: "up" | "down" | 
   return { label: "Stable", tone: "stable" };
 }
 
+function buildFallbackRiskHorizons(headlineRiskScore: number, forecastRiskScore: number | null, forecastWithheld: boolean, history: Snapshot[]): Array<{ label: string; hours: number; score: number; delta: number }> {
+  const recentScores = history.slice(-12).map((point) => safeN(point.riskScore, headlineRiskScore));
+  const recentPeak = Math.max(headlineRiskScore, ...recentScores);
+  const rawTarget24 = forecastWithheld || forecastRiskScore === null ? headlineRiskScore : normalizeRisk(forecastRiskScore);
+  const supportFloor = normalizeRisk(Math.max(
+    headlineRiskScore >= 65 ? headlineRiskScore - 6 : headlineRiskScore >= 50 ? headlineRiskScore - 8 : headlineRiskScore - 12,
+    recentPeak - (headlineRiskScore >= 65 ? 8 : 12),
+  ));
+  const target24 = normalizeRisk(Math.max(rawTarget24, supportFloor));
+  const interpolate = (hours: number) => {
+    if (hours >= 24) return target24;
+    const progress = 1 - Math.exp(-hours / 9);
+    return normalizeRisk(headlineRiskScore + ((target24 - headlineRiskScore) * progress));
+  };
+  const score1h = interpolate(1);
+  const score6h = interpolate(6);
+  const score24h = target24;
+  const score7d = normalizeRisk(Math.max(supportFloor, score24h + Math.max(0, score24h - headlineRiskScore) * 0.35));
+  return [
+    { label: "1h", hours: 1, score: score1h, delta: score1h - headlineRiskScore },
+    { label: "6h", hours: 6, score: score6h, delta: score6h - headlineRiskScore },
+    { label: "24h", hours: 24, score: score24h, delta: score24h - headlineRiskScore },
+    { label: "7d", hours: 168, score: score7d, delta: score7d - headlineRiskScore },
+  ];
+}
+
 function formatTelemetryTime(value?: string | null): string {
   if (!value) return "No recent update";
   const stamp = new Date(value);
   if (!Number.isFinite(stamp.getTime())) return "No recent update";
   return stamp.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
 }
 
 function buildSnapshot(doc: GlobalDoc): Snapshot {
@@ -248,10 +323,38 @@ function buildSnapshot(doc: GlobalDoc): Snapshot {
     0,
     Math.round(safeN(doc.features.global_mood_excluded_countries, Math.max(moodEligibleCountries - moodUsedCountries, 0)))
   );
+  const forecastContract = doc.features.forecast_contract ?? {};
+  const forecastWithheld = Boolean(forecastContract.withheld ?? doc.features.forecast_withheld);
+  const forecastRiskRaw = forecastContract.risk_score ?? doc.features.forecast_risk_score;
+  const forecastRiskScore = forecastWithheld || forecastRiskRaw === null || forecastRiskRaw === undefined
+    ? null
+    : normalizeRisk(safeN(forecastRiskRaw, riskScore));
+  const forecastConfidence = Math.max(
+    0,
+    Math.min(1, safeN(forecastContract.confidence_ratio, safeN(doc.features.forecast_confidence, 0.35)))
+  );
+  const forecastHorizons = Array.isArray(forecastContract.horizons)
+    ? forecastContract.horizons
+        .map((point) => {
+          const hours = Math.max(1, Math.round(safeN(point?.hours, point?.label === "7d" ? 168 : safeN(String(point?.label).endsWith("h") ? String(point?.label).replace(/h$/, "") : 24, 24))));
+          const score = normalizeRisk(safeN(point?.risk_score, riskScore));
+          return {
+            label: String(point?.label || (hours === 168 ? "7d" : `${hours}h`)),
+            hours,
+            score,
+            delta: safeN(point?.risk_delta, score - riskScore),
+          };
+        })
+        .filter((point) => Number.isFinite(point.score))
+        .sort((left, right) => left.hours - right.hours)
+    : [];
 
   return {
     timestamp: doc.features.timestamp ?? new Date().toISOString(),
     riskScore,
+    legacyRiskScore: normalizeRisk(safeN(doc.features.legacy_model_global_risk_score, riskScore)),
+    riskDefinition: String(doc.features.global_risk_definition || "country-intelligence-consensus"),
+    riskAlignmentGap: safeN(doc.features.global_risk_alignment_gap, 0),
     moodScore: normalizeRisk(safeN(doc.features.global_mood_score, riskScore)),
     moodConfidence: Math.max(0, Math.min(1, safeN(doc.features.global_mood_confidence, 0))),
     moodUncertainty: Math.max(0, safeN(doc.features.global_mood_uncertainty, 18)),
@@ -259,10 +362,17 @@ function buildSnapshot(doc: GlobalDoc): Snapshot {
     moodEligibleCountries,
     moodUsedCountries,
     moodExcludedCountries,
-    forecastRiskScore: normalizeRisk(safeN(doc.features.forecast_risk_score, riskScore)),
-    forecastRiskDelta: safeN(doc.features.forecast_risk_delta),
-    forecastConfidence: Math.max(0, Math.min(1, safeN(doc.features.forecast_confidence, 0.35))),
-    forecastHorizonHours: Math.max(1, Math.round(safeN(doc.features.forecast_horizon_hours, 24))),
+    forecastRiskScore,
+    forecastRiskDelta: safeN(forecastContract.risk_delta, safeN(doc.features.forecast_risk_delta)),
+    forecastConfidence,
+    forecastHorizonHours: Math.max(1, Math.round(safeN(forecastContract.horizon_hours, safeN(doc.features.forecast_horizon_hours, 24)))),
+    forecastSourceStatus: String(forecastContract.source_status || doc.features.forecast_source_status || "unknown"),
+    forecastCalibrationStatus: String(forecastContract.calibration_status || doc.features.forecast_calibration_status || "unknown"),
+    forecastGatingAction: String(forecastContract.gating_action || doc.features.forecast_gating_action || "allow"),
+    forecastWithheld,
+    forecastAdvisory: String(forecastContract.advisory || doc.features.forecast_advisory || "Forecast available"),
+    forecastGeneratedAt: String(forecastContract.generated_at || doc.features.forecast_generated_at || doc.features.timestamp || new Date().toISOString()),
+    forecastHorizons,
     features: {
       news_sentiment: safeN(doc.features.news_sentiment),
       gdelt_sentiment: safeN(doc.features.gdelt_sentiment),
@@ -278,6 +388,12 @@ function buildSnapshot(doc: GlobalDoc): Snapshot {
 
 function staleFor(msSinceUpdate: number, thresholdMs: number): boolean {
   return msSinceUpdate > thresholdMs;
+}
+
+function parseTimestampMs(value?: string | null): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function coverageFromRows(rows: RiskMapPoint[]): RiskMapCoverage {
@@ -318,6 +434,45 @@ function mergeRiskMapRows(rows: RiskMapPoint[], updates: Iterable<RiskMapPoint>)
   return next;
 }
 
+function dominantCountryDriver(row: RiskMapPoint | null | undefined): string {
+  if (!row) return "Composite risk";
+  const candidates = ([
+    ["Social unrest", safeN(row.social_unrest_score)],
+    ["Public attention", safeN(row.public_attention_score)],
+    ["Narrative velocity", safeN(row.narrative_velocity_score)],
+    ["Coordination risk", safeN(row.coordination_risk_score)],
+    ["Mobility disruption", safeN(row.mobility_disruption_score)],
+    ["Logistics stress", safeN(row.logistics_stress_score)],
+    ["Household stress", safeN(row.household_stress_score)],
+    ["Fuel pressure", safeN(row.fuel_price_pressure)],
+    ["Food pressure", safeN(row.food_price_pressure)],
+    ["Labor stress", safeN(row.labor_stress_score)],
+    ["FX pressure", safeN(row.fx_pressure_score)],
+    ["Weather stress", safeN(row.weather_stress)],
+  ] as Array<[string, number]>).sort(
+    (left: [string, number], right: [string, number]) => right[1] - left[1],
+  );
+  return candidates[0] && candidates[0][1] > 0 ? candidates[0][0] : "Composite risk";
+}
+
+function escalationMomentum(row: RiskMapPoint): number {
+  return (
+    safeN(row.social_unrest_score) * 18
+    + safeN(row.public_attention_score) * 15
+    + safeN(row.narrative_velocity_score) * 16
+    + safeN(row.coordination_risk_score) * 13
+    + safeN(row.mobility_disruption_score) * 16
+    + safeN(row.logistics_stress_score) * 11
+    + safeN(row.household_stress_score) * 10
+    + safeN(row.fuel_price_pressure) * 8
+    + safeN(row.food_price_pressure) * 8
+    + safeN(row.labor_stress_score) * 8
+    + safeN(row.fx_pressure_score) * 7
+    + safeN(row.weather_stress) * 7
+    + safeN(row.direct_behavior_score) * 0.25
+  );
+}
+
 function describeDashboardError(error: unknown): string {
   const message = String((error as { message?: string } | null)?.message || "Failed to refresh dashboard feed");
   const status = Number((error as { response?: { status?: number } } | null)?.response?.status || 0);
@@ -347,7 +502,8 @@ function DeferredPanelPlaceholder({ label }: { label: string }) {
 }
 
 export default function Dashboard() {
-  const [history, setHistory] = useState<Snapshot[]>(() => readJson(HISTORY_KEY, [] as Snapshot[]));
+  const [currentSnapshot, setCurrentSnapshot] = useState<Snapshot | null>(null);
+  const [history, setHistory] = useState<Snapshot[]>([]);
   const [liveFeed, setLiveFeed] = useState<LiveCommandFeed>({
     incidents: [],
     ingestionHeartbeatSec: 0,
@@ -375,6 +531,10 @@ export default function Dashboard() {
   }, [selectedCountry]);
 
   useEffect(() => {
+    currentSnapshotRef.current = currentSnapshot;
+  }, [currentSnapshot]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       setShowDeferredPanels(true);
     }, 250);
@@ -398,6 +558,39 @@ export default function Dashboard() {
   const [showDeferredPanels, setShowDeferredPanels] = useState(false);
   const [recentSocketUpdates, setRecentSocketUpdates] = useState<Array<{ country: string; risk: number | null; timestamp: string; quality: string }>>([]);
   const [streamHeight, setStreamHeight] = useState<number | null>(null);
+  const [analysisTab, setAnalysisTab] = useState<AnalysisDockTab>("escalation");
+
+
+  useEffect(() => {
+    if (fpsLow || typeof window === "undefined") return;
+    const root = mainRef.current;
+    if (!root) return;
+
+    const elements = Array.from(root.querySelectorAll<HTMLElement>(".dashboard-reveal"));
+    if (!elements.length) return;
+
+    elements.forEach((element, index) => {
+      element.style.setProperty("--reveal-delay", `${Math.min(index * 70, 420)}ms`);
+    });
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-visible");
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      {
+        threshold: 0.16,
+        rootMargin: "0px 0px -8% 0px",
+      },
+    );
+
+    elements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [fpsLow, showDeferredPanels]);
 
   const cacheRef = useRef<{
     liveFeed: { data: LiveCommandFeed | null; timestamp: number; ttl: number };
@@ -409,7 +602,7 @@ export default function Dashboard() {
     liveFeed: { data: null, timestamp: 0, ttl: 3000 },
     riskMap: { data: null, timestamp: 0, ttl: 5000 },
     riskCoverage: { data: null, timestamp: 0, ttl: 5000 },
-    global: { data: null, timestamp: 0, ttl: 2000 },
+    global: { data: null, timestamp: 0, ttl: 0 },
     trust: { data: null, timestamp: 0, ttl: 5000 },
   });
 
@@ -422,7 +615,9 @@ export default function Dashboard() {
   });
   
   const retriesRef = useRef(0);
+  const currentSnapshotRef = useRef<Snapshot | null>(null);
   const mapRef = useRef<HTMLDivElement | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
   const leftColumnRef = useRef<HTMLDivElement | null>(null);
   const streamHostRef = useRef<HTMLElement | null>(null);
   const mapMounted = useRef(false);
@@ -471,12 +666,53 @@ export default function Dashboard() {
       timestamp: update.timestamp || update.feature_timestamp || new Date().toISOString(),
       quality: update.data_quality || (update.validated_today ? "verified" : "unknown"),
     }, ...prev].slice(0, 8));
-    if (!initialRiskMapLoadedRef.current || pendingRiskMapFlushTimerRef.current) return;
+    if (!initialRiskMapLoadedRef.current) {
+      initialRiskMapLoadedRef.current = true;
+    }
+    if (pendingRiskMapFlushTimerRef.current) return;
     pendingRiskMapFlushTimerRef.current = window.setTimeout(flushQueuedRiskMapUpdates, 150);
   };
 
   const riskMapRows = Array.isArray(riskMap) ? riskMap : [];
-  const coverageState = riskCoverage ?? { total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 };
+  const fallbackCoverageState = useMemo<RiskMapCoverage>(() => {
+    if (riskCoverage && ((riskCoverage.total ?? 0) > 0 || (riskCoverage.verified ?? 0) > 0)) {
+      return riskCoverage;
+    }
+    if (currentSnapshot) {
+      const total = Math.max(riskMapRows.length, 233);
+      const verified = Math.max(
+        0,
+        Math.min(
+          total,
+          Math.round(
+            safeN(
+              currentSnapshot.moodVerifiedCountries,
+              safeN(currentSnapshot.moodEligibleCountries, riskMapRows.filter((row) => Boolean(row.validated_today) && typeof row.risk === "number").length)
+            )
+          )
+        )
+      );
+      const remaining = Math.max(total - verified, 0);
+      return {
+        total,
+        verified,
+        no_data: remaining,
+        stale: 0,
+        suppressed: remaining,
+        remaining,
+        coverage_pct: total ? Number(((verified / total) * 100).toFixed(2)) : 0,
+        latest_validation: riskCoverage?.latest_validation,
+      };
+    }
+    if (riskMapRows.length) {
+      return {
+        ...coverageFromRows(riskMapRows),
+        latest_validation: riskCoverage?.latest_validation,
+      };
+    }
+    return riskCoverage ?? { total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 };
+  }, [currentSnapshot, riskCoverage, riskMapRows]);
+  const coverageState = fallbackCoverageState;
   const liveFeedState = liveFeed ?? {
     incidents: [],
     ingestionHeartbeatSec: 0,
@@ -484,7 +720,7 @@ export default function Dashboard() {
     lastUpdated: new Date().toISOString(),
   };
 
-  const active = history[history.length - 1] ?? null;
+  const active = currentSnapshot ?? history[history.length - 1] ?? null;
   const previous = history.length > 1 ? history[history.length - 2] : null;
   const riskDelta = active && previous ? active.riskScore - previous.riskScore : 0;
   const verifiedRiskMap = useMemo(() => riskMapRows.filter((row): row is RiskMapPoint & { risk: number } => Boolean(row.validated_today) && typeof row.risk === "number"), [riskMapRows]);
@@ -531,6 +767,11 @@ export default function Dashboard() {
   const validationSummary = coverageState.latest_validation;
   const verifiedCoverageLabel = `${coverageState.verified} / ${coverageState.total || riskMapRows.length || 233}`;
   const globalRiskScore = active?.riskScore ?? 50;
+  const legacyModelRiskScore = active?.legacyRiskScore ?? globalRiskScore;
+  const consensusUnderSupported = coverageState.verified < CONSENSUS_HEADLINE_MIN_VERIFIED_COUNTRIES;
+  const headlineRiskScore = consensusUnderSupported ? legacyModelRiskScore : globalRiskScore;
+  const headlineRiskLabel = consensusUnderSupported ? "Baseline fallback" : "Live consensus";
+  const consensusSupportWarning = `Consensus under-supported: ${coverageState.verified} verified countries. Headline pinned to legacy risk until ${CONSENSUS_HEADLINE_MIN_VERIFIED_COUNTRIES} verified countries.`;
   const globalMoodScore = active?.moodScore ?? 50;
   const globalMoodConfidence = active?.moodConfidence ?? Math.min(1, coverageState.coverage_pct / 100);
   const globalMoodUncertainty = active?.moodUncertainty ?? 18;
@@ -538,11 +779,20 @@ export default function Dashboard() {
   const globalMoodUsedCountries = active?.moodUsedCountries ?? globalMoodEligibleCountries;
   const globalMoodExcludedCountries = active?.moodExcludedCountries ?? Math.max(globalMoodEligibleCountries - globalMoodUsedCountries, 0);
   const globalMoodCountrySummary = `${globalMoodEligibleCountries} eligible, ${globalMoodUsedCountries} used, ${globalMoodExcludedCountries} excluded`;
-  const forecastRiskScore = active?.forecastRiskScore ?? globalRiskScore;
+  const forecastRiskScore = active?.forecastRiskScore ?? null;
   const forecastRiskDelta = active?.forecastRiskDelta ?? 0;
   const forecastConfidence = active?.forecastConfidence ?? 0.35;
   const forecastHorizonHours = active?.forecastHorizonHours ?? 24;
-  const telemetryThreat = deriveThreatMeta(globalRiskScore);
+  const forecastWithheld = Boolean(active?.forecastWithheld);
+  const forecastSourceStatus = active?.forecastSourceStatus ?? "unknown";
+  const forecastCalibrationStatus = active?.forecastCalibrationStatus ?? "unknown";
+  const forecastGatingAction = active?.forecastGatingAction ?? "allow";
+  const forecastAdvisory = active?.forecastAdvisory ?? "Forecast available";
+  const advancedRiskHorizons = active?.forecastHorizons?.length
+    ? active.forecastHorizons
+    : buildFallbackRiskHorizons(headlineRiskScore, forecastRiskScore, forecastWithheld, history);
+  const forecast24Point = advancedRiskHorizons.find((point) => point.hours === 24 || point.label === "24h");
+  const telemetryThreat = deriveThreatMeta(headlineRiskScore);
   const telemetryTrend = deriveTrendMeta(riskDelta);
   const telemetryDrivers = (() => {
     const countryDrivers = countryData?.drivers?.length
@@ -591,7 +841,11 @@ export default function Dashboard() {
       ? "Monitoring"
       : "Healthy";
   const moodUncertaintyDisplay = safeN(trustConfidence.global_mood_uncertainty, globalMoodUncertainty);
-  const forecastConfidenceDisplay = Math.max(0, Math.min(1, safeN(trustConfidence.forecast_confidence, forecastConfidence)));
+  const forecastRiskDeltaDisplay = forecast24Point?.delta ?? forecastRiskDelta;
+  const forecastRiskScoreDisplay = forecast24Point?.score ?? forecastRiskScore;
+  const forecastConfidenceDisplay = forecastWithheld
+    ? 0
+    : Math.max(0, Math.min(1, safeN(trustConfidence.forecast_confidence, forecastConfidence)));
   const systemEventPackets = useMemo(() => {
     const packets: Array<{ id: string; timestamp: string; category: string; source: string; detail: string; status: string }> = [];
     const pushPacket = (packet: { id: string; timestamp?: string | null; category: string; source: string; detail: string; status: string }) => {
@@ -615,7 +869,7 @@ export default function Dashboard() {
       timestamp: active?.timestamp ?? liveFeedState.lastUpdated,
       category: "Model refresh",
       source: "Behavior model",
-      detail: `Global risk ${globalRiskScore.toFixed(1)} / 100, forecast ${forecastRiskScore.toFixed(1)} / 100`,
+      detail: `Headline risk ${headlineRiskScore.toFixed(1)} / 100 (${headlineRiskLabel}), consensus ${globalRiskScore.toFixed(1)} / 100, forecast ${forecastWithheld || forecastRiskScore === null ? 'withheld' : `${forecastRiskScore.toFixed(1)} / 100`}`,
       status: "Updated",
     });
 
@@ -672,6 +926,8 @@ export default function Dashboard() {
     forecastRiskScore,
     freshSources,
     globalRiskScore,
+    headlineRiskLabel,
+    headlineRiskScore,
     liveFeedState.incidents,
     liveFeedState.ingestionHeartbeatSec,
     liveFeedState.lastUpdated,
@@ -692,6 +948,60 @@ export default function Dashboard() {
       stream: staleFor(now - panelUpdated.current.stream, 12000),
     };
   }, [history.length, riskMapRows.length, coverageState.verified, recentSocketUpdates.length]);
+
+  const rankedRiskRows = useMemo(
+    () => riskMapRows.filter((row): row is RiskMapPoint & { risk: number } => typeof row.risk === "number"),
+    [riskMapRows],
+  );
+  const highestRiskCountry = useMemo(
+    () => [...rankedRiskRows].sort((left, right) => right.risk - left.risk)[0] ?? null,
+    [rankedRiskRows],
+  );
+  const fastestEscalatingCountry = useMemo(
+    () => [...rankedRiskRows].sort((left, right) => escalationMomentum(right) - escalationMomentum(left))[0] ?? null,
+    [rankedRiskRows],
+  );
+  const weakestConfidenceRegion = useMemo(() => {
+    const candidates = DOCK_REGION_GROUPS.map((region) => {
+      const members = rankedRiskRows.filter((row) => region.countries.includes(row.country));
+      if (!members.length) return null;
+      const averageConfidence = members.reduce((sum, row) => {
+        const canonicalConfidence = safeN(row.confidence_score, NaN);
+        if (Number.isFinite(canonicalConfidence)) return sum + canonicalConfidence;
+        const evidence = safeN(row.evidence_quality_score, row.validated_today ? 75 : 45);
+        const freshness = safeN(row.external_signal_freshness) * 100;
+        return sum + ((evidence * 0.68) + (freshness * 0.32));
+      }, 0) / members.length;
+      const weakestCountry = [...members].sort((left, right) => {
+        const leftConfidence = Number.isFinite(safeN(left.confidence_score, NaN))
+          ? safeN(left.confidence_score, 0)
+          : ((safeN(left.evidence_quality_score, left.validated_today ? 75 : 45) * 0.68) + (safeN(left.external_signal_freshness) * 100 * 0.32));
+        const rightConfidence = Number.isFinite(safeN(right.confidence_score, NaN))
+          ? safeN(right.confidence_score, 0)
+          : ((safeN(right.evidence_quality_score, right.validated_today ? 75 : 45) * 0.68) + (safeN(right.external_signal_freshness) * 100 * 0.32));
+        return leftConfidence - rightConfidence;
+      })[0] ?? null;
+      return {
+        label: region.label,
+        averageConfidence,
+        weakestCountry,
+      };
+    }).filter(Boolean) as Array<{ label: string; averageConfidence: number; weakestCountry: (RiskMapPoint & { risk: number }) | null }>;
+    return candidates.sort((left, right) => left.averageConfidence - right.averageConfidence)[0] ?? null;
+  }, [rankedRiskRows]);
+  const activeDockCountry = selectedCountry
+    ? rankedRiskRows.find((row) => row.country === selectedCountry) ?? null
+    : highestRiskCountry;
+  const focusedCountryDriver = dominantCountryDriver(activeDockCountry);
+  const focusedCountryLabel = activeDockCountry?.country ?? "GLOBAL";
+  const focusedCountryStatus = activeDockCountry
+    ? (activeDockCountry.risk_band ? formatDriverLabel(activeDockCountry.risk_band) : deriveThreatMeta(activeDockCountry.risk).label)
+    : telemetryThreat.label;
+  const focusedCountryConfidence = activeDockCountry
+    ? (Number.isFinite(safeN(activeDockCountry.confidence_score, NaN))
+        ? safeN(activeDockCountry.confidence_score, 0)
+        : ((safeN(activeDockCountry.evidence_quality_score, activeDockCountry.validated_today ? 75 : 45) * 0.68) + (safeN(activeDockCountry.external_signal_freshness) * 100 * 0.32)))
+    : (globalMoodConfidence * 100);
 
   useEffect(() => {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-MAX_HISTORY)));
@@ -759,58 +1069,121 @@ export default function Dashboard() {
 
     const pull = async () => {
       if (stop) return;
-      setConnectionState(retriesRef.current > 0 ? "reconnecting" : "connecting");
+      setConnectionState((state) => {
+        if (currentSnapshotRef.current || state === "connected") return "connected";
+        return retriesRef.current > 0 ? "reconnecting" : "connecting";
+      });
       try {
+        const applySnapshot = (features?: GlobalDoc["features"] | null) => {
+          if (!features || stop) return;
+          const snap = buildSnapshot({ features } as GlobalDoc);
+          setCurrentSnapshot(snap);
+          setConnectionState((state) => (state === "disconnected" ? "reconnecting" : "connected"));
+          const nowMs = Date.now();
+          const recentWsRiskUpdate = ENABLE_RISK_WS && (nowMs - panelUpdated.current.risk) < 5000;
+          if (!recentWsRiskUpdate) {
+            setHistory((prev) => {
+              const last = prev[prev.length - 1];
+              const lastTs = parseTimestampMs(last?.timestamp ?? null) ?? 0;
+              const nextTs = parseTimestampMs(snap.timestamp) ?? 0;
+              if (nextTs < lastTs) {
+                return prev;
+              }
+              if (last?.timestamp === snap.timestamp) {
+                const next = [...prev];
+                next[next.length - 1] = snap;
+                return next;
+              }
+              return [...prev, snap].slice(-MAX_HISTORY);
+            });
+            panelUpdated.current.risk = nowMs;
+          }
+        };
+
+        const globalPromise = getLatestGlobalFeatures().then((global) => {
+          applySnapshot(global?.features ?? null);
+          return global;
+        });
+        const livePromise = getCachedOrFetch("liveFeed", getLiveCommandFeed).then((live) => {
+          if (!stop) {
+            setLiveFeed(live);
+          }
+          return live;
+        });
+        const coveragePromise = getCachedOrFetch("riskCoverage", getRiskMapCoverage).then((coverage) => {
+          if (!stop) {
+            setRiskCoverage((current) => ({
+              ...coverage,
+              latest_validation: coverage.latest_validation ?? current?.latest_validation,
+            }));
+          }
+          return coverage;
+        });
+        const mapPromise = getCachedOrFetch("riskMap", getRiskMap).then((rows) => {
+          if (!Array.isArray(rows) || stop) return rows;
+          const nextMapRows = consumePendingRiskMapUpdates(rows);
+          if (nextMapRows.length) {
+            initialRiskMapLoadedRef.current = true;
+            setRiskMap(nextMapRows);
+          }
+          return nextMapRows;
+        });
+        const trustPromise = getCachedOrFetch("trust", () => getTrustReliability("online")).then((trust) => {
+          if (!stop) {
+            setTrustSnapshot(trust);
+          }
+          return trust;
+        });
+
         const [liveResult, mapRowsResult, coverageResult, globalResult, trustResult] = await Promise.allSettled([
-          getCachedOrFetch("liveFeed", getLiveCommandFeed),
-          getCachedOrFetch("riskMap", getRiskMap),
-          getCachedOrFetch("riskCoverage", getRiskMapCoverage),
-          getCachedOrFetch("global", getLatestGlobalFeatures),
-          getCachedOrFetch("trust", () => getTrustReliability("online")),
+          livePromise,
+          mapPromise,
+          coveragePromise,
+          globalPromise,
+          trustPromise,
         ]);
 
         const live = liveResult.status === "fulfilled"
           ? liveResult.value
-          : { incidents: [], ingestionHeartbeatSec: 0, modelDrift: 0, lastUpdated: new Date().toISOString() };
-        const mapRows = mapRowsResult.status === "fulfilled" ? mapRowsResult.value : [];
+          : null;
+        const fetchedMapRows = mapRowsResult.status === "fulfilled" && Array.isArray(mapRowsResult.value)
+          ? mapRowsResult.value
+          : null;
         const coverage = coverageResult.status === "fulfilled"
           ? coverageResult.value
-          : { total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 };
-        const nextMapRows = consumePendingRiskMapUpdates(Array.isArray(mapRows) ? mapRows : []);
-        if (mapRowsResult.status === "fulfilled" || nextMapRows.length) {
-          initialRiskMapLoadedRef.current = true;
-        }
+          : null;
         const global = globalResult.status === "fulfilled" ? globalResult.value : null;
         const trust = trustResult.status === "fulfilled" ? trustResult.value : null;
         const features = global?.features;
 
-        if (features) {
-          const snap = buildSnapshot({ features } as GlobalDoc);
-          setHistory((prev) => {
-            const last = prev[prev.length - 1];
-            if (last?.timestamp === snap.timestamp) {
-              const next = [...prev];
-              next[next.length - 1] = snap;
-              return next;
-            }
-            return [...prev, snap].slice(-MAX_HISTORY);
-          });
-          panelUpdated.current.risk = Date.now();
+        if (fetchedMapRows && !coverage && !stop) {
+          setRiskCoverage((current) => ({
+            ...coverageFromRows(fetchedMapRows),
+            latest_validation: current?.latest_validation,
+          }));
+        } else if (!fetchedMapRows && pendingRiskMapUpdatesRef.current.size) {
+          flushQueuedRiskMapUpdates();
         }
 
-        setLiveFeed(live);
-        setRiskMap(nextMapRows);
-        setRiskCoverage({
-          ...coverageFromRows(nextMapRows),
-          latest_validation: coverage.latest_validation,
-        });
-        setTrustSnapshot(trust);
+        const anyCriticalFailure = !features && !fetchedMapRows && !coverage && !trust && !live;
+        const materialFailure = globalResult.status === "rejected"
+          || (coverageResult.status === "rejected" && !fetchedMapRows)
+          || (mapRowsResult.status === "rejected" && !coverage);
+
+        if (anyCriticalFailure) {
+          retriesRef.current += 1;
+          setRetries(retriesRef.current);
+          setConnectionState(retriesRef.current > 3 ? "disconnected" : "reconnecting");
+          setErrorText("Live dashboard backend unavailable. Preserving last verified snapshot instead of synthetic fallback data.");
+          return;
+        }
+
         panelUpdated.current.map = Date.now();
         panelUpdated.current.stream = Date.now();
-        setErrorText("");
-        retriesRef.current = 0;
-        setRetries(0);
-        setConnectionState("connected");
+        setErrorText(materialFailure ? "Partial live data outage. Preserving last verified dashboard snapshot where needed." : "");
+        retriesRef.current = materialFailure ? Math.max(retriesRef.current, 1) : 0;
+        setRetries(retriesRef.current);
+        setConnectionState(materialFailure ? "reconnecting" : "connected");
       } catch (e: any) {
         retriesRef.current += 1;
         setRetries(retriesRef.current);
@@ -898,12 +1271,8 @@ export default function Dashboard() {
 
     const disableWsTemporarily = () => {
       wsDisabled = true;
-      setConnectionState("disconnected");
       if (!wsErrorNotified) {
         wsErrorNotified = true;
-        setErrorText(
-          "Live websocket unavailable. Running on HTTP polling until backend websocket is reachable."
-        );
       }
       try {
         window.sessionStorage.setItem(
@@ -1003,6 +1372,7 @@ export default function Dashboard() {
 
     let socket: WebSocket | null = null;
     let closed = false;
+    let connectTimer = 0;
     let retryTimer = 0;
     let retriesLocal = 0;
     const BASE_RETRY_MS = 1200;
@@ -1022,10 +1392,8 @@ export default function Dashboard() {
       }
     };
 
-    const disableWsTemporarily = (reason: string) => {
+    const disableWsTemporarily = (_reason: string) => {
       wsDisabled = true;
-      setConnectionState("disconnected");
-      setErrorText(reason);
       try {
         window.sessionStorage.setItem(WS_DISABLE_UNTIL_KEY, String(Date.now() + WS_DISABLE_MS));
       } catch {
@@ -1051,7 +1419,9 @@ export default function Dashboard() {
       socket.onopen = () => {
         retriesLocal = 0;
         setErrorText((current) =>
-          current.includes("Risk websocket temporarily disabled") ? "" : current
+          current.includes("Risk websocket temporarily disabled") || current.includes("Live websocket unavailable")
+            ? ""
+            : current
         );
         try {
           window.sessionStorage.removeItem(WS_DISABLE_UNTIL_KEY);
@@ -1072,6 +1442,9 @@ export default function Dashboard() {
             const base = last ?? ({
               timestamp,
               riskScore: 50,
+              legacyRiskScore: 50,
+              riskDefinition: "country-intelligence-consensus",
+              riskAlignmentGap: 0,
               moodScore: 50,
               moodConfidence: 0,
               moodUncertainty: 18,
@@ -1083,6 +1456,13 @@ export default function Dashboard() {
               forecastRiskDelta: 0,
               forecastConfidence: 0.35,
               forecastHorizonHours: 24,
+              forecastSourceStatus: "unknown",
+              forecastCalibrationStatus: "unknown",
+              forecastGatingAction: "allow",
+              forecastWithheld: false,
+              forecastAdvisory: "Forecast available",
+              forecastGeneratedAt: timestamp,
+              forecastHorizons: buildFallbackRiskHorizons(50, 50, false, []),
               features: {
                 news_sentiment: 0,
                 gdelt_sentiment: 0,
@@ -1099,6 +1479,9 @@ export default function Dashboard() {
               ...base,
               timestamp,
               riskScore: normalizeRisk(safeN(msg.global_risk_score, base.riskScore)),
+              legacyRiskScore: base.legacyRiskScore,
+              riskDefinition: base.riskDefinition,
+              riskAlignmentGap: base.riskAlignmentGap,
               moodScore: normalizeRisk(safeN(msg.global_mood_score, base.moodScore)),
               moodConfidence: Math.max(0, Math.min(1, safeN(msg.global_mood_confidence, base.moodConfidence))),
               moodUncertainty: Math.max(0, safeN(msg.global_mood_uncertainty, base.moodUncertainty)),
@@ -1106,10 +1489,21 @@ export default function Dashboard() {
               moodEligibleCountries: Math.max(0, Math.round(safeN(msg.global_mood_eligible_countries, base.moodEligibleCountries))),
               moodUsedCountries: Math.max(0, Math.round(safeN(msg.global_mood_used_countries, base.moodUsedCountries))),
               moodExcludedCountries: Math.max(0, Math.round(safeN(msg.global_mood_excluded_countries, base.moodExcludedCountries))),
-              forecastRiskScore: normalizeRisk(safeN(msg.forecast_risk_score, base.forecastRiskScore)),
+              forecastRiskScore: base.forecastWithheld
+                ? null
+                : normalizeRisk(safeN(msg.forecast_risk_score, safeN(base.forecastRiskScore, 50))),
               forecastRiskDelta: safeN(msg.forecast_risk_delta, base.forecastRiskDelta),
-              forecastConfidence: Math.max(0, Math.min(1, safeN(msg.forecast_confidence, base.forecastConfidence))),
+              forecastConfidence: base.forecastWithheld
+                ? 0
+                : Math.max(0, Math.min(1, safeN(msg.forecast_confidence, base.forecastConfidence))),
               forecastHorizonHours: Math.max(1, Math.round(safeN(msg.forecast_horizon_hours, base.forecastHorizonHours))),
+              forecastSourceStatus: base.forecastSourceStatus,
+              forecastCalibrationStatus: base.forecastCalibrationStatus,
+              forecastGatingAction: base.forecastGatingAction,
+              forecastWithheld: base.forecastWithheld,
+              forecastAdvisory: base.forecastAdvisory,
+              forecastGeneratedAt: base.forecastGeneratedAt,
+              forecastHorizons: base.forecastHorizons,
               topics: Array.isArray(msg.top_topics) && msg.top_topics.length ? msg.top_topics.map((item) => String(item)) : base.topics,
             };
 
@@ -1151,9 +1545,12 @@ export default function Dashboard() {
       };
     };
 
-    connect();
+    // Delay the initial connect so React StrictMode's dev-only mount/unmount cycle
+    // can cancel it before the browser reports a failed pre-open websocket.
+    connectTimer = window.setTimeout(connect, 0);
     return () => {
       closed = true;
+      window.clearTimeout(connectTimer);
       window.clearTimeout(retryTimer);
       try {
         socket?.close();
@@ -1215,7 +1612,8 @@ export default function Dashboard() {
         };
         const selectedResolved = selectedCountry ? resolveLocation(selectedCountry) : null;
         const verifiedSplit = splitRowsByLocationMode(verifiedRiskMap);
-        const unverifiedSplit = splitRowsByLocationMode(unverifiedRiskMap);
+        const staleSplit = splitRowsByLocationMode(riskMapRows.filter((row) => !row.validated_today && row.data_quality === "stale" && typeof row.risk === "number"));
+        const syntheticSplit = splitRowsByLocationMode(riskMapRows.filter((row) => !row.validated_today && row.data_quality !== "stale" && typeof row.risk === "number"));
 
         const traces = selectedCountry
           ? [
@@ -1232,7 +1630,7 @@ export default function Dashboard() {
                   [0.7, "#fb923c"],
                   [1, "#ef4444"],
                 ],
-                hovertemplate: "%{location}<br>Risk: %{z:.1f}<extra></extra>",
+                hovertemplate: "%{location}<br>Risk: %{z:.1f}<br>Status: %{customdata[1]}<extra></extra>",
                 marker: {
                   line: { color: "#ff2d55", width: 2.6 },
                 },
@@ -1245,31 +1643,69 @@ export default function Dashboard() {
                 {
                   type: "choropleth",
                   locationmode: "ISO-3",
-                  locations: unverifiedSplit.iso3.map((r) => r.location),
-                  z: unverifiedSplit.iso3.map(() => 1),
+                  locations: syntheticSplit.iso3.map((r) => r.location),
+                  z: syntheticSplit.iso3.map((r) => normalizeRisk(r.row.risk ?? 0)),
                   zmin: 0,
-                  zmax: 1,
+                  zmax: 100,
                   colorscale: [
-                    [0, "#334155"],
-                    [1, "#64748b"],
+                    [0, "#364d3f"],
+                    [0.4, "#7c7f45"],
+                    [0.7, "#8f6940"],
+                    [1, "#8f4545"],
                   ],
-                  customdata: unverifiedSplit.iso3.map((r) => [r.row.country, r.row.data_quality ?? "unknown"]),
-                  hovertemplate: "%{customdata[0]}<br>Status: %{customdata[1]}<br>No verified same-day risk yet<extra></extra>",
+                  customdata: syntheticSplit.iso3.map((r) => [r.row.country, r.row.data_quality ?? "synthetic"]),
+                  hovertemplate: "%{customdata[0]}<br>Risk: %{z:.1f}<br>Status: %{customdata[1]}<br>Derived from fallback or weak same-day coverage<extra></extra>",
                   showscale: false,
                 },
                 {
                   type: "choropleth",
                   locationmode: "country names",
-                  locations: unverifiedSplit.countryNames.map((r) => r.location),
-                  z: unverifiedSplit.countryNames.map(() => 1),
+                  locations: syntheticSplit.countryNames.map((r) => r.location),
+                  z: syntheticSplit.countryNames.map((r) => normalizeRisk(r.row.risk ?? 0)),
                   zmin: 0,
-                  zmax: 1,
+                  zmax: 100,
                   colorscale: [
-                    [0, "#334155"],
-                    [1, "#64748b"],
+                    [0, "#364d3f"],
+                    [0.4, "#7c7f45"],
+                    [0.7, "#8f6940"],
+                    [1, "#8f4545"],
                   ],
-                  customdata: unverifiedSplit.countryNames.map((r) => [r.row.country, r.row.data_quality ?? "unknown"]),
-                  hovertemplate: "%{customdata[0]}<br>Status: %{customdata[1]}<br>No verified same-day risk yet<extra></extra>",
+                  customdata: syntheticSplit.countryNames.map((r) => [r.row.country, r.row.data_quality ?? "synthetic"]),
+                  hovertemplate: "%{customdata[0]}<br>Risk: %{z:.1f}<br>Status: %{customdata[1]}<br>Derived from fallback or weak same-day coverage<extra></extra>",
+                  showscale: false,
+                },
+                {
+                  type: "choropleth",
+                  locationmode: "ISO-3",
+                  locations: staleSplit.iso3.map((r) => r.location),
+                  z: staleSplit.iso3.map((r) => normalizeRisk(r.row.risk ?? 0)),
+                  zmin: 0,
+                  zmax: 100,
+                  colorscale: [
+                    [0, "#3d5946"],
+                    [0.4, "#a39a44"],
+                    [0.7, "#c5803a"],
+                    [1, "#c04b4b"],
+                  ],
+                  customdata: staleSplit.iso3.map((r) => [r.row.country, r.row.data_quality ?? "stale"]),
+                  hovertemplate: "%{customdata[0]}<br>Risk: %{z:.1f}<br>Status: %{customdata[1]}<br>Using older but still informative country risk data<extra></extra>",
+                  showscale: false,
+                },
+                {
+                  type: "choropleth",
+                  locationmode: "country names",
+                  locations: staleSplit.countryNames.map((r) => r.location),
+                  z: staleSplit.countryNames.map((r) => normalizeRisk(r.row.risk ?? 0)),
+                  zmin: 0,
+                  zmax: 100,
+                  colorscale: [
+                    [0, "#3d5946"],
+                    [0.4, "#a39a44"],
+                    [0.7, "#c5803a"],
+                    [1, "#c04b4b"],
+                  ],
+                  customdata: staleSplit.countryNames.map((r) => [r.row.country, r.row.data_quality ?? "stale"]),
+                  hovertemplate: "%{customdata[0]}<br>Risk: %{z:.1f}<br>Status: %{customdata[1]}<br>Using older but still informative country risk data<extra></extra>",
                   showscale: false,
                 },
                 {
@@ -1577,7 +2013,7 @@ export default function Dashboard() {
   const triggerMapRefresh = async () => {
     setRefreshingMap(true);
     try {
-      const ok = await refreshRiskMapBatch(50);
+      const ok = await refreshRiskMapBatch(120);
       cacheRef.current.riskMap.timestamp = 0;
       cacheRef.current.riskCoverage.timestamp = 0;
       if (!ok) setErrorText("Manual map refresh failed");
@@ -1589,7 +2025,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   return (
-    <main className={`wp-shell dashboard-v2 ${fpsLow ? "motion-low" : "motion-rich"}`}>
+    <main ref={mainRef} className={`wp-shell dashboard-v2 ${fpsLow ? "motion-low" : "motion-rich"}`}>
       <div className="parallax-grid" />
       <ConsoleNavigation
         title={<>THE WORLD'S <span>PULSE</span></>}
@@ -1645,6 +2081,19 @@ export default function Dashboard() {
           <span>{qualityGateDetail}</span>
         </div>
       </section>
+      {consensusUnderSupported ? (
+        <section className="wp-intelligence-bar" style={{ borderColor: "rgba(248, 113, 113, 0.52)", background: "rgba(127, 29, 29, 0.22)" }}>
+          <div className="wp-intelligence-primary">
+            <span className="wp-intelligence-kicker">Consensus Warning</span>
+            <span className="wp-intelligence-topic">{consensusSupportWarning}</span>
+          </div>
+          <div className="wp-intelligence-secondary">
+            <span>Headline source {headlineRiskLabel}</span>
+            <span>Consensus {globalRiskScore.toFixed(1)} / 100</span>
+            <span>Legacy {legacyModelRiskScore.toFixed(1)} / 100</span>
+          </div>
+        </section>
+      ) : null}
       <section className="wp-exec-grid">
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Global Mood</div>
@@ -1660,19 +2109,20 @@ export default function Dashboard() {
         </article>
         <article className="wp-card wp-exec-card">
           <div className="wp-exec-label">Global Risk</div>
-          <strong className="wp-highlight">{`${globalRiskScore.toFixed(1)} / 100`}</strong>
+          <strong className="wp-highlight">{`${headlineRiskScore.toFixed(1)} / 100`}</strong>
           <div className="wp-mini-meta"><span>Threat</span><strong>{telemetryThreat.label}</strong></div>
           <div className="wp-mini-meta"><span>Trend</span><strong>{qualityGateDisplayActive ? `${telemetryTrend.label} (banded)` : telemetryTrend.label}</strong></div>
         </article>
-        <article className="wp-card wp-exec-card">
+        <article className="wp-card wp-exec-card" title={forecastAdvisory}>
           <div className="wp-exec-label">Forecast</div>
-          <strong className="wp-highlight">{forecastRiskScore.toFixed(1)} / 100</strong>
-          <div className="wp-mini-meta"><span>{forecastHorizonHours}h delta</span><strong>{forecastRiskDelta >= 0 ? "+" : ""}{forecastRiskDelta.toFixed(2)}</strong></div>
-          <div className="wp-mini-meta"><span>Confidence</span><strong>{(forecastConfidence * 100).toFixed(0)}%</strong></div>
+          <strong className="wp-highlight">{forecastWithheld || forecastRiskScoreDisplay === null ? "WITHHELD" : `${forecastRiskScoreDisplay.toFixed(1)} / 100`}</strong>
+          <div className="wp-mini-meta"><span>{forecastHorizonHours}h delta</span><strong>{forecastWithheld ? "withheld" : `${forecastRiskDeltaDisplay >= 0 ? "+" : ""}${forecastRiskDeltaDisplay.toFixed(2)}`}</strong></div>
+          <div className="wp-mini-meta"><span>{forecastWithheld ? "Status" : "Confidence"}</span><strong>{forecastWithheld ? forecastGatingAction : `${(forecastConfidence * 100).toFixed(0)}%`}</strong></div>
+          <div className="wp-mini-meta"><span>Contract</span><strong>{forecastCalibrationStatus} / {forecastSourceStatus}</strong></div>
         </article>
       </section>
 
-      <section className="wp-ops-strip wp-ops-strip-flat">
+      <section className={`wp-ops-strip wp-ops-strip-flat ${fpsLow ? "" : "dashboard-reveal"}`}>
         <div className="wp-ops-inline-block">
           <span className="wp-ops-label">Mode</span>
           <div className="wp-ops-status-line">
@@ -1698,13 +2148,13 @@ export default function Dashboard() {
       </section>
 
       {/* Unified Intelligence Panel - Map + Global Intelligence (left) | Sentinel Core (right) */}
-      <section id="dashboard-global-behavior" className="dashboard-layout">
+      <section id="dashboard-global-behavior" className={`dashboard-layout ${fpsLow ? "" : "dashboard-reveal"}`}>
         <div ref={leftColumnRef} className="left-column">
-          <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated"}`}>
+          <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated dashboard-reveal"}`}>
             <div className="panel-head">
               <h3>Global Behavior Map</h3>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <button onClick={triggerMapRefresh} disabled={refreshingMap}>{refreshingMap ? "Refreshing..." : "Refresh Next 50"}</button>
+                <button onClick={triggerMapRefresh} disabled={refreshingMap}>{refreshingMap ? "Refreshing..." : "Refresh Next 120"}</button>
                 {selectedCountry ? (
                   <button onClick={() => setSelectedCountry(null)}>Clear Country Focus</button>
                 ) : null}
@@ -1835,7 +2285,7 @@ export default function Dashboard() {
             </div>
           </article>
 
-          <article className={`wp-card panel-frame global-intelligence-panel ${fpsLow ? "" : "panel-animated"}`}>
+          <article className={`wp-card panel-frame global-intelligence-panel ${fpsLow ? "" : "panel-animated dashboard-reveal"}`}>
             <div className="panel-head futuristic-panel-header">
               <div className="header-glow cyan"></div>
               <h3>
@@ -1863,7 +2313,7 @@ export default function Dashboard() {
         </div>
 
         <div className="right-column">
-          <article className={`wp-card panel-frame sentinel-ai-panel brain-model-panel ${fpsLow ? "" : "panel-animated"}`}>
+          <article className={`wp-card panel-frame sentinel-ai-panel brain-model-panel ${fpsLow ? "" : "panel-animated dashboard-reveal"}`}>
             <div className="panel-head futuristic-panel-header">
               <div className="header-glow pink"></div>
               <h3>
@@ -1886,7 +2336,7 @@ export default function Dashboard() {
                 <div className="brain-telemetry-summary-row">
                   <div className="brain-telemetry-card brain-telemetry-card-primary">
                     <span className="brain-telemetry-card-label">Risk Score</span>
-                    <strong>{globalRiskScore.toFixed(1)}</strong>
+                    <strong>{headlineRiskScore.toFixed(1)}</strong>
                   </div>
                   <div className={`brain-telemetry-card brain-telemetry-card-tone tone-${telemetryThreat.tone}`}>
                     <span className="brain-telemetry-card-label">Threat Level</span>
@@ -1913,7 +2363,7 @@ export default function Dashboard() {
             </div>
           </article>
 
-          <section ref={streamHostRef} id="dashboard-system-events" className="hero-system-events">
+          <section ref={streamHostRef} id="dashboard-system-events" className={`hero-system-events ${fpsLow ? "" : "dashboard-reveal"}`}>
             {showDeferredPanels ? (
               <Suspense fallback={<DeferredPanelPlaceholder label="Loading system event stream..." />}>
                 <SystemEventStream
@@ -1933,61 +2383,127 @@ export default function Dashboard() {
         </div>
       </section>
 
-      <section id="dashboard-operational-analytics" className="operational-analytics-grid">
-        {showDeferredPanels ? (
-          <>
-            <Suspense fallback={<DeferredPanelPlaceholder label="Loading behavioral analytics..." />}>
-              <BehavioralAnalyticsPanel
-                history={history}
-                rows={riskMapRows}
-                telemetryDrivers={telemetryDrivers}
-                topTopic={topTopic}
-                riskDelta={riskDelta}
-                globalRiskScore={globalRiskScore}
-                globalMoodScore={globalMoodScore}
-                forecastRiskDelta={forecastRiskDelta}
-                incidentCount={liveFeedState.incidents?.length ?? 0}
-                coveragePct={coverageState.coverage_pct}
-              />
-            </Suspense>
-            <Suspense fallback={<DeferredPanelPlaceholder label="Loading priority watchlist..." />}>
-              <PriorityWatchlist
-                rows={riskMapRows}
-                incidents={liveFeedState.incidents ?? []}
-                feedItems={selectedCountryNews}
-                selectedCountry={selectedCountry}
-                onSelectCountry={setSelectedCountry}
-              />
-            </Suspense>
-            <Suspense fallback={<DeferredPanelPlaceholder label="Loading signal integrity board..." />}>
-              <SignalIntegrityBoard
-                coverage={coverageState}
-                trustSnapshot={trustSnapshot}
-                connectionState={connectionState}
-                heartbeatSec={liveFeedState.ingestionHeartbeatSec}
-                modelDrift={liveFeedState.modelDrift}
-                validationStatus={validationSummary?.status ?? "pending"}
-                moodConfidence={globalMoodConfidence}
-                moodUncertainty={moodUncertaintyDisplay}
-                forecastConfidence={forecastConfidenceDisplay}
-                qualityGateMessage={qualityGateMessage}
-                reliabilityStatus={reliabilityStatus}
-                freshSources={freshSources}
-                staleSources={staleSources}
-              />
-            </Suspense>
-            <Suspense fallback={<DeferredPanelPlaceholder label="Loading mobility observability..." />}>
-              <MobilityObservabilityPanel mobilitySnapshot={(trustSnapshot?.mobility ?? null) as Record<string, unknown> | null} />
-            </Suspense>
-          </>
-        ) : (
-          <>
-            <article className="wp-card panel-frame operational-panel analytics-hero-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing behavioral analytics..." /></div></article>
-            <article className="wp-card panel-frame operational-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing priority watchlist..." /></div></article>
-            <article className="wp-card panel-frame operational-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing signal integrity board..." /></div></article>
-            <article className="wp-card panel-frame operational-panel"><div className="panel-content operational-panel-content"><DeferredPanelPlaceholder label="Preparing mobility observability..." /></div></article>
-          </>
-        )}
+      <section id="dashboard-operational-analytics" className={`analysis-dock-shell ${fpsLow ? "" : "dashboard-reveal"}`}>
+        <article className="wp-card panel-frame analysis-dock-panel">
+          <div className="analysis-dock-head">
+            <div>
+              <span className="analysis-dock-kicker">Intelligence Workbench</span>
+              <h3>Deep analysis aligned to escalation, behavior, reliability, and movement</h3>
+              <p>Keep the dashboard short while preserving analyst depth. Focus a country once, then pivot across tabs without losing the context.</p>
+            </div>
+            <div className="analysis-dock-tabs" role="tablist" aria-label="Dashboard analysis views">
+              <button type="button" role="tab" aria-selected={analysisTab === "escalation"} className={analysisTab === "escalation" ? "is-active" : ""} onClick={() => setAnalysisTab("escalation")}>Escalation</button>
+              <button type="button" role="tab" aria-selected={analysisTab === "behavior"} className={analysisTab === "behavior" ? "is-active" : ""} onClick={() => setAnalysisTab("behavior")}>Behavior</button>
+              <button type="button" role="tab" aria-selected={analysisTab === "reliability"} className={analysisTab === "reliability" ? "is-active" : ""} onClick={() => setAnalysisTab("reliability")}>Reliability</button>
+              <button type="button" role="tab" aria-selected={analysisTab === "mobility"} className={analysisTab === "mobility" ? "is-active" : ""} onClick={() => setAnalysisTab("mobility")}>Mobility</button>
+            </div>
+          </div>
+
+          <div className="analysis-dock-summary-strip">
+            <button type="button" className="analysis-dock-summary-card" onClick={() => { if (highestRiskCountry) { setSelectedCountry(highestRiskCountry.country); setAnalysisTab("escalation"); } }}>
+              <span>Highest Risk</span>
+              <strong>{highestRiskCountry ? `${highestRiskCountry.country} ${highestRiskCountry.risk.toFixed(1)}` : "Awaiting data"}</strong>
+              <small>{highestRiskCountry ? dominantCountryDriver(highestRiskCountry) : "No verified country"}</small>
+            </button>
+            <button type="button" className="analysis-dock-summary-card" onClick={() => { if (fastestEscalatingCountry) { setSelectedCountry(fastestEscalatingCountry.country); setAnalysisTab("escalation"); } }}>
+              <span>Fastest Escalation</span>
+              <strong>{fastestEscalatingCountry ? fastestEscalatingCountry.country : "Awaiting data"}</strong>
+              <small>{fastestEscalatingCountry ? `${Math.round(escalationMomentum(fastestEscalatingCountry))} momentum | ${dominantCountryDriver(fastestEscalatingCountry)}` : "No escalation signal"}</small>
+            </button>
+            <button type="button" className="analysis-dock-summary-card" onClick={() => { if (weakestConfidenceRegion?.weakestCountry) { setSelectedCountry(weakestConfidenceRegion.weakestCountry.country); setAnalysisTab("reliability"); } }}>
+              <span>Weakest Confidence</span>
+              <strong>{weakestConfidenceRegion ? weakestConfidenceRegion.label : "Awaiting data"}</strong>
+              <small>{weakestConfidenceRegion?.weakestCountry ? `${weakestConfidenceRegion.weakestCountry.country} ${(weakestConfidenceRegion.averageConfidence).toFixed(0)}% confidence` : "Coverage still building"}</small>
+            </button>
+            <div className="analysis-dock-summary-card analysis-dock-summary-card-static">
+              <span>Dominant Driver</span>
+              <strong>{telemetryDrivers[0] ?? "Awaiting attribution"}</strong>
+              <small>{topTopic !== "No dominant topic" ? topTopic : "Global topic mix still stabilizing"}</small>
+            </div>
+            <div className="analysis-dock-summary-card analysis-dock-summary-card-focus">
+              <span>Focused Entity</span>
+              <strong>{focusedCountryLabel}</strong>
+              <small>{`${focusedCountryStatus} | ${focusedCountryDriver} | ${focusedCountryConfidence.toFixed(0)}% confidence`}</small>
+            </div>
+          </div>
+
+          <div className="analysis-dock-focus-bar">
+            <div className="analysis-dock-focus-copy">
+              <span className="analysis-dock-focus-kicker">Focused Context</span>
+              <strong>{activeDockCountry ? `${activeDockCountry.country} ${activeDockCountry.risk.toFixed(1)} / 100` : `Global ${headlineRiskScore.toFixed(1)} / 100`}</strong>
+              <small>{activeDockCountry ? `Selected from the map or escalation list. This context stays active while you move between tabs.` : `No country pinned yet. The workbench is currently anchored to the highest-risk live view.`}</small>
+            </div>
+            <div className="analysis-dock-focus-actions">
+              <button type="button" onClick={() => setAnalysisTab("escalation")}>Escalation View</button>
+              <button type="button" onClick={() => setAnalysisTab("behavior")}>Behavior View</button>
+              <button type="button" onClick={() => setAnalysisTab("reliability")}>Reliability View</button>
+              <button type="button" onClick={() => setAnalysisTab("mobility")}>Mobility View</button>
+            </div>
+          </div>
+
+          <div className="analysis-dock-body">
+            {showDeferredPanels ? (
+              <>
+                {analysisTab === "escalation" ? (
+                  <Suspense fallback={<DeferredPanelPlaceholder label="Loading escalation workbench..." />}>
+                    <PriorityWatchlist
+                      rows={riskMapRows}
+                      incidents={liveFeedState.incidents ?? []}
+                      feedItems={selectedCountryNews}
+                      selectedCountry={selectedCountry}
+                      onSelectCountry={setSelectedCountry}
+                      countryData={countryData}
+                    />
+                  </Suspense>
+                ) : null}
+                {analysisTab === "behavior" ? (
+                  <Suspense fallback={<DeferredPanelPlaceholder label="Loading behavioral analytics..." />}>
+                    <BehavioralAnalyticsPanel
+                      history={history}
+                      rows={riskMapRows}
+                      telemetryDrivers={telemetryDrivers}
+                      topTopic={topTopic}
+                      riskDelta={riskDelta}
+                      globalRiskScore={globalRiskScore}
+                      globalMoodScore={globalMoodScore}
+                      forecastRiskDelta={forecastRiskDelta}
+                      incidentCount={liveFeedState.incidents?.length ?? 0}
+                      coveragePct={coverageState.coverage_pct}
+                    />
+                  </Suspense>
+                ) : null}
+                {analysisTab === "reliability" ? (
+                  <Suspense fallback={<DeferredPanelPlaceholder label="Loading reliability board..." />}>
+                    <SignalIntegrityBoard
+                      coverage={coverageState}
+                      trustSnapshot={trustSnapshot}
+                      connectionState={connectionState}
+                      heartbeatSec={liveFeedState.ingestionHeartbeatSec}
+                      modelDrift={liveFeedState.modelDrift}
+                      validationStatus={validationSummary?.status ?? "pending"}
+                      moodConfidence={globalMoodConfidence}
+                      moodUncertainty={moodUncertaintyDisplay}
+                      forecastConfidence={forecastConfidenceDisplay}
+                      qualityGateMessage={qualityGateMessage}
+                      reliabilityStatus={reliabilityStatus}
+                      freshSources={freshSources}
+                      staleSources={staleSources}
+                    />
+                  </Suspense>
+                ) : null}
+                {analysisTab === "mobility" ? (
+                  <Suspense fallback={<DeferredPanelPlaceholder label="Loading mobility observability..." />}>
+                    <MobilityObservabilityPanel mobilitySnapshot={(trustSnapshot?.mobility ?? null) as Record<string, unknown> | null} />
+                  </Suspense>
+                ) : null}
+              </>
+            ) : (
+              <div className="analysis-dock-placeholder">
+                <DeferredPanelPlaceholder label="Preparing intelligence workbench..." />
+              </div>
+            )}
+          </div>
+        </article>
       </section>
 
       {showDeferredPanels ? (

@@ -10,7 +10,7 @@ type Snapshot = {
   moodEligibleCountries: number;
   moodUsedCountries: number;
   moodExcludedCountries: number;
-  forecastRiskScore: number;
+  forecastRiskScore: number | null;
   forecastRiskDelta: number;
   forecastConfidence: number;
   forecastHorizonHours: number;

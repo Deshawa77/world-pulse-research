@@ -5,14 +5,13 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
-from kafka import TopicPartition
-
 from backend.kafka_client import get_consumer, send_to_kafka
 from collectors.country_news import get_country_catalog
 from database.mongo import db, write_country_features_v2
 from processing.country_incremental_risk import recompute_country_risk
 from processing.nlp_analysis import analyze_text, clean_text
 from processing.country_signal_fusion import CITY_TO_COUNTRY, COMMON_COUNTRY_ALIASES
+from processing.spillover_graph import load_country_spillover_map
 from processing.signal_taxonomy import build_signal_metadata
 
 RAW_SOURCE_TOPICS = [
@@ -75,6 +74,78 @@ CRYPTO_COUNTRY_MAP = {
     'bitcoin': 'USA',
     'ethereum': 'USA',
 }
+
+COUNTRY_SPILLOVER_MAP = load_country_spillover_map()
+
+COUNTRY_RISK_DELTA_FIELDS = (
+    'direct_behavior_score', 'contextual_pressure_score', 'evidence_quality_score', 'social_unrest_score', 'google_trends_pressure',
+    'public_attention_score', 'narrative_velocity_score', 'coordination_risk_score', 'mobility_disruption_score', 'aviation_disruption_score',
+    'logistics_stress_score', 'household_stress_score', 'fuel_price_pressure', 'food_price_pressure', 'labor_stress_score', 'fx_pressure_score',
+    'remittance_stress_score', 'energy_stress_score', 'weather_stress',
+)
+
+
+def _safe_float(value):
+    try:
+        number = float(value or 0.0)
+        return number if math.isfinite(number) else 0.0
+    except Exception:
+        return 0.0
+
+
+def _risk_trend_direction(delta_24h, delta_7d):
+    reference = delta_24h if abs(delta_24h) >= 0.75 else delta_7d
+    if reference >= 0.75:
+        return 'worsening'
+    if reference <= -0.75:
+        return 'improving'
+    return 'stable'
+
+
+def _compute_country_deltas(country_code):
+    docs = list(db.country_features.find({'country': country_code, 'mode': 'online'}).sort('timestamp', -1).limit(8))
+    if not docs:
+        return 0.0, 0.0, 'stable', []
+    ordered = sorted(docs, key=lambda d: _parse_timestamp(d.get('timestamp')))
+    latest = ordered[-1].get('features', {}) if isinstance(ordered[-1].get('features'), dict) else {}
+    previous = ordered[-2].get('features', {}) if len(ordered) >= 2 and isinstance(ordered[-2].get('features'), dict) else latest
+    earliest = ordered[0].get('features', {}) if isinstance(ordered[0].get('features'), dict) else latest
+    latest_risk = _safe_float(latest.get('global_risk_score'))
+    previous_risk = _safe_float(previous.get('global_risk_score'))
+    earliest_risk = _safe_float(earliest.get('global_risk_score'))
+    delta_24h = round(latest_risk - previous_risk, 2)
+    delta_7d = round(latest_risk - earliest_risk, 2)
+    contributors = []
+    for field in COUNTRY_RISK_DELTA_FIELDS:
+        current_value = _safe_float(latest.get(field))
+        previous_value = _safe_float(previous.get(field))
+        delta = current_value - previous_value
+        if abs(delta) < 0.25:
+            continue
+        contributors.append({
+            'feature': field,
+            'value': round(current_value, 4),
+            'delta': round(delta, 4),
+            'contribution': round(delta / 100.0, 4),
+        })
+    contributors.sort(key=lambda item: abs(_safe_float(item.get('delta'))), reverse=True)
+    return delta_24h, delta_7d, _risk_trend_direction(delta_24h, delta_7d), contributors[:4]
+
+
+def _spillover_links(country_code):
+    spillovers = []
+    for item in COUNTRY_SPILLOVER_MAP.get(country_code, []):
+        neighbor = db.country_features.find_one({'country': item['country'], 'mode': 'online'}, sort=[('timestamp', -1)])
+        features = neighbor.get('features', {}) if isinstance((neighbor or {}).get('features'), dict) else {}
+        if not neighbor:
+            continue
+        spillovers.append({
+            'country': item['country'],
+            'risk': round(_safe_float(features.get('global_risk_score')), 2),
+            'relationship': item['relationship'],
+        })
+    spillovers.sort(key=lambda item: _safe_float(item.get('risk')), reverse=True)
+    return spillovers[:4]
 
 
 def _match_countries(text):
@@ -646,6 +717,8 @@ def _already_processed(event_id, stage):
 
 def _publish_risk_update(country_code):
     feature_doc = recompute_country_risk(country_code)
+    delta_24h, delta_7d, trend_direction, change_contributors = _compute_country_deltas(country_code)
+    spillover_links = _spillover_links(country_code)
     event = {
         'event_id': hashlib.sha256(f"{country_code}:{feature_doc.get('timestamp')}".encode('utf-8')).hexdigest(),
         'country': country_code,
@@ -655,6 +728,11 @@ def _publish_risk_update(country_code):
         'source_count': feature_doc.get('source_count', 0),
         'top_topics': feature_doc.get('top_topics', ['no data']),
         'war_state_rules': feature_doc.get('war_state_rules', []),
+        'risk_delta_24h': delta_24h,
+        'risk_delta_7d': delta_7d,
+        'risk_trend_direction': trend_direction,
+        'score_change_contributors': change_contributors,
+        'spillover_links': spillover_links,
         'social_unrest_score': feature_doc.get('social_unrest_score', 0.0),
         'google_trends_pressure': feature_doc.get('google_trends_pressure', 0.0),
         'public_attention_score': feature_doc.get('public_attention_score', 0.0),

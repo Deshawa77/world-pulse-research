@@ -4,6 +4,7 @@ import requests
 import os
 import time
 import pandas as pd
+from collectors.network_resilience import is_name_resolution_error, summarize_request_exception, warn_once
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from bson import ObjectId
@@ -173,12 +174,11 @@ def fetch_weather(city_name, lat, lon):
             if response.status_code == 401 and not _AUTH_FAIL_WARNED:
                 print("Weather collector unauthorized (401): verify your OpenWeather API key.")
                 _AUTH_FAIL_WARNED = True
-                # Stop repeated unauthorized calls for remaining cities in this run.
                 globals()["API_KEY"] = None
             elif response.status_code != 401:
                 suffix = f" - {detail}" if detail else ""
                 print(f"Error {response.status_code} for city {city_name}{suffix}")
-            return []
+            return [], True
 
         data = response.json()
 
@@ -200,11 +200,17 @@ def fetch_weather(city_name, lat, lon):
             "data_timestamp": timestamp
         }
 
-        return [record]
+        return [record], True
 
-    except Exception as e:
-        print(f"Exception fetching {city_name}: {e}")
-        return []
+    except requests.RequestException as exc:
+        if is_name_resolution_error(exc):
+            warn_once("weather:dns", summarize_request_exception("weather", exc))
+            return [], False
+        print(f"[weather] {city_name}: {summarize_request_exception('weather', exc)}")
+        return [], True
+    except Exception as exc:
+        print(f"[weather] {city_name}: {exc}")
+        return [], True
 
 
 # ----------------------------
@@ -227,7 +233,9 @@ def collect_weather():
         lat = city["lat"]
         lon = city["lon"]
 
-        data_rows = fetch_weather(city_name, lat, lon)
+        data_rows, source_available = fetch_weather(city_name, lat, lon)
+        if not source_available:
+            break
         if data_rows:
             insert("weather", data_rows)
             append_to_csv(data_rows)
@@ -252,7 +260,9 @@ def collect_weather_for_orchestrator():
         lon = city["lon"]
 
         try:
-            records = fetch_weather(city_name, lat, lon)
+            records, source_available = fetch_weather(city_name, lat, lon)
+            if not source_available:
+                break
             if records:
                 # Remove Mongo _id to avoid conflicts
                 for rec in records:

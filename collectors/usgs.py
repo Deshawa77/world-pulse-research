@@ -1,11 +1,15 @@
-import requests
-from datetime import datetime, timezone
 import json
+from datetime import datetime, timezone
+
+import requests
 from bson import ObjectId
+
+from backend.kafka_client import send_to_kafka
+from collectors.network_resilience import summarize_request_exception, warn_once, is_name_resolution_error
 from database.mongo import insert
-from backend.kafka_client import send_to_kafka  # make sure this exists
 
 BASE_URL = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
+
 
 def fetch_earthquakes():
     """
@@ -17,57 +21,57 @@ def fetch_earthquakes():
         response = requests.get(BASE_URL, timeout=(10, 30))
         response.raise_for_status()
         data = response.json()
-    except requests.RequestException as e:
-        print("Error fetching USGS data:", e)
+    except requests.RequestException as exc:
+        if is_name_resolution_error(exc):
+            warn_once("usgs:dns", summarize_request_exception("usgs", exc))
+        else:
+            print(summarize_request_exception("usgs", exc))
         return []
     except ValueError:
-        print("Invalid JSON from USGS")
+        print("[usgs] Invalid JSON from USGS")
         return []
 
     earthquakes = []
 
     for feature in data.get("features", []):
         prop = feature.get("properties", {})
-        earthquakes.append({
-            "source": "usgs",
-            "category": "disaster",
-            "collected_at": collected_at,
-            "data": {
-                "place": prop.get("place"),
-                "magnitude": prop.get("mag"),
-                "time": datetime.fromtimestamp(prop.get("time") / 1000, tz=timezone.utc).isoformat() if prop.get("time") else None,
-                "url": prop.get("url")
+        earthquakes.append(
+            {
+                "source": "usgs",
+                "category": "disaster",
+                "collected_at": collected_at,
+                "data": {
+                    "place": prop.get("place"),
+                    "magnitude": prop.get("mag"),
+                    "time": datetime.fromtimestamp(prop.get("time") / 1000, tz=timezone.utc).isoformat() if prop.get("time") else None,
+                    "url": prop.get("url"),
+                },
             }
-        })
+        )
 
     return earthquakes
 
+
 def convert_for_json(obj):
-    """Recursively convert datetime and MongoDB ObjectIds to strings"""
     if isinstance(obj, dict):
         return {k: convert_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
+    if isinstance(obj, list):
         return [convert_for_json(i) for i in obj]
-    elif isinstance(obj, datetime):
+    if isinstance(obj, datetime):
         return obj.isoformat()
-    elif isinstance(obj, ObjectId):
+    if isinstance(obj, ObjectId):
         return str(obj)
-    else:
-        return obj
+    return obj
+
 
 def collect_earthquakes():
-    """
-    Fetch USGS data and send to Kafka + MongoDB automatically.
-    """
     data = fetch_earthquakes()
     if not data:
         print("No earthquake data fetched.")
         return
 
-    # Insert into MongoDB (warehouse)
     insert("earthquakes", data)
 
-    # Send each record to Kafka (convert datetime/ObjectId first)
     for record in data:
         record_json_safe = convert_for_json(record)
         send_to_kafka("earthquakes", record_json_safe)

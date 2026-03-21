@@ -4,41 +4,62 @@ from database.mongo import db
 import pandas as pd
 import re
 import string
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-from textblob import TextBlob
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-import nltk
-
-# ----------------------------
-# NLTK Downloads (only if needed)
-# ----------------------------
-try:
-    stop_words = set(stopwords.words('english'))
-except LookupError:
-    nltk.download('stopwords')
-    stop_words = set(stopwords.words('english'))
 
 try:
-    lemmatizer = WordNetLemmatizer()
-    nltk.data.find('corpora/wordnet')
-except LookupError:
-    nltk.download('wordnet')
-    lemmatizer = WordNetLemmatizer()
+    import nltk
+    from nltk.corpus import stopwords
+    from nltk.stem import WordNetLemmatizer
+except ImportError:  # pragma: no cover - optional runtime dependency
+    nltk = None
+    stopwords = None
+    WordNetLemmatizer = None
 
-# Setup VADER
-vader_analyzer = SentimentIntensityAnalyzer()
+try:
+    from textblob import TextBlob
+except ImportError:  # pragma: no cover - optional runtime dependency
+    TextBlob = None
+
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+except ImportError:  # pragma: no cover - optional runtime dependency
+    SentimentIntensityAnalyzer = None
+
+# ----------------------------
+# Lightweight fallbacks for optional NLP dependencies
+# ----------------------------
+stop_words = set()
+if nltk is not None and stopwords is not None:
+    try:
+        stop_words = set(stopwords.words('english'))
+    except LookupError:
+        stop_words = set()
+
+lemmatizer = None
+if WordNetLemmatizer is not None:
+    try:
+        lemmatizer = WordNetLemmatizer()
+        if nltk is not None:
+            nltk.data.find('corpora/wordnet')
+    except LookupError:
+        lemmatizer = WordNetLemmatizer()
+    except Exception:
+        lemmatizer = None
+
+vader_analyzer = SentimentIntensityAnalyzer() if SentimentIntensityAnalyzer is not None else None
 
 # ----------------------------
 # Text cleaning
 # ----------------------------
 def clean_text(text):
     text = str(text).lower()
-    text = re.sub(r"http\S+", "", text)  # remove URLs
-    text = re.sub(f"[{re.escape(string.punctuation)}]", "", text)  # remove punctuation
-    text = re.sub(r"\s+", " ", text)  # normalize spaces
+    text = re.sub(r"http\S+", "", text)
+    text = re.sub(f"[{re.escape(string.punctuation)}]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
     words = text.split()
-    words = [lemmatizer.lemmatize(w) for w in words if w not in stop_words]
+    if stop_words:
+        words = [w for w in words if w not in stop_words]
+    if lemmatizer is not None:
+        words = [lemmatizer.lemmatize(w) for w in words]
     return " ".join(words)
 
 # ----------------------------
@@ -47,18 +68,24 @@ def clean_text(text):
 def analyze_text(text):
     cleaned = clean_text(text)
 
-    # TextBlob analysis
-    tb = TextBlob(cleaned)
-    tb_sentiment = tb.sentiment
-    textblob_sentiment = {
-        "polarity": tb_sentiment.polarity,       # -1 to 1
-        "subjectivity": tb_sentiment.subjectivity # 0 to 1
-    }
+    if TextBlob is not None:
+        tb = TextBlob(cleaned)
+        tb_sentiment = tb.sentiment
+        textblob_sentiment = {
+            "polarity": float(tb_sentiment.polarity),
+            "subjectivity": float(tb_sentiment.subjectivity),
+        }
+    else:
+        textblob_sentiment = {
+            "polarity": 0.0,
+            "subjectivity": 0.0,
+        }
 
-    # VADER analysis
-    vader_scores = vader_analyzer.polarity_scores(cleaned)
+    if vader_analyzer is not None:
+        vader_scores = vader_analyzer.polarity_scores(cleaned)
+    else:
+        vader_scores = {"neg": 0.0, "neu": 1.0, "pos": 0.0, "compound": 0.0}
 
-    # Combine
     return {
         "textblob": textblob_sentiment,
         "vader": vader_scores
@@ -102,7 +129,6 @@ def process_collection(collection_name, text_keys):
             combined_text = " ".join(full_text)
             sentiment = analyze_text(combined_text)
 
-            # Update only the sentiment field to avoid overwriting
             collection.update_one(
                 {"_id": doc["_id"]},
                 {"$set": {"data.sentiment": sentiment}}

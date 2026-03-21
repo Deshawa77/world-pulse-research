@@ -39,6 +39,83 @@ from collections import defaultdict
 from bisect import bisect_right
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
+ADVANCED_INSIGHTS_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+ADVANCED_INSIGHTS_CACHE_LOCK = threading.Lock()
+ADVANCED_INSIGHTS_FUTURE = None
+ADVANCED_INSIGHTS_FUTURE_STARTED_AT = 0.0
+ADVANCED_INSIGHTS_CACHE = None
+ADVANCED_INSIGHTS_CACHE_AT = 0.0
+ADVANCED_INSIGHTS_CACHE_TTL_SECONDS = 45.0
+ADVANCED_INSIGHTS_WAIT_TIMEOUT_SECONDS = 8.0
+ADVANCED_INSIGHTS_STALL_SECONDS = 60.0
+DASHBOARD_ROUTE_CACHE_LOCK = threading.Lock()
+DASHBOARD_ROUTE_CACHE: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+DASHBOARD_ROUTE_CACHE_TTLS = {
+    "risk_map": 20.0,
+    "coverage": 20.0,
+    "feed": 20.0,
+    "trust": 30.0,
+    "global_quality": 20.0,
+}
+KAFKA_UNAVAILABLE_RETRY_SECONDS = 60.0
+LIVE_CONSUMER_UNAVAILABLE_UNTIL: dict[str, float] = defaultdict(float)
+
+
+def _dashboard_cache_get(namespace: str, cache_key: str) -> Any | None:
+    now_ts = time.time()
+    ttl = float(DASHBOARD_ROUTE_CACHE_TTLS.get(namespace, 0.0) or 0.0)
+    if ttl <= 0.0:
+        return None
+    with DASHBOARD_ROUTE_CACHE_LOCK:
+        entry = DASHBOARD_ROUTE_CACHE.get(namespace, {}).get(cache_key)
+        if not entry:
+            return None
+        if now_ts - float(entry.get("timestamp", 0.0) or 0.0) > ttl:
+            DASHBOARD_ROUTE_CACHE.get(namespace, {}).pop(cache_key, None)
+            return None
+        return entry.get("value")
+
+
+def _dashboard_cache_set(namespace: str, cache_key: str, value: Any) -> Any:
+    with DASHBOARD_ROUTE_CACHE_LOCK:
+        DASHBOARD_ROUTE_CACHE.setdefault(namespace, {})[cache_key] = {
+            "timestamp": time.time(),
+            "value": value,
+        }
+    return value
+
+
+def _mark_consumer_unavailable(stream_name: str) -> None:
+    LIVE_CONSUMER_UNAVAILABLE_UNTIL[stream_name] = time.monotonic() + KAFKA_UNAVAILABLE_RETRY_SECONDS
+
+
+def _consumer_retry_allowed(stream_name: str) -> bool:
+    return time.monotonic() >= float(LIVE_CONSUMER_UNAVAILABLE_UNTIL.get(stream_name, 0.0) or 0.0)
+
+
+def _reset_advanced_insights_executor(reason: str) -> None:
+    global ADVANCED_INSIGHTS_EXECUTOR
+    global ADVANCED_INSIGHTS_FUTURE
+    global ADVANCED_INSIGHTS_FUTURE_STARTED_AT
+    old_executor = ADVANCED_INSIGHTS_EXECUTOR
+    ADVANCED_INSIGHTS_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+    ADVANCED_INSIGHTS_FUTURE = None
+    ADVANCED_INSIGHTS_FUTURE_STARTED_AT = 0.0
+    try:
+        old_executor.shutdown(wait=False, cancel_futures=True)
+    except TypeError:
+        try:
+            old_executor.shutdown(wait=False)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    logging.getLogger(__name__).warning("advanced_insights_executor_reset reason=%s", reason)
+
+
+def _advanced_insights_cache_fresh(now_ts: float | None = None) -> bool:
+    now_ts = now_ts if now_ts is not None else time.time()
+    return ADVANCED_INSIGHTS_CACHE is not None and (now_ts - ADVANCED_INSIGHTS_CACHE_AT) <= ADVANCED_INSIGHTS_CACHE_TTL_SECONDS
 
 # =====================================================
 # PASSWORD SECURITY
@@ -66,6 +143,7 @@ from processing.global_mood import compute_global_operational_features
 from processing.world_state_quality import compute_quality_gate
 from processing.country_daily_risk import country_daily_refresh_if_due
 from processing.country_incremental_risk import recompute_country_risk
+from processing.spillover_graph import load_country_spillover_map
 from collectors.country_news import get_country_catalog
 from processing.country_catalog import COUNTRY_NAMES
 from processing.sentinel_analysis import compute_sentinel_analysis, get_sentinel_history
@@ -1863,7 +1941,7 @@ def _derive_live_global_from_raw_mongo(mode: str = "online") -> dict | None:
     }
     features.update(
         compute_global_operational_features(
-            current_risk_score=features["global_risk_score"],
+            current_risk_score=float(features.get("legacy_model_global_risk_score", features["global_risk_score"]) or features["global_risk_score"]),
             mode=mode,
             current_timestamp=now_iso,
             use_cache=False,
@@ -1943,7 +2021,7 @@ def get_latest_global_doc(mode: str = "online") -> dict:
     doc = serialize_doc(doc)
     features = dict(doc.get("features") or {})
     current_timestamp = features.get("timestamp") or doc.get("timestamp")
-    current_risk = float(features.get("global_risk_score", 50.0) or 50.0)
+    current_risk = float(features.get("legacy_model_global_risk_score", features.get("system_global_risk_score", features.get("global_risk_score", 50.0))) or 50.0)
     features.update(
         compute_global_operational_features(
             current_risk_score=current_risk,
@@ -1952,6 +2030,23 @@ def get_latest_global_doc(mode: str = "online") -> dict:
             use_cache=True,
         )
     )
+    features["legacy_model_global_risk_score"] = float(features.get("legacy_model_global_risk_score", current_risk) or current_risk)
+    features["global_risk_score"] = float(features.get("system_global_risk_score", current_risk) or current_risk)
+    forecast_contract = _build_global_forecast_contract(mode=mode, features=features)
+    features["forecast_contract"] = forecast_contract
+    features["forecast_source_status"] = forecast_contract.get("source_status")
+    features["forecast_calibration_status"] = forecast_contract.get("calibration_status")
+    features["forecast_gating_action"] = forecast_contract.get("gating_action")
+    features["forecast_prediction_available"] = forecast_contract.get("prediction_available")
+    features["forecast_withheld"] = forecast_contract.get("withheld")
+    features["forecast_confidence_score"] = forecast_contract.get("confidence_score")
+    features["forecast_confidence"] = forecast_contract.get("confidence_ratio")
+    features["forecast_prediction_interval"] = forecast_contract.get("prediction_interval")
+    features["forecast_advisory"] = forecast_contract.get("advisory")
+    features["forecast_reasons"] = forecast_contract.get("reasons")
+    features["forecast_model_version"] = forecast_contract.get("model_version")
+    features["forecast_generated_at"] = forecast_contract.get("generated_at")
+    features["forecast_risk_score"] = forecast_contract.get("risk_score")
     doc["features"] = features
     return doc
 
@@ -2073,8 +2168,8 @@ class ScenarioRunRequest(BaseModel):
 
 
 class CountryRefreshRequest(BaseModel):
-    batch_size: int = 50
-    max_records: int = 4
+    batch_size: int = 120
+    max_records: int = 12
 
 
 class SentinelQuestionRequest(BaseModel):
@@ -2233,7 +2328,7 @@ def get_global_history_api(
         f = doc.get("features", {})
         data.append({
             "timestamp": str(f.get("timestamp") or doc.get("timestamp") or datetime.utcnow().isoformat()),
-            "risk_score": float(f.get("global_risk_score", 50.0)),
+            "risk_score": float(f.get("system_global_risk_score", f.get("global_risk_score", 50.0))),
             "news_sentiment": float(f.get("news_sentiment", 0.0)) * 100,
             "gdelt_sentiment": float(f.get("gdelt_sentiment", 0.0)) * 100,
             "crypto_return": float(f.get("crypto_return", 0.0)) * 100,
@@ -2248,7 +2343,26 @@ def get_global_history_api(
             "global_mood_eligible_countries": int(f.get("global_mood_eligible_countries", f.get("global_mood_verified_countries", 0)) or 0),
             "global_mood_used_countries": int(f.get("global_mood_used_countries", f.get("global_mood_contributing_countries", 0)) or 0),
             "global_mood_excluded_countries": int(f.get("global_mood_excluded_countries", 0) or 0),
-            "forecast_risk_score": float(f.get("forecast_risk_score", f.get("global_risk_score", 50.0))),
+            "global_behavior_index": float(f.get("global_behavior_index", 0.0)),
+            "global_context_index": float(f.get("global_context_index", 0.0)),
+            "global_attention_index": float(f.get("global_attention_index", 0.0)),
+            "global_disruption_index": float(f.get("global_disruption_index", 0.0)),
+            "global_economic_stress_index": float(f.get("global_economic_stress_index", 0.0)),
+            "direct_behavior_score": float(f.get("direct_behavior_score", 0.0)),
+            "contextual_pressure_score": float(f.get("contextual_pressure_score", 0.0)),
+            "evidence_quality_score": float(f.get("evidence_quality_score", 0.0)),
+            "narrative_velocity_score": float(f.get("narrative_velocity_score", 0.0)),
+            "coordination_risk_score": float(f.get("coordination_risk_score", 0.0)),
+            "mobility_disruption_score": float(f.get("mobility_disruption_score", 0.0)),
+            "logistics_stress_score": float(f.get("logistics_stress_score", 0.0)),
+            "household_stress_score": float(f.get("household_stress_score", 0.0)),
+            "fuel_price_pressure": float(f.get("fuel_price_pressure", 0.0)),
+            "food_price_pressure": float(f.get("food_price_pressure", 0.0)),
+            "labor_stress_score": float(f.get("labor_stress_score", 0.0)),
+            "fx_pressure_score": float(f.get("fx_pressure_score", 0.0)),
+            "remittance_stress_score": float(f.get("remittance_stress_score", 0.0)),
+            "energy_stress_score": float(f.get("energy_stress_score", 0.0)),
+            "forecast_risk_score": float(f.get("forecast_risk_score", f.get("system_global_risk_score", f.get("global_risk_score", 50.0)))),
             "forecast_risk_delta": float(f.get("forecast_risk_delta", 0.0)),
             "forecast_confidence": float(f.get("forecast_confidence", 0.0)),
             "top_topics": f.get("top_topics", ["no data"]),
@@ -2374,6 +2488,14 @@ ISO2_TO_ISO3 = {
 }
 
 PLACEHOLDER_TOPICS = {"global_expansion", "no data"}
+COUNTRY_VALIDATION_FRESHNESS_WINDOW_HOURS = 30.0
+
+
+def _is_recent_country_feature_timestamp(parsed_timestamp: datetime | None, *, window_hours: float = COUNTRY_VALIDATION_FRESHNESS_WINDOW_HOURS) -> bool:
+    if not parsed_timestamp:
+        return False
+    age_hours = (datetime.now(timezone.utc) - parsed_timestamp).total_seconds() / 3600.0
+    return 0.0 <= age_hours <= float(window_hours)
 
 
 def parse_feature_timestamp(value):
@@ -2395,12 +2517,63 @@ def parse_feature_timestamp(value):
     return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def assess_country_risk_quality(topics, feature_timestamp):
+def assess_country_risk_quality(
+    topics,
+    feature_timestamp,
+    *,
+    source_count=None,
+    external_signal_freshness=None,
+    external_sources=None,
+    evidence_quality_score=None,
+    war_state_rules=None,
+    public_attention_score=None,
+    narrative_velocity_score=None,
+    coordination_risk_score=None,
+    mobility_disruption_score=None,
+    logistics_stress_score=None,
+    household_stress_score=None,
+    fuel_price_pressure=None,
+    food_price_pressure=None,
+    labor_stress_score=None,
+    fx_pressure_score=None,
+    remittance_stress_score=None,
+    energy_stress_score=None,
+    weather_stress=None,
+):
     normalized_topics = [str(topic).strip().lower() for topic in (topics or []) if str(topic).strip()]
     is_placeholder = not normalized_topics or any(topic in PLACEHOLDER_TOPICS for topic in normalized_topics)
     parsed_timestamp = parse_feature_timestamp(feature_timestamp)
-    updated_today = bool(parsed_timestamp and parsed_timestamp.date() == datetime.now(timezone.utc).date())
-    validated_today = updated_today and not is_placeholder
+    updated_today = _is_recent_country_feature_timestamp(parsed_timestamp)
+
+    signal_values = [
+        public_attention_score,
+        narrative_velocity_score,
+        coordination_risk_score,
+        mobility_disruption_score,
+        logistics_stress_score,
+        household_stress_score,
+        fuel_price_pressure,
+        food_price_pressure,
+        labor_stress_score,
+        fx_pressure_score,
+        remittance_stress_score,
+        energy_stress_score,
+        weather_stress,
+    ]
+    strongest_non_news_signal = max((float(value or 0.0) for value in signal_values), default=0.0)
+    source_count_value = max(int(source_count or 0), 0)
+    external_source_count = len(external_sources) if isinstance(external_sources, list) else 0
+    freshness_value = max(0.0, min(float(external_signal_freshness or 0.0), 1.0))
+    evidence_value = max(0.0, min(float(evidence_quality_score or 0.0), 100.0))
+    has_war_rules = bool(war_state_rules)
+
+    multi_signal_verified = (
+        has_war_rules
+        or source_count_value >= 1
+        or (external_source_count >= 3 and freshness_value >= 0.33 and strongest_non_news_signal >= 0.45)
+        or (evidence_value >= 32.0 and strongest_non_news_signal >= 0.55)
+    )
+    validated_today = updated_today and ((not is_placeholder) or multi_signal_verified)
 
     if validated_today:
         data_quality = "verified"
@@ -2415,6 +2588,285 @@ def assess_country_risk_quality(topics, feature_timestamp):
         "feature_timestamp": parsed_timestamp.isoformat() if parsed_timestamp else None,
         "validated_today": validated_today,
         "data_quality": data_quality,
+        "verification_mode": "multi_signal" if validated_today and is_placeholder else ("topic" if validated_today else "none"),
+    }
+
+
+COUNTRY_INTELLIGENCE_COMPONENT_FIELDS = (
+    "social_unrest_score",
+    "google_trends_pressure",
+    "public_attention_score",
+    "narrative_velocity_score",
+    "coordination_risk_score",
+    "mobility_disruption_score",
+    "aviation_disruption_score",
+    "logistics_stress_score",
+    "household_stress_score",
+    "fuel_price_pressure",
+    "food_price_pressure",
+    "labor_stress_score",
+    "fx_pressure_score",
+    "remittance_stress_score",
+    "energy_stress_score",
+    "weather_stress",
+)
+
+COUNTRY_INTELLIGENCE_SCORE_SEMANTICS = {
+    "risk_score": "0-100 composite country risk score",
+    "confidence_score": "0-100 calibrated intelligence confidence",
+    "component_signals": "0-1 normalized signal intensity unless otherwise labeled",
+    "direct_behavior_score": "0-100 absolute behavioral pressure score",
+    "contextual_pressure_score": "0-100 absolute contextual pressure score",
+    "evidence_quality_score": "0-100 evidence sufficiency and integrity score",
+}
+
+
+def _bounded_float(value: Any, default: float = 0.0, *, low: float | None = None, high: float | None = None) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = float(default)
+    if not np.isfinite(parsed):
+        parsed = float(default)
+    if low is not None:
+        parsed = max(low, parsed)
+    if high is not None:
+        parsed = min(high, parsed)
+    return float(parsed)
+
+
+def _country_risk_band(score: float) -> str:
+    if score >= 85.0:
+        return "critical"
+    if score >= 70.0:
+        return "escalating"
+    if score >= 55.0:
+        return "elevated"
+    if score >= 35.0:
+        return "guarded"
+    return "stable"
+
+
+def _country_confidence_band(score: float) -> str:
+    if score >= 80.0:
+        return "high"
+    if score >= 60.0:
+        return "moderate"
+    if score >= 40.0:
+        return "limited"
+    return "weak"
+
+
+def _country_source_status(data_quality: str, validated_today: bool) -> str:
+    if validated_today:
+        return "verified_live"
+    if data_quality == "stale":
+        return "stale_observation"
+    if data_quality == "synthetic":
+        return "derived_estimate"
+    return "model_unavailable"
+
+
+def _country_signal_evidence_count(doc: dict) -> int:
+    count = 0
+    for field in COUNTRY_INTELLIGENCE_COMPONENT_FIELDS:
+        if _bounded_float(doc.get(field), 0.0, low=0.0, high=1.0) >= 0.35:
+            count += 1
+    if _bounded_float(doc.get("direct_behavior_score"), 0.0, low=0.0, high=100.0) >= 45.0:
+        count += 1
+    if _bounded_float(doc.get("contextual_pressure_score"), 0.0, low=0.0, high=100.0) >= 40.0:
+        count += 1
+    if (doc.get("war_state_rules") or []):
+        count += 1
+    return count
+
+
+def _country_component_coverage_ratio(doc: dict) -> float:
+    observed = 0
+    for field in COUNTRY_INTELLIGENCE_COMPONENT_FIELDS:
+        value = doc.get(field)
+        if value is None:
+            continue
+        try:
+            parsed = float(value)
+        except Exception:
+            continue
+        if np.isfinite(parsed) and parsed > 0.0:
+            observed += 1
+    return round(observed / float(len(COUNTRY_INTELLIGENCE_COMPONENT_FIELDS)), 4)
+
+
+def _country_confidence_score(doc: dict, *, data_quality: str, validated_today: bool) -> float:
+    evidence_pct = _bounded_float(doc.get("evidence_quality_score"), 25.0 if validated_today else 18.0, low=0.0, high=100.0)
+    freshness_pct = _bounded_float(doc.get("external_signal_freshness"), 0.0, low=0.0, high=1.0) * 100.0
+    source_pct = min(max(int(doc.get("source_count") or 0), 0), 8) / 8.0 * 100.0
+    behavior_pct = min(_bounded_float(doc.get("direct_behavior_score"), 0.0, low=0.0, high=100.0), 80.0)
+    component_pct = _country_component_coverage_ratio(doc) * 100.0
+    base = (evidence_pct * 0.40) + (freshness_pct * 0.20) + (source_pct * 0.15) + (behavior_pct * 0.10) + (component_pct * 0.15)
+    if validated_today:
+        base += 8.0
+    if doc.get("war_state_rules"):
+        base += 4.0
+
+    cap = 96.0
+    if data_quality == "stale":
+        cap = 74.0
+    elif data_quality == "synthetic":
+        cap = 58.0 if int(doc.get("source_count") or 0) > 0 or doc.get("war_state_rules") else 48.0
+    elif data_quality == "unknown":
+        cap = 22.0
+
+    return round(max(0.0, min(base, cap)), 2)
+
+
+def _build_country_intelligence_gate(doc: dict, quality: dict, global_quality: dict | None = None) -> dict:
+    data_quality = str(quality.get("data_quality") or "unknown")
+    validated_today = bool(quality.get("validated_today"))
+    source_count = max(int(doc.get("source_count") or 0), 0)
+    evidence = _bounded_float(doc.get("evidence_quality_score"), 0.0, low=0.0, high=100.0)
+    freshness = _bounded_float(doc.get("external_signal_freshness"), 0.0, low=0.0, high=1.0)
+    component_ratio = _country_component_coverage_ratio(doc)
+    has_war_rules = bool(doc.get("war_state_rules"))
+    reasons: list[str] = []
+
+    if data_quality == "unknown":
+        reasons.append("country data unavailable")
+    if data_quality == "synthetic":
+        reasons.append("country risk derived from fallback or placeholder evidence")
+    if data_quality == "stale":
+        reasons.append("country evidence is not same-day verified")
+    if source_count < 2:
+        reasons.append(f"source_count {source_count} below target 2")
+    if evidence < 35.0:
+        reasons.append(f"evidence quality {evidence:.1f} below target 35")
+    if freshness < 0.45:
+        reasons.append(f"freshness {freshness:.0%} below target 45%")
+    if component_ratio < 0.18:
+        reasons.append(f"component coverage {component_ratio:.0%} below target 18%")
+
+    global_gate = (global_quality or {}).get("quality_gate") if isinstance(global_quality, dict) else {}
+    global_gate_active = bool((global_gate or {}).get("active"))
+    verified_global = int((((global_gate or {}).get("metrics") or {}).get("verified_countries", 0)) or 0)
+    if global_gate_active and not validated_today:
+        reasons.append(f"global coverage gate active with only {verified_global} verified countries")
+
+    action = "allow"
+    status = "country_ready"
+    if data_quality == "unknown" or ((data_quality == "synthetic") and source_count == 0 and evidence < 30.0 and freshness < 0.35 and not has_war_rules):
+        action = "suppress"
+        status = "country_unreliable"
+    elif (not validated_today) or (global_gate_active and not validated_today) or freshness < 0.55 or evidence < 55.0 or source_count < 2 or component_ratio < 0.25:
+        action = "downgrade"
+        status = "country_degraded"
+
+    if has_war_rules and action == "suppress":
+        action = "downgrade"
+        status = "country_degraded"
+
+    if action == "allow":
+        message = "Country intelligence meets live reliability thresholds."
+    elif action == "downgrade":
+        message = "Country intelligence is visible but downgraded because evidence or freshness is below production targets."
+    else:
+        message = "Country intelligence is withheld because evidence quality is too weak for reliable display."
+
+    return {
+        "action": action,
+        "status": status,
+        "reasons": reasons,
+        "message": message,
+    }
+
+
+def _country_intelligence_global_context(mode: str = "online") -> dict:
+    cache_key = f"mode={mode}"
+    cached = _dashboard_cache_get("global_quality", cache_key)
+    if isinstance(cached, dict):
+        return cached
+
+    latest_ingestion = _build_latest_ingestion()
+    freshness = _build_freshness_snapshot(latest_ingestion)
+    source_health = _build_source_health_snapshot()
+    coverage = _compute_country_coverage_snapshot(mode=mode)
+    quality_gate = _build_quality_gate_snapshot(coverage, freshness, source_health)
+    payload = {
+        "freshness": freshness,
+        "source_health": source_health,
+        "coverage": coverage,
+        "quality_gate": quality_gate,
+    }
+    return _dashboard_cache_set("global_quality", cache_key, payload)
+
+
+def _canonicalize_country_intelligence_row(doc: dict, *, mode: str = "online", global_quality: dict | None = None) -> dict:
+    row = dict(doc or {})
+    quality = assess_country_risk_quality(
+        row.get("topics"),
+        row.get("feature_timestamp"),
+        source_count=row.get("source_count"),
+        external_signal_freshness=row.get("external_signal_freshness"),
+        external_sources=row.get("external_sources"),
+        evidence_quality_score=row.get("evidence_quality_score"),
+        war_state_rules=row.get("war_state_rules"),
+        public_attention_score=row.get("public_attention_score"),
+        narrative_velocity_score=row.get("narrative_velocity_score"),
+        coordination_risk_score=row.get("coordination_risk_score"),
+        mobility_disruption_score=row.get("mobility_disruption_score"),
+        logistics_stress_score=row.get("logistics_stress_score"),
+        household_stress_score=row.get("household_stress_score"),
+        fuel_price_pressure=row.get("fuel_price_pressure"),
+        food_price_pressure=row.get("food_price_pressure"),
+        labor_stress_score=row.get("labor_stress_score"),
+        fx_pressure_score=row.get("fx_pressure_score"),
+        remittance_stress_score=row.get("remittance_stress_score"),
+        energy_stress_score=row.get("energy_stress_score"),
+        weather_stress=row.get("weather_stress"),
+    )
+    if row.get("feature_timestamp"):
+        quality["feature_timestamp"] = row.get("feature_timestamp")
+    if isinstance(row.get("validated_today"), bool):
+        quality["validated_today"] = bool(row.get("validated_today"))
+    if str(row.get("data_quality") or "").strip():
+        quality["data_quality"] = str(row.get("data_quality")).strip().lower()
+
+    raw_risk = _bounded_float(row.get("risk"), 0.0, low=0.0, high=100.0)
+    confidence_score = _country_confidence_score(
+        row,
+        data_quality=str(quality.get("data_quality") or "unknown"),
+        validated_today=bool(quality.get("validated_today")),
+    )
+    gate = _build_country_intelligence_gate(row, quality, global_quality=global_quality)
+    if gate["action"] == "downgrade":
+        confidence_score = min(confidence_score, 60.0 if bool(quality.get("validated_today")) else 48.0)
+    elif gate["action"] == "suppress":
+        confidence_score = min(confidence_score, 24.0)
+
+    display_risk = None if gate["action"] == "suppress" else round(raw_risk, 2)
+    row.update(quality)
+    row["risk"] = round(raw_risk, 2)
+    row["display_risk"] = display_risk
+    row["raw_risk_score"] = round(raw_risk, 2)
+    row["confidence_score"] = round(confidence_score, 2)
+    row["risk_band"] = _country_risk_band(raw_risk)
+    row["confidence_band"] = _country_confidence_band(confidence_score)
+    row["source_status"] = _country_source_status(str(quality.get("data_quality") or "unknown"), bool(quality.get("validated_today")))
+    row["gating_action"] = gate["action"]
+    row["country_quality_status"] = gate["status"]
+    row["country_quality_reasons"] = gate["reasons"]
+    row["advisory"] = gate["message"]
+    row["evidence_count"] = _country_signal_evidence_count(row)
+    row["component_coverage_ratio"] = _country_component_coverage_ratio(row)
+    row["score_semantics"] = COUNTRY_INTELLIGENCE_SCORE_SEMANTICS
+    return row
+
+
+def _country_risk_interval(doc: dict) -> dict[str, float]:
+    risk = _bounded_float(doc.get("display_risk", doc.get("risk")), 0.0, low=0.0, high=100.0)
+    confidence = _bounded_float(doc.get("confidence_score"), 0.0, low=0.0, high=100.0)
+    band_width = max(4.0, 18.0 - (confidence * 0.12))
+    return {
+        "lower": round(max(0.0, risk - band_width), 2),
+        "upper": round(min(100.0, risk + band_width), 2),
     }
 
 COUNTRY_EXTERNAL_FIELDS = (
@@ -2456,6 +2908,30 @@ ROLLUP_SIGNAL_FIELDS = (
     "external_signal_freshness",
 )
 
+COUNTRY_SPILLOVER_MAP = load_country_spillover_map()
+
+COUNTRY_RISK_DELTA_FIELDS = (
+    "direct_behavior_score",
+    "contextual_pressure_score",
+    "evidence_quality_score",
+    "social_unrest_score",
+    "google_trends_pressure",
+    "public_attention_score",
+    "narrative_velocity_score",
+    "coordination_risk_score",
+    "mobility_disruption_score",
+    "aviation_disruption_score",
+    "logistics_stress_score",
+    "household_stress_score",
+    "fuel_price_pressure",
+    "food_price_pressure",
+    "labor_stress_score",
+    "fx_pressure_score",
+    "remittance_stress_score",
+    "energy_stress_score",
+    "weather_stress",
+)
+
 
 def _safe_iso_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
@@ -2475,6 +2951,114 @@ def _safe_iso_datetime(value: Any) -> datetime | None:
 def _load_today_rollup(country: str) -> dict | None:
     today = datetime.now(timezone.utc).date().isoformat()
     return db.country_signal_rollups.find_one({"country": country, "event_date": today}, sort=[("updated_at", DESCENDING), ("_id", DESCENDING)])
+
+
+def _safe_numeric_float(value: Any) -> float:
+    try:
+        number = float(value or 0.0)
+        return number if np.isfinite(number) else 0.0
+    except Exception:
+        return 0.0
+
+
+def _risk_trend_direction(delta_24h: float, delta_7d: float) -> str:
+    reference = delta_24h if abs(delta_24h) >= 0.75 else delta_7d
+    if reference >= 0.75:
+        return "worsening"
+    if reference <= -0.75:
+        return "improving"
+    return "stable"
+
+
+def _compute_country_deltas_from_docs(feature_docs: list[dict]) -> tuple[float, float, str]:
+    if not feature_docs:
+        return 0.0, 0.0, "stable"
+    ordered = sorted(feature_docs, key=lambda d: _safe_iso_datetime(d.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc))
+    latest_doc = ordered[-1]
+    latest_features = latest_doc.get("features", {}) if isinstance(latest_doc.get("features"), dict) else {}
+    latest_risk = _safe_numeric_float(latest_features.get("global_risk_score"))
+
+    previous_doc = ordered[-2] if len(ordered) >= 2 else latest_doc
+    previous_features = previous_doc.get("features", {}) if isinstance(previous_doc.get("features"), dict) else {}
+    previous_risk = _safe_numeric_float(previous_features.get("global_risk_score"))
+
+    earliest_doc = ordered[0]
+    earliest_features = earliest_doc.get("features", {}) if isinstance(earliest_doc.get("features"), dict) else {}
+    earliest_risk = _safe_numeric_float(earliest_features.get("global_risk_score"))
+
+    delta_24h = round(latest_risk - previous_risk, 2)
+    delta_7d = round(latest_risk - earliest_risk, 2)
+    return delta_24h, delta_7d, _risk_trend_direction(delta_24h, delta_7d)
+
+
+def _derive_country_change_contributors(current_features: dict | None, previous_features: dict | None) -> list[dict[str, Any]]:
+    current = current_features if isinstance(current_features, dict) else {}
+    previous = previous_features if isinstance(previous_features, dict) else {}
+    contributors: list[dict[str, Any]] = []
+    for field in COUNTRY_RISK_DELTA_FIELDS:
+        current_value = _safe_numeric_float(current.get(field))
+        previous_value = _safe_numeric_float(previous.get(field))
+        delta = current_value - previous_value
+        if abs(delta) < 0.25:
+            continue
+        contributors.append({
+            "feature": field,
+            "value": round(current_value, 4),
+            "delta": round(delta, 4),
+            "contribution": round(delta / 100.0, 4),
+        })
+    contributors.sort(key=lambda item: abs(_safe_numeric_float(item.get("delta"))), reverse=True)
+    return contributors[:4]
+
+
+def _attach_spillover_links(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    index = {str(row.get("country") or "").upper(): row for row in rows}
+    for row in rows:
+        country = str(row.get("country") or "").upper()
+        spillovers = []
+        for entry in COUNTRY_SPILLOVER_MAP.get(country, []):
+            neighbor = index.get(str(entry.get("country") or "").upper())
+            if not neighbor:
+                continue
+            spillovers.append({
+                "country": str(neighbor.get("country") or "").upper(),
+                "risk": round(_safe_numeric_float(neighbor.get("risk")), 2),
+                "relationship": str(entry.get("relationship") or "Regional spillover"),
+            })
+        spillovers.sort(key=lambda item: _safe_numeric_float(item.get("risk")), reverse=True)
+        row["spillover_links"] = spillovers[:4]
+    return rows
+
+
+def _enrich_country_risk_rows(rows: list[dict[str, Any]], mode: str = "online") -> list[dict[str, Any]]:
+    if not rows:
+        return rows
+
+    countries = [str(row.get("country") or "").upper() for row in rows if str(row.get("country") or "").strip()]
+    history_by_country: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    if countries:
+        pipeline = [
+            {"$match": {"country": {"$in": countries}, "mode": mode}},
+            {"$sort": {"country": 1, "timestamp": -1}},
+            {"$group": {"_id": "$country", "docs": {"$push": {"timestamp": "$timestamp", "features": "$features"}}}},
+            {"$project": {"docs": {"$slice": ["$docs", 8]}}},
+        ]
+        for entry in db.country_features.aggregate(pipeline):
+            history_by_country[str(entry.get("_id") or "").upper()] = list(entry.get("docs") or [])
+
+    for row in rows:
+        country = str(row.get("country") or "").upper()
+        history_docs = history_by_country.get(country, [])
+        delta_24h, delta_7d, trend_direction = _compute_country_deltas_from_docs(history_docs)
+        row["risk_delta_24h"] = delta_24h
+        row["risk_delta_7d"] = delta_7d
+        row["risk_trend_direction"] = trend_direction
+        latest_doc = history_docs[0] if history_docs else None
+        previous_doc = history_docs[1] if len(history_docs) >= 2 else latest_doc
+        latest_features = latest_doc.get("features", {}) if isinstance((latest_doc or {}).get("features"), dict) else {}
+        previous_features = previous_doc.get("features", {}) if isinstance((previous_doc or {}).get("features"), dict) else {}
+        row["score_change_contributors"] = _derive_country_change_contributors(latest_features, previous_features)
+    return _attach_spillover_links(rows)
 
 
 def _needs_rollup_backfill(latest_features: dict, rollup: dict | None) -> bool:
@@ -2521,6 +3105,9 @@ def _prefer_feature_doc(docs: list[dict]) -> dict | None:
     ranked = sorted(
         docs,
         key=lambda doc: (
+            1 if str((doc or {}).get("features", {}).get("risk_definition") or "").strip() else 0,
+            1 if str((doc or {}).get("features", {}).get("source") or "").strip() in {"country_risk_stream_incremental", "country_news_multi_source_daily"} else 0,
+            _safe_iso_datetime((doc or {}).get("features", {}).get("timestamp")) or _safe_iso_datetime((doc or {}).get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
             _feature_signal_strength((doc or {}).get("features", {}))[1],
             _feature_signal_strength((doc or {}).get("features", {}))[0],
             str((doc or {}).get("features", {}).get("timestamp") or ""),
@@ -2552,6 +3139,7 @@ def convert_country_code(code: str) -> str:
     return ISO2_TO_ISO3.get(code, code)  # Convert or return as-is
 
 
+@app.get("/country-intelligence/latest")
 @app.get("/dashboard/risk-map")
 @limiter.limit("30/minute")
 def dashboard_risk_map(
@@ -2560,6 +3148,10 @@ def dashboard_risk_map(
     mode: str = Query("online"),
     verified_only: bool = Query(False),
 ):
+    cache_key = f"mode={mode}|verified_only={int(bool(verified_only))}"
+    cached = _dashboard_cache_get("risk_map", cache_key)
+    if isinstance(cached, list):
+        return cached
 
     pipeline = [
         {"$match": {"mode": mode}},
@@ -2590,6 +3182,7 @@ def dashboard_risk_map(
                 "energy_stress_score": {"$ifNull": ["$doc.features.energy_stress_score", 0.0]},
                 "weather_stress": {"$ifNull": ["$doc.features.weather_stress", 0.0]},
                 "external_signal_freshness": {"$ifNull": ["$doc.features.external_signal_freshness", 0.0]},
+                "external_sources": {"$ifNull": ["$doc.features.external_sources", []]},
                 "direct_behavior_score": {"$ifNull": ["$doc.features.direct_behavior_score", 0.0]},
                 "contextual_pressure_score": {"$ifNull": ["$doc.features.contextual_pressure_score", 0.0]},
                 "evidence_quality_score": {"$ifNull": ["$doc.features.evidence_quality_score", 0.0]},
@@ -2638,13 +3231,41 @@ def dashboard_risk_map(
 
     response_docs = []
     for doc in docs:
-        quality = assess_country_risk_quality(doc.get("topics"), doc.get("feature_timestamp"))
+        quality = assess_country_risk_quality(
+            doc.get("topics"),
+            doc.get("feature_timestamp"),
+            source_count=doc.get("source_count"),
+            external_signal_freshness=doc.get("external_signal_freshness"),
+            external_sources=doc.get("external_sources"),
+            evidence_quality_score=doc.get("evidence_quality_score"),
+            war_state_rules=doc.get("war_state_rules"),
+            public_attention_score=doc.get("public_attention_score"),
+            narrative_velocity_score=doc.get("narrative_velocity_score"),
+            coordination_risk_score=doc.get("coordination_risk_score"),
+            mobility_disruption_score=doc.get("mobility_disruption_score"),
+            logistics_stress_score=doc.get("logistics_stress_score"),
+            household_stress_score=doc.get("household_stress_score"),
+            fuel_price_pressure=doc.get("fuel_price_pressure"),
+            food_price_pressure=doc.get("food_price_pressure"),
+            labor_stress_score=doc.get("labor_stress_score"),
+            fx_pressure_score=doc.get("fx_pressure_score"),
+            remittance_stress_score=doc.get("remittance_stress_score"),
+            energy_stress_score=doc.get("energy_stress_score"),
+            weather_stress=doc.get("weather_stress"),
+        )
         if verified_only and not quality["validated_today"]:
             continue
 
         doc["country"] = convert_country_code(doc.get("country", ""))
-        fallback_docs = list(db.country_features.find({"country": doc["country"], "mode": mode}).sort("timestamp", -1).limit(8))
-        preferred = _prefer_feature_doc(fallback_docs)
+        preferred = None
+        needs_preferred_doc = (
+            not str(doc.get("feature_timestamp") or "").strip()
+            or int(doc.get("source_count") or 0) <= 0
+            or not any(float(doc.get(field) or 0.0) > 0.0 for field in COUNTRY_EXTERNAL_FIELDS)
+        )
+        if needs_preferred_doc:
+            fallback_docs = list(db.country_features.find({"country": doc["country"], "mode": mode}).sort("timestamp", -1).limit(8))
+            preferred = _prefer_feature_doc(fallback_docs)
         if preferred and preferred.get("features"):
             preferred_features = preferred.get("features", {})
             doc["risk"] = preferred_features.get("global_risk_score", doc.get("risk"))
@@ -2683,23 +3304,34 @@ def dashboard_risk_map(
         doc.pop("topics", None)
         response_docs.append(doc)
 
-    return [serialize_doc(d) for d in response_docs]
+    response_docs = _enrich_country_risk_rows(response_docs, mode=mode)
+    global_quality = _country_intelligence_global_context(mode=mode)
+    canonical_docs = [_canonicalize_country_intelligence_row(d, mode=mode, global_quality=global_quality) for d in response_docs]
+    serialized = [serialize_doc(d) for d in canonical_docs]
+    return _dashboard_cache_set("risk_map", cache_key, serialized)
 
 
 @app.get("/dashboard/risk-map/coverage")
 @limiter.limit("30/minute")
 def dashboard_risk_map_coverage(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+    cache_key = f"mode={mode}"
+    cached = _dashboard_cache_get("coverage", cache_key)
+    if isinstance(cached, dict):
+        return cached
+
     docs = dashboard_risk_map(request=request, role=role, mode=mode, verified_only=False)
     total = len(docs)
     verified = sum(1 for doc in docs if doc.get("validated_today"))
     no_data = sum(1 for doc in docs if doc.get("data_quality") == "synthetic")
     stale = sum(1 for doc in docs if doc.get("data_quality") == "stale")
+    suppressed = sum(1 for doc in docs if str(doc.get("gating_action") or "") == "suppress")
     latest_validation = latest_country_risk_validation()
-    return {
+    payload = {
         "total": total,
         "verified": verified,
         "no_data": no_data,
         "stale": stale,
+        "suppressed": suppressed,
         "remaining": max(total - verified, 0),
         "coverage_pct": round((verified / total) * 100, 2) if total else 0.0,
         "latest_validation": {
@@ -2708,41 +3340,125 @@ def dashboard_risk_map_coverage(request: Request, role: str = Depends(check_role
             "brier_score": float((((latest_validation.get("metrics") or {}).get("brier_score", 0.0)) or 0.0)),
         },
     }
+    return _dashboard_cache_set("coverage", cache_key, payload)
 
 
 @app.post("/dashboard/risk-map/refresh")
 @limiter.limit("10/minute")
 def dashboard_risk_map_refresh(request: Request, payload: CountryRefreshRequest, role: str = Depends(check_role)):
     batch_size = max(1, min(int(payload.batch_size), len(get_country_catalog())))
-    max_records = max(1, min(int(payload.max_records), 10))
+    max_records = max(1, min(int(payload.max_records), 25))
     summary = country_daily_refresh_if_due(max_records=max_records, batch_size=batch_size)
     return serialize_doc(summary)
 
 
+def _normalized_country_aliases() -> dict[str, list[str]]:
+    aliases: dict[str, set[str]] = {}
+    for code, name in COUNTRY_NAMES.items():
+        normalized_name = str(name or '').strip().lower()
+        if not normalized_name:
+            continue
+        bucket = aliases.setdefault(code, set())
+        bucket.add(normalized_name)
+        parts = normalized_name.replace('-', ' ').split()
+        if len(parts) > 1:
+            bucket.add(' '.join(parts))
+        if normalized_name.endswith('ia'):
+            bucket.add(normalized_name[:-2] + 'ian')
+        if normalized_name.endswith('y'):
+            bucket.add(normalized_name[:-1] + 'ian')
+    manual = {
+        'USA': {'us', 'u.s.', 'u.s', 'usa', 'united states', 'american'},
+        'GBR': {'uk', 'u.k.', 'britain', 'united kingdom', 'british'},
+        'IRN': {'iran', 'iranian'},
+        'ISR': {'israel', 'israeli'},
+        'QAT': {'qatar', 'qatari'},
+        'AFG': {'afghanistan', 'afghan', 'kabul'},
+        'UKR': {'ukraine', 'ukrainian', 'kyiv', 'kiev'},
+        'RUS': {'russia', 'russian', 'moscow'},
+        'IND': {'india', 'indian', 'new delhi'},
+        'SYR': {'syria', 'syrian', 'damascus'},
+        'PSE': {'gaza', 'palestine', 'palestinian'},
+    }
+    for code, values in manual.items():
+        aliases.setdefault(code, set()).update(values)
+    return {code: sorted(values, key=len, reverse=True) for code, values in aliases.items()}
+
+
+COUNTRY_ALIASES = _normalized_country_aliases()
+
+
+def _infer_affected_country_code(*parts: str, fallback: str = 'UNK') -> str:
+    blob = ' '.join(str(part or '') for part in parts).lower()
+    if not blob.strip():
+        return convert_country_code(fallback)
+    blocked_alias_contexts: dict[str, tuple[str, ...]] = {
+        'JEY': (r'\bnew jersey\b',),
+    }
+    best_code = convert_country_code(fallback)
+    best_length = 0
+    for code, aliases in COUNTRY_ALIASES.items():
+        blocked_patterns = blocked_alias_contexts.get(code, ())
+        if blocked_patterns and any(re.search(pattern, blob) for pattern in blocked_patterns):
+            continue
+        for alias in aliases:
+            if len(alias) < 3:
+                continue
+            if re.search(rf'(?<![a-z]){re.escape(alias)}(?![a-z])', blob):
+                if len(alias) > best_length:
+                    best_code = code
+                    best_length = len(alias)
+                break
+    return convert_country_code(best_code)
+
+
 @app.get("/dashboard/global-intelligence-feed")
 @limiter.limit("60/minute")
-def dashboard_global_intelligence_feed(request: Request, role: str = Depends(check_role), mode: str = Query("online"), limit: int = Query(50, ge=1, le=200)):
+def dashboard_global_intelligence_feed(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    country: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
     """
     Returns a live MongoDB-backed intelligence feed.
     No mock/template content is generated.
     """
-    country_risk_pipeline = [
-        {"$match": {"mode": mode}},
-        {"$sort": {"timestamp": -1}},
-        {"$group": {"_id": "$country", "doc": {"$first": "$$ROOT"}}},
-        {"$replaceRoot": {"newRoot": "$doc"}},
-        {"$project": {"country": 1, "risk": "$features.global_risk_score", "topics": "$features.top_topics"}},
-    ]
-    risk_docs = list(db.country_features.aggregate(country_risk_pipeline))
+    requested_country = convert_country_code(str(country or "").upper().strip()) if country else None
+    cache_key = f"mode={mode}|country={requested_country or 'all'}|limit={min(limit, 50)}"
+    cached = _dashboard_cache_get("feed", cache_key)
+    if isinstance(cached, list):
+        return cached[:limit]
+
     risk_by_country: dict[str, dict[str, Any]] = {}
-    for row in risk_docs:
-        code = convert_country_code(str(row.get("country") or "").upper().strip())
-        if not code:
-            continue
-        risk_by_country[code] = {
-            "risk_score": float(row.get("risk", 50.0) or 50.0),
-            "topics": row.get("topics") if isinstance(row.get("topics"), list) else [],
-        }
+    cached_risk_rows = _dashboard_cache_get("risk_map", f"mode={mode}|verified_only=0")
+    if isinstance(cached_risk_rows, list) and cached_risk_rows:
+        for row in cached_risk_rows:
+            code = convert_country_code(str(row.get("country") or "").upper().strip())
+            if not code:
+                continue
+            risk_by_country[code] = {
+                "risk_score": float(row.get("risk", 50.0) or 50.0),
+                "topics": row.get("top_topics") if isinstance(row.get("top_topics"), list) else [],
+            }
+    else:
+        country_risk_pipeline = [
+            {"$match": {"mode": mode}},
+            {"$sort": {"timestamp": -1}},
+            {"$group": {"_id": "$country", "doc": {"$first": "$$ROOT"}}},
+            {"$replaceRoot": {"newRoot": "$doc"}},
+            {"$project": {"country": 1, "risk": "$features.global_risk_score", "topics": "$features.top_topics"}},
+        ]
+        risk_docs = list(db.country_features.aggregate(country_risk_pipeline))
+        for row in risk_docs:
+            code = convert_country_code(str(row.get("country") or "").upper().strip())
+            if not code:
+                continue
+            risk_by_country[code] = {
+                "risk_score": float(row.get("risk", 50.0) or 50.0),
+                "topics": row.get("topics") if isinstance(row.get("topics"), list) else [],
+            }
 
     def _infer_category(title: str, summary: str, risk_score: float, topics: list[str]) -> str:
         blob = f"{title} {summary} {' '.join([str(t) for t in topics])}".lower()
@@ -2758,9 +3474,13 @@ def dashboard_global_intelligence_feed(request: Request, role: str = Depends(che
             return "political"
         return "social"
 
+    news_match: dict[str, Any] = {}
+    if requested_country:
+        news_match["country"] = requested_country
+
     news_docs = list(
         db.country_news.find(
-            {},
+            news_match,
             {
                 "_id": 1,
                 "country": 1,
@@ -2777,26 +3497,76 @@ def dashboard_global_intelligence_feed(request: Request, role: str = Depends(che
             },
         )
         .sort("timestamp", DESCENDING)
-        .limit(max(limit * 30, 1000))
+        .limit(max(limit * 12, 240))
     )
 
     feed_items = []
     seen = set()
+
+    def _freshness_score(timestamp_value: str) -> float:
+        parsed = _parse_timestamp(timestamp_value)
+        if parsed == datetime.min.replace(tzinfo=timezone.utc):
+            return 0.25
+        age_hours = max((datetime.utcnow().replace(tzinfo=timezone.utc) - parsed).total_seconds() / 3600.0, 0.0)
+        if age_hours <= 1:
+            return 1.0
+        if age_hours <= 6:
+            return 0.88
+        if age_hours <= 24:
+            return 0.72
+        if age_hours <= 72:
+            return 0.55
+        return 0.35
+
+    def _keyword_intensity(*parts: str) -> float:
+        blob = " ".join(str(part or "") for part in parts).lower()
+        critical_terms = ("war", "conflict", "missile", "attack", "strike", "evacuation", "sanction", "emergency", "protest", "riot", "crisis")
+        elevated_terms = ("disruption", "inflation", "shortage", "outage", "shutdown", "border", "military", "cyber", "drought", "flood")
+        score = 0.0
+        if any(term in blob for term in critical_terms):
+            score += 0.65
+        if any(term in blob for term in elevated_terms):
+            score += 0.35
+        return min(score, 1.0)
+
+    def _topic_overlap(*parts: str, topics: list[str]) -> float:
+        if not topics:
+            return 0.0
+        blob = " ".join(str(part or "") for part in parts).lower()
+        matches = 0
+        for topic_value in topics:
+            topic = str(topic_value or "").strip().lower()
+            if topic and topic in blob:
+                matches += 1
+        return min(matches / max(len(topics), 1), 1.0)
+
     for doc in news_docs:
         data = doc.get("data") if isinstance(doc.get("data"), dict) else {}
         headline = str(data.get("title") or "").strip()
         if not headline:
             continue
 
-        country_code = convert_country_code(str(doc.get("country") or data.get("country") or "UNK").upper().strip())
-        country_name = str(doc.get("country_name") or COUNTRY_NAMES.get(country_code, country_code))
+        source_country_code = convert_country_code(str(doc.get("country") or data.get("country") or "UNK").upper().strip())
         summary = str(data.get("description") or data.get("content") or "").strip()
         full_article = str(data.get("content") or summary or headline).strip()
+        inferred_country_code = _infer_affected_country_code(headline, fallback="UNK")
+        if inferred_country_code == "UNK" and summary:
+            inferred_country_code = _infer_affected_country_code(summary[:220], fallback="UNK")
+        if requested_country:
+            country_code = inferred_country_code if inferred_country_code != "UNK" else source_country_code
+        else:
+            country_code = inferred_country_code
+        if not country_code or country_code == "UNK":
+            continue
+        country_name = str(COUNTRY_NAMES.get(country_code, doc.get("country_name") or country_code))
         source = str(data.get("source_name") or doc.get("source") or "unknown")
         source_url = str(data.get("url") or "").strip()
-        timestamp = str(data.get("published_at") or doc.get("timestamp") or doc.get("collected_at") or datetime.utcnow().isoformat())
+        raw_timestamp = data.get("published_at") or doc.get("timestamp") or doc.get("collected_at") or datetime.utcnow().isoformat()
+        parsed_timestamp = _parse_timestamp(raw_timestamp)
+        timestamp = parsed_timestamp.isoformat() if parsed_timestamp != datetime.min.replace(tzinfo=timezone.utc) else str(raw_timestamp)
 
-        dedupe_key = f"{country_code}|{headline.lower()}|{source_url}"
+        normalized_headline = re.sub(r"\s+", " ", headline.lower()).strip()
+        dedupe_key = f"{country_code}|{normalized_headline}"
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
@@ -2805,6 +3575,16 @@ def dashboard_global_intelligence_feed(request: Request, role: str = Depends(che
         risk_score = float(risk_meta.get("risk_score", 50.0) or 50.0)
         topics = risk_meta.get("topics") if isinstance(risk_meta.get("topics"), list) else []
         category = _infer_category(headline, summary, risk_score, topics)
+        freshness_score = _freshness_score(timestamp)
+        keyword_intensity = _keyword_intensity(headline, summary)
+        topic_overlap = _topic_overlap(headline, summary, full_article, topics=topics)
+        relevance_score = round(
+            (min(max(risk_score, 0.0), 100.0) / 100.0) * 0.46
+            + freshness_score * 0.28
+            + keyword_intensity * 0.18
+            + topic_overlap * 0.08,
+            4,
+        )
 
         feed_items.append(
             {
@@ -2819,13 +3599,42 @@ def dashboard_global_intelligence_feed(request: Request, role: str = Depends(che
                 "risk_score": risk_score,
                 "timestamp": timestamp,
                 "category": category,
+                "relevance_score": relevance_score,
             }
         )
-        if len(feed_items) >= limit:
+        if len(feed_items) >= max(limit * 4, 80):
             break
 
-    feed_items.sort(key=lambda x: _parse_timestamp(str(x.get("timestamp") or "")), reverse=True)
-    return feed_items[:limit]
+    feed_items.sort(
+        key=lambda item: (
+            float(item.get("relevance_score") or 0.0),
+            _parse_timestamp(str(item.get("timestamp") or "")),
+        ),
+        reverse=True,
+    )
+
+    diversified: list[dict[str, Any]] = []
+    country_counts: dict[str, int] = {}
+    per_country_cap = 2 if not requested_country else limit
+    for item in feed_items:
+        code = str(item.get("country") or "UNK")
+        if country_counts.get(code, 0) >= per_country_cap:
+            continue
+        diversified.append(item)
+        country_counts[code] = country_counts.get(code, 0) + 1
+        if len(diversified) >= limit:
+            break
+    if len(diversified) < limit:
+        seen_ids = {str(item.get("id")) for item in diversified}
+        for item in feed_items:
+            if str(item.get("id")) in seen_ids:
+                continue
+            diversified.append(item)
+            if len(diversified) >= limit:
+                break
+    final_items = diversified[:limit]
+    _dashboard_cache_set("feed", cache_key, final_items)
+    return final_items
 
 
 
@@ -2997,6 +3806,7 @@ def dashboard_weather_current(
 
     raise HTTPException(status_code=503, detail={"message": "Live weather temporarily unavailable", "provider_error": last_error})
 
+@app.get("/country-intelligence/{country}")
 @app.get("/dashboard/country/{country}")
 @limiter.limit("20/minute")
 def dashboard_country(request: Request, country: str, role: str = Depends(check_role), mode: str = Query("online")):
@@ -3071,9 +3881,54 @@ def dashboard_country(request: Request, country: str, role: str = Depends(check_
     } for e in events_cursor]
 
     risk = float(latest_features.get("global_risk_score", 50.0))
+    canonical_doc = _canonicalize_country_intelligence_row(
+        {
+            "country": code,
+            "risk": risk,
+            "feature_timestamp": latest_features.get("timestamp"),
+            "topics": latest_features.get("top_topics", []),
+            "source_count": latest_features.get("source_count", 0),
+            "social_unrest_score": latest_features.get("social_unrest_score", 0.0),
+            "google_trends_pressure": latest_features.get("google_trends_pressure", 0.0),
+            "public_attention_score": latest_features.get("public_attention_score", 0.0),
+            "narrative_velocity_score": latest_features.get("narrative_velocity_score", 0.0),
+            "coordination_risk_score": latest_features.get("coordination_risk_score", 0.0),
+            "mobility_disruption_score": latest_features.get("mobility_disruption_score", 0.0),
+            "logistics_stress_score": latest_features.get("logistics_stress_score", 0.0),
+            "aviation_disruption_score": latest_features.get("aviation_disruption_score", 0.0),
+            "household_stress_score": latest_features.get("household_stress_score", 0.0),
+            "fuel_price_pressure": latest_features.get("fuel_price_pressure", 0.0),
+            "food_price_pressure": latest_features.get("food_price_pressure", 0.0),
+            "labor_stress_score": latest_features.get("labor_stress_score", 0.0),
+            "fx_pressure_score": latest_features.get("fx_pressure_score", 0.0),
+            "remittance_stress_score": latest_features.get("remittance_stress_score", 0.0),
+            "energy_stress_score": latest_features.get("energy_stress_score", 0.0),
+            "weather_stress": latest_features.get("weather_stress", 0.0),
+            "external_signal_freshness": latest_features.get("external_signal_freshness", 0.0),
+            "direct_behavior_score": latest_features.get("direct_behavior_score", 0.0),
+            "contextual_pressure_score": latest_features.get("contextual_pressure_score", 0.0),
+            "evidence_quality_score": latest_features.get("evidence_quality_score", 0.0),
+            "war_state_rules": latest_features.get("war_state_rules", []),
+        },
+        mode=mode,
+        global_quality=_country_intelligence_global_context(mode=mode),
+    )
+    confidence_interval = _country_risk_interval(canonical_doc)
     return {
         "country": country,
-        "risk": risk,
+        "risk": float(canonical_doc.get("display_risk") if canonical_doc.get("display_risk") is not None else canonical_doc.get("risk", risk)),
+        "display_risk": canonical_doc.get("display_risk"),
+        "raw_risk_score": canonical_doc.get("raw_risk_score", risk),
+        "confidence_score": canonical_doc.get("confidence_score", 0.0),
+        "risk_band": canonical_doc.get("risk_band"),
+        "confidence_band": canonical_doc.get("confidence_band"),
+        "source_status": canonical_doc.get("source_status"),
+        "gating_action": canonical_doc.get("gating_action"),
+        "country_quality_status": canonical_doc.get("country_quality_status"),
+        "country_quality_reasons": canonical_doc.get("country_quality_reasons", []),
+        "advisory": canonical_doc.get("advisory"),
+        "evidence_count": canonical_doc.get("evidence_count", 0),
+        "score_semantics": canonical_doc.get("score_semantics", COUNTRY_INTELLIGENCE_SCORE_SEMANTICS),
         "direct_behavior_score": float(latest_features.get("direct_behavior_score", 0.0) or 0.0),
         "contextual_pressure_score": float(latest_features.get("contextual_pressure_score", 0.0) or 0.0),
         "evidence_quality_score": float(latest_features.get("evidence_quality_score", 0.0) or 0.0),
@@ -3086,10 +3941,12 @@ def dashboard_country(request: Request, country: str, role: str = Depends(check_
         "fx_pressure_score": float(latest_features.get("fx_pressure_score", 0.0) or 0.0),
         "remittance_stress_score": float(latest_features.get("remittance_stress_score", 0.0) or 0.0),
         "energy_stress_score": float(latest_features.get("energy_stress_score", 0.0) or 0.0),
+        "narrative_velocity_score": float(latest_features.get("narrative_velocity_score", 0.0) or 0.0),
+        "coordination_risk_score": float(latest_features.get("coordination_risk_score", 0.0) or 0.0),
         "trend": trend,
         "drivers": drivers,
         "events": events,
-        "confidenceInterval": {"lower": max(0, risk - 5), "upper": min(100, risk + 5)},
+        "confidenceInterval": confidence_interval,
     }
 
 
@@ -3180,10 +4037,7 @@ def dashboard_policy_replay(
     return result
 
 
-@app.get("/dashboard/governance")
-@limiter.limit("30/minute")
-def dashboard_governance(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
-
+def _build_governance_payload(mode: str = "online") -> dict[str, Any]:
     latest_doc = get_latest_global_doc(mode)
     base_risk = float(latest_doc.get("features", {}).get("global_risk_score", 50.0))
 
@@ -3259,7 +4113,6 @@ def dashboard_governance(request: Request, role: str = Depends(check_role), mode
     disagreement = []
     for i in range(len(models)):
         for j in range(i + 1, len(models)):
-            # Normalize pairwise vote distance to a 0..1 ratio for UI percentage rendering.
             raw_gap = abs(models[i]["vote"] - models[j]["vote"])
             disagreement.append({
                 "left": models[i]["name"],
@@ -3331,6 +4184,12 @@ def dashboard_governance(request: Request, role: str = Depends(check_role), mode
         "calibrationTrendByModel": calibration_trend_by_model,
         "selectedCalibrationModel": selected_model_name,
     }
+
+
+@app.get("/dashboard/governance")
+@limiter.limit("30/minute")
+def dashboard_governance(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+    return _build_governance_payload(mode)
 
 
 @app.post("/dashboard/alerts/action")
@@ -3435,12 +4294,20 @@ def _parse_timestamp(value) -> datetime:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):
-        normalized = value.replace("Z", "+00:00")
-        try:
-            parsed = datetime.fromisoformat(normalized)
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-        except ValueError:
-            return datetime.min.replace(tzinfo=timezone.utc)
+        normalized = value.strip()
+        if normalized:
+            try:
+                if len(normalized) == 16 and normalized.endswith('Z') and normalized[8] == 'T':
+                    parsed = datetime.strptime(normalized, '%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc)
+                    return parsed
+            except ValueError:
+                pass
+            normalized = normalized.replace("Z", "+00:00")
+            try:
+                parsed = datetime.fromisoformat(normalized)
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                return datetime.min.replace(tzinfo=timezone.utc)
     return datetime.min.replace(tzinfo=timezone.utc)
 
 
@@ -4432,28 +5299,56 @@ def sentinel_feedback(
 @app.get("/analytics/sentiment-forecast")
 @limiter.limit("15/minute")
 def analytics_sentiment_forecast(request: Request, role: str = Depends(check_role)):
-    # Prefer country-aggregated history because global snapshots can be sparse/flat.
     history = _aggregate_global_history_from_country_features(mode="online", limit=48)
+    history_source = "country_aggregated_history"
     if len(history) < 2:
         history = get_global_history(mode="online", limit=48)
+        history_source = "global_history"
     if not history:
         raise HTTPException(status_code=404, detail="No historical features available")
 
-    sentiments = [float((d.get("features", {}) or {}).get("news_sentiment", 0.0)) * 100 for d in history]
-    non_zero = [v for v in sentiments if abs(v) > 1e-6]
-    if len(non_zero) >= 2:
-        sentiments = non_zero
+    risk_scores: list[float] = []
+    for row in history:
+        features = (row.get("features") or {}) if isinstance(row, dict) else {}
+        score = _parse_float_maybe(features.get("system_global_risk_score"))
+        if score is None:
+            score = _parse_float_maybe(features.get("global_risk_score"))
+        if score is None:
+            continue
+        risk_scores.append(max(0.0, min(float(score), 100.0)))
+    if not risk_scores:
+        raise HTTPException(status_code=404, detail="No historical risk data available")
 
-    current = sentiments[-1]
-    slope = 0.0 if len(sentiments) < 2 else (sentiments[-1] - sentiments[0]) / max(1, len(sentiments) - 1)
+    current = risk_scores[-1]
+    confidence = 0.8 if len(risk_scores) >= 12 else 0.65 if len(risk_scores) >= 6 else 0.55
+    slope = 0.0 if len(risk_scores) < 2 else (risk_scores[-1] - risk_scores[0]) / max(1, len(risk_scores) - 1)
+    proposed_24h = current + (slope * 24)
+    horizon_bundle = _build_structural_forecast_horizons(
+        current_risk=current,
+        proposed_risk=proposed_24h,
+        confidence_ratio=confidence,
+        mode="online",
+        horizon_hours=24,
+    )
+    horizon_map = {int(item.get("hours", 0)): item for item in horizon_bundle.get("horizons", []) if isinstance(item, dict)}
+    quality = _prediction_quality_summary(mode="online")
 
     return {
         "timestamp": datetime.utcnow().isoformat(),
         "current_sentiment": round(current, 4),
-        "forecast_1h": round(current + slope * 1, 4),
-        "forecast_6h": round(current + slope * 6, 4),
-        "forecast_24h": round(current + slope * 24, 4),
-        "confidence": 0.8 if len(sentiments) >= 12 else 0.65 if len(sentiments) >= 6 else 0.55,
+        "current_risk": round(current, 4),
+        "forecast_1h": round(float((horizon_map.get(1) or {}).get("risk_score", current)), 4),
+        "forecast_6h": round(float((horizon_map.get(6) or {}).get("risk_score", current)), 4),
+        "forecast_24h": round(float((horizon_map.get(24) or {}).get("risk_score", current)), 4),
+        "forecast_7d": round(float((horizon_map.get(168) or {}).get("risk_score", current)), 4),
+        "confidence": confidence,
+        "source": "bounded_risk_projection",
+        "source_status": "derived_estimate",
+        "model_version": "bounded_structural_projection_v2",
+        "calibration_status": "structural_guarded",
+        "prediction_interval": None,
+        "fallback_reason": f"Structurally bounded projection over {len(risk_scores)} global risk points from {history_source}.",
+        **quality,
     }
 
 
@@ -4589,6 +5484,10 @@ def analytics_event_predictions(request: Request, role: str = Depends(check_role
             "affected_regions": [country_code],
             "confidence": round(confidence, 4),
             "timestamp": ts_value,
+            "source": "country_risk_delta",
+            "source_status": "derived_estimate",
+            "model_version": "country_baseline_delta_v1",
+            "fallback_reason": "Derived from current country risk versus recent baseline, then severity-ranked across countries.",
             "_severity_score_raw": severity_score_raw,
             "_risk_score": round(risk, 2),
         })
@@ -4775,6 +5674,22 @@ def predict(request: Request, payload: PredictionRequest, role: str = Depends(ch
     runtime_metrics.on_prediction()
 
     logging.info(f"version={version} | feature_names={model_feature_names} | prediction={prediction_output} | confidence={confidence}")
+    quality = _prediction_gate_action(mode="online")
+    gate_action = str(quality.get("gate_action") or "allow")
+    if gate_action == "suppress":
+        confidence = 0.0
+        prediction_output = 0.0
+        predicted_risk_score = 0.0
+        source_status = "withheld"
+        fallback_reason = "Prediction suppressed because reliability thresholds failed."
+    elif gate_action == "downgrade":
+        confidence = min(float(confidence), 0.35)
+        predicted_risk_score = round(confidence * 100.0, 4)
+        source_status = "degraded_live_model"
+        fallback_reason = "Prediction confidence downgraded because reliability thresholds were not fully met."
+    else:
+        source_status = "live_model"
+        fallback_reason = None
 
     return {
         "model_version": version,
@@ -4785,6 +5700,12 @@ def predict(request: Request, payload: PredictionRequest, role: str = Depends(ch
         "predicted_risk_score": predicted_risk_score,
         "probability": confidence,
         "drift_score": drift_score,
+        "source": "production_predict_endpoint",
+        "source_status": source_status,
+        "calibration_status": "probability_output" if hasattr(model, "predict_proba") else "score_output",
+        "prediction_interval": None,
+        "fallback_reason": fallback_reason,
+        **quality,
     }
 
 # =====================================================
@@ -5526,28 +6447,535 @@ def _latest_global_features_doc(mode: str = "online") -> dict | None:
 
 
 def _build_confidence_snapshot(mode: str = "online") -> dict:
-    doc = _latest_global_features_doc(mode=mode) or {}
+    doc = get_latest_global_doc(mode=mode)
     features = doc.get("features") or {}
+    forecast_contract = features.get("forecast_contract") if isinstance(features.get("forecast_contract"), dict) else _build_global_forecast_contract(mode=mode, features=features)
     mood_conf = features.get("global_mood_confidence")
     mood_unc = features.get("global_mood_uncertainty")
-    forecast_conf = features.get("forecast_confidence")
-    forecast_delta = features.get("forecast_risk_delta")
-    forecast_risk = features.get("forecast_risk_score")
+    forecast_delta = forecast_contract.get("risk_delta", features.get("forecast_risk_delta"))
+    forecast_risk = forecast_contract.get("risk_score")
     risk_now = features.get("global_risk_score")
     return {
         "global_risk_score": float(risk_now) if risk_now is not None else None,
         "global_mood_confidence": float(mood_conf) if mood_conf is not None else None,
         "global_mood_uncertainty": float(mood_unc) if mood_unc is not None else None,
-        "forecast_confidence": float(forecast_conf) if forecast_conf is not None else None,
+        "forecast_confidence": float(forecast_contract.get("confidence_ratio")) if forecast_contract.get("confidence_ratio") is not None else None,
+        "forecast_confidence_score": float(forecast_contract.get("confidence_score")) if forecast_contract.get("confidence_score") is not None else None,
         "forecast_risk_delta": float(forecast_delta) if forecast_delta is not None else None,
         "forecast_risk_score": float(forecast_risk) if forecast_risk is not None else None,
+        "forecast_source_status": forecast_contract.get("source_status"),
+        "forecast_calibration_status": forecast_contract.get("calibration_status"),
+        "forecast_gating_action": forecast_contract.get("gating_action"),
+        "forecast_withheld": bool(forecast_contract.get("withheld")),
         "timestamp": str(features.get("timestamp") or doc.get("timestamp") or datetime.now(timezone.utc).isoformat()),
     }
+
+
+
+def _prediction_quality_summary(mode: str = "online") -> dict[str, Any]:
+    latest_ingestion = _build_latest_ingestion()
+    freshness = _build_freshness_snapshot(latest_ingestion)
+    source_health = _build_source_health_snapshot()
+    coverage_snapshot = _compute_country_coverage_snapshot(mode=mode)
+    quality_gate = _build_quality_gate_snapshot(coverage_snapshot, freshness, source_health)
+    reasons = quality_gate.get("reasons") if isinstance(quality_gate.get("reasons"), list) else []
+    return {
+        "data_quality_status": "degraded" if bool(quality_gate.get("active")) else "healthy",
+        "quality_gate": quality_gate,
+        "freshness": {
+            "overall_status": freshness.get("overall_status"),
+            "freshness_ratio": freshness.get("freshness_ratio"),
+            "core_freshness_ratio": freshness.get("core_freshness_ratio"),
+        },
+        "source_health": {
+            "critical_down": int(source_health.get("critical_down_live", source_health.get("critical_down", 0)) or 0),
+            "warning_count": int(source_health.get("warning_count", 0) or 0),
+        },
+        "coverage": {
+            "verified": int(coverage_snapshot.get("verified", 0) or 0),
+            "total": int(coverage_snapshot.get("total", 0) or 0),
+        },
+        "advisory": str(quality_gate.get("message") or "Coverage healthy"),
+        "reasons": [str(reason) for reason in reasons if str(reason).strip()],
+    }
+
+
+
+def _build_prediction_feature_snapshot(mode: str = "online") -> list[dict[str, Any]]:
+    feature_specs = {
+        "news_sentiment": {"label": "News Sentiment", "scale": "sentiment", "importance_scale": 1.0},
+        "gdelt_sentiment": {"label": "GDELT Sentiment", "scale": "sentiment", "importance_scale": 1.0},
+        "crypto_return": {"label": "Crypto Return", "scale": "return", "importance_scale": 0.08},
+        "crypto_volatility": {"label": "Crypto Volatility", "scale": "volatility", "importance_scale": 40.0},
+        "stock_return": {"label": "Stock Return", "scale": "return", "importance_scale": 0.05},
+        "stock_volatility": {"label": "Stock Volatility", "scale": "volatility", "importance_scale": 4.0},
+        "weather_anomaly": {"label": "Weather Anomaly", "scale": "sentiment", "importance_scale": 1.0},
+        "direct_behavior_score": {"label": "Direct Behavior", "scale": "absolute_100", "importance_scale": 100.0},
+        "contextual_pressure_score": {"label": "Context Pressure", "scale": "absolute_100", "importance_scale": 100.0},
+        "evidence_quality_score": {"label": "Evidence Quality", "scale": "absolute_100", "importance_scale": 100.0},
+        "narrative_velocity_score": {"label": "Narrative Velocity", "scale": "normalized", "importance_scale": 1.0},
+        "coordination_risk_score": {"label": "Coordination Risk", "scale": "normalized", "importance_scale": 1.0},
+        "mobility_disruption_score": {"label": "Mobility Disruption", "scale": "normalized", "importance_scale": 1.0},
+        "logistics_stress_score": {"label": "Logistics Stress", "scale": "normalized", "importance_scale": 1.0},
+        "household_stress_score": {"label": "Household Stress", "scale": "normalized", "importance_scale": 1.0},
+        "fuel_price_pressure": {"label": "Fuel Pressure", "scale": "normalized", "importance_scale": 1.0},
+        "food_price_pressure": {"label": "Food Pressure", "scale": "normalized", "importance_scale": 1.0},
+        "labor_stress_score": {"label": "Labor Stress", "scale": "normalized", "importance_scale": 1.0},
+        "fx_pressure_score": {"label": "FX Pressure", "scale": "normalized", "importance_scale": 1.0},
+        "remittance_stress_score": {"label": "Remittance Stress", "scale": "normalized", "importance_scale": 1.0},
+        "energy_stress_score": {"label": "Energy Stress", "scale": "normalized", "importance_scale": 1.0},
+        "global_behavior_index": {"label": "Behavior Index", "scale": "absolute_100", "importance_scale": 100.0},
+        "global_context_index": {"label": "Context Index", "scale": "absolute_100", "importance_scale": 100.0},
+        "global_attention_index": {"label": "Attention Index", "scale": "absolute_100", "importance_scale": 100.0},
+        "global_disruption_index": {"label": "Disruption Index", "scale": "absolute_100", "importance_scale": 100.0},
+        "global_economic_stress_index": {"label": "Economic Stress Index", "scale": "absolute_100", "importance_scale": 100.0},
+        "global_risk_score": {"label": "Global Risk Score", "scale": "absolute_100", "importance_scale": 100.0},
+    }
+
+    try:
+        latest_doc = get_latest_global_doc(mode)
+        features = (latest_doc or {}).get("features", {}) if isinstance(latest_doc, dict) else {}
+    except Exception:
+        features = {}
+
+    def _raw_float(key: str) -> float:
+        try:
+            return float(features.get(key, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    snapshot: list[dict[str, Any]] = []
+    for key, spec in feature_specs.items():
+        raw_value = _raw_float(key)
+        scale = str(spec.get("scale") or "normalized")
+        importance_scale = float(spec.get("importance_scale") or 1.0)
+
+        if scale == "absolute_100":
+            display_value = round(max(0.0, min(raw_value, 100.0)), 2)
+            normalized_value = round(display_value / 100.0, 4)
+        elif scale == "normalized":
+            display_value = round(max(0.0, min(raw_value, 1.0)) * 100.0, 2)
+            normalized_value = round(max(0.0, min(raw_value, 1.0)), 4)
+        elif scale == "return":
+            display_value = round(raw_value * 100.0, 3)
+            normalized_value = round(max(-1.0, min(1.0, raw_value / importance_scale if importance_scale else raw_value)), 4)
+        elif scale == "volatility":
+            scaled = abs(raw_value) / importance_scale if importance_scale else abs(raw_value)
+            normalized_value = round(max(0.0, min(math.tanh(scaled), 1.0)), 4)
+            display_value = round(raw_value, 3)
+        else:  # sentiment / signed bounded signal
+            display_value = round(raw_value, 3)
+            normalized_value = round(max(-1.0, min(1.0, raw_value / importance_scale if importance_scale else raw_value)), 4)
+
+        importance = round(abs(normalized_value) * 100.0, 2)
+        direction = "positive" if normalized_value >= 0 else "negative"
+        snapshot.append({
+            "key": key,
+            "label": str(spec.get("label") or key),
+            "value": display_value,
+            "raw_value": round(raw_value, 6),
+            "normalized_value": normalized_value,
+            "importance": importance,
+            "direction": direction,
+            "scale": scale,
+        })
+
+    snapshot.sort(key=lambda entry: (float(entry.get("importance", 0.0)), float(entry.get("value", 0.0))), reverse=True)
+    return snapshot
+
+
+def _prediction_gate_action(mode: str = "online") -> dict[str, Any]:
+    quality = _prediction_quality_summary(mode=mode)
+    gate = quality.get("quality_gate") if isinstance(quality.get("quality_gate"), dict) else {}
+    status = str(gate.get("status") or "sufficient")
+    severe_statuses = {
+        "global_reliability_degraded",
+        "freshness_and_sources_degraded",
+        "critical_source_outage",
+    }
+    degraded_statuses = {
+        "coverage_and_freshness_degraded",
+        "coverage_and_sources_degraded",
+        "stale_global_data",
+        "insufficient_global_coverage",
+    }
+    if status in severe_statuses:
+        action = "suppress"
+    elif bool(gate.get("active")) or status in degraded_statuses:
+        action = "downgrade"
+    else:
+        action = "allow"
+    return {
+        **quality,
+        "gate_action": action,
+        "prediction_available": action != "suppress",
+    }
+
+
+def _infer_forecast_calibration_status(model_type: str | None, basis: str | None, source_status: str | None) -> str:
+    source_text = f"{model_type or ''} {basis or ''} {source_status or ''}".lower()
+    if str(source_status or '').lower() == 'withheld':
+        return 'withheld'
+    if any(token in source_text for token in ('fallback', 'heuristic', 'trend_extrapolation', 'statistical', 'derived')):
+        return 'fallback'
+    if any(token in source_text for token in ('calibrated', 'lstm', 'ensemble', 'advanced', 'production')):
+        return 'calibrated'
+    return 'unknown'
+
+
+def _normalize_prediction_interval(interval: Any) -> dict[str, float] | None:
+    if not isinstance(interval, dict):
+        return None
+    values = {}
+    for key in ('p10', 'p50', 'p90'):
+        value = _parse_float_maybe(interval.get(key))
+        if value is not None:
+            values[key] = round(max(0.0, min(float(value), 100.0)), 2)
+    return values or None
+
+
+def _prediction_row_hours(row: Any) -> int | None:
+    if not isinstance(row, dict):
+        return None
+    direct = _parse_float_maybe(row.get('horizon_hours'))
+    if direct is None:
+        direct = _parse_float_maybe(row.get('hours'))
+    if direct is not None:
+        return max(1, int(round(float(direct))))
+    horizon = str(row.get('horizon') or '').strip().lower()
+    mapping = {
+        '1h': 1,
+        '6h': 6,
+        '24h': 24,
+        '1d': 24,
+        '7d': 168,
+        '7day': 168,
+        '7days': 168,
+    }
+    return mapping.get(horizon)
+
+
+def _select_prediction_row(prediction_rows: list[dict[str, Any]], preferred_hours: int = 24) -> dict[str, Any]:
+    exact_match = None
+    closest_match = None
+    closest_distance = None
+    fallback = {}
+    for row in prediction_rows:
+        if not isinstance(row, dict):
+            continue
+        if not fallback:
+            fallback = row
+        hours = _prediction_row_hours(row)
+        if hours is None:
+            continue
+        if hours == preferred_hours:
+            exact_match = row
+            break
+        distance = abs(hours - preferred_hours)
+        if closest_distance is None or distance < closest_distance:
+            closest_match = row
+            closest_distance = distance
+    return exact_match or closest_match or fallback
+
+
+def _recent_global_risk_scores(mode: str = 'online', limit: int = 24) -> list[float]:
+    history = _aggregate_global_history_from_country_features(mode=mode, limit=limit)
+    if len(history) < 2:
+        history = get_global_history(mode=mode, limit=limit)
+    scores: list[float] = []
+    for row in history:
+        features = (row.get('features') or {}) if isinstance(row, dict) else {}
+        score = _parse_float_maybe(features.get('system_global_risk_score'))
+        if score is None:
+            score = _parse_float_maybe(features.get('global_risk_score'))
+        if score is None:
+            continue
+        scores.append(max(0.0, min(float(score), 100.0)))
+    return scores
+
+
+def _latest_country_risk_scores(mode: str = 'online', limit: int = 800) -> list[float]:
+    scores: list[float] = []
+    seen: set[str] = set()
+    try:
+        docs = db.country_features.find({'mode': mode}).sort('timestamp', -1).limit(limit)
+        for doc in docs:
+            country = str(doc.get('country') or '').strip().upper()
+            if not country or country in seen:
+                continue
+            seen.add(country)
+            features = doc.get('features') or {}
+            score = _parse_float_maybe(features.get('global_risk_score'))
+            if score is None:
+                continue
+            scores.append(max(0.0, min(float(score), 100.0)))
+    except Exception:
+        return []
+    return scores
+
+
+def _build_structural_forecast_horizons(
+    current_risk: float,
+    proposed_risk: float | None,
+    confidence_ratio: float,
+    *,
+    mode: str = 'online',
+    horizon_hours: int = 24,
+) -> dict[str, Any]:
+    current = max(0.0, min(float(current_risk or 50.0), 100.0))
+    proposed = current if proposed_risk is None else max(0.0, min(float(proposed_risk), 100.0))
+    confidence = max(0.0, min(float(confidence_ratio or 0.0), 1.0))
+
+    recent_scores = _recent_global_risk_scores(mode=mode, limit=max(24, horizon_hours))
+    recent_window = recent_scores[-12:] if recent_scores else [current]
+    recent_peak = max(recent_window) if recent_window else current
+
+    country_scores = _latest_country_risk_scores(mode=mode)
+    top_scores = sorted(country_scores, reverse=True)[:12]
+    top_mean = (sum(top_scores) / len(top_scores)) if top_scores else current
+    critical_count = sum(1 for score in country_scores if score >= 85.0)
+    high_count = sum(1 for score in country_scores if score >= 65.0)
+
+    structural_support = max(35.0, min(82.0, top_mean * 0.72))
+    if critical_count >= 4:
+        structural_support = max(structural_support, 62.0 + min((critical_count - 4) * 1.4, 10.0))
+    if high_count >= 12:
+        structural_support = max(structural_support, 58.0 + min((high_count - 12) * 0.5, 8.0))
+
+    history_support = max(35.0, recent_peak - (8.0 if current >= 65.0 else 12.0 if current >= 50.0 else 16.0))
+    movement_scale = 0.7 + (confidence * 0.6)
+    max_drop_24h = (4.5 if current >= 75.0 else 6.0 if current >= 65.0 else 8.0 if current >= 50.0 else 10.0) * movement_scale
+    support_floor = max(current - max_drop_24h, history_support, structural_support)
+
+    upper_cap = min(100.0, max(current + max(6.0, 10.0 * movement_scale), recent_peak + 4.0))
+    target_24h = max(support_floor, min(upper_cap, proposed))
+
+    easing_denominator = max(float(horizon_hours), 24.0) / 2.6
+    easing_denominator = max(easing_denominator, 1.0)
+
+    def _interpolate(hours: int) -> float:
+        if hours >= 24:
+            return target_24h
+        progress = 1.0 - math.exp(-float(hours) / easing_denominator)
+        return current + ((target_24h - current) * progress)
+
+    score_1h = max(0.0, min(100.0, _interpolate(1)))
+    score_6h = max(0.0, min(100.0, _interpolate(6)))
+    score_24h = max(0.0, min(100.0, target_24h))
+
+    seven_day_support = max(support_floor, score_24h - max(2.5, abs(score_24h - current) * 0.25))
+    seven_day_continuation = score_24h + max(0.0, score_24h - current) * 0.35
+    score_7d = max(seven_day_support, min(100.0, seven_day_continuation))
+
+    horizons = [
+        {'label': '1h', 'hours': 1, 'risk_score': round(score_1h, 2), 'risk_delta': round(score_1h - current, 2)},
+        {'label': '6h', 'hours': 6, 'risk_score': round(score_6h, 2), 'risk_delta': round(score_6h - current, 2)},
+        {'label': '24h', 'hours': 24, 'risk_score': round(score_24h, 2), 'risk_delta': round(score_24h - current, 2)},
+        {'label': '7d', 'hours': 168, 'risk_score': round(score_7d, 2), 'risk_delta': round(score_7d - current, 2)},
+    ]
+    return {
+        'support_floor': round(support_floor, 2),
+        'structural_support': round(structural_support, 2),
+        'history_support': round(history_support, 2),
+        'critical_country_count': critical_count,
+        'high_country_count': high_count,
+        'horizons': horizons,
+    }
+
+
+def _build_global_forecast_contract(
+    mode: str = 'online',
+    *,
+    features: dict[str, Any] | None = None,
+    predictions_payload: dict[str, Any] | None = None,
+    quality: dict[str, Any] | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    if features is None:
+        latest_doc = get_latest_global_doc(mode)
+        features = (latest_doc or {}).get('features', {}) if isinstance(latest_doc, dict) else {}
+    if not isinstance(features, dict):
+        features = {}
+    quality = quality if isinstance(quality, dict) else _prediction_gate_action(mode=mode)
+    gate_action = str(quality.get('gate_action') or 'allow')
+    payload = predictions_payload if isinstance(predictions_payload, dict) else {}
+    prediction_rows = payload.get('predictions') if isinstance(payload.get('predictions'), list) else []
+    selected_prediction = _select_prediction_row([row for row in prediction_rows if isinstance(row, dict)], preferred_hours=24)
+
+    current_risk = _parse_float_maybe(features.get('system_global_risk_score'))
+    if current_risk is None:
+        current_risk = _parse_float_maybe(features.get('global_risk_score'))
+    if current_risk is None:
+        current_risk = _parse_float_maybe(features.get('legacy_model_global_risk_score'))
+    current_risk = max(0.0, min(float(current_risk if current_risk is not None else 50.0), 100.0))
+
+    risk_candidate = _parse_float_maybe(selected_prediction.get('risk_score'))
+    if risk_candidate is None:
+        risk_candidate = _parse_float_maybe(features.get('forecast_risk_score'))
+    if risk_candidate is None:
+        risk_candidate = current_risk
+
+    confidence_candidate = _parse_float_maybe(selected_prediction.get('confidence'))
+    if confidence_candidate is None:
+        confidence_candidate = _parse_float_maybe(features.get('forecast_confidence'))
+    confidence_ratio = max(0.0, min(float(confidence_candidate or 0.0), 1.0))
+
+    selected_horizon_hours = _prediction_row_hours(selected_prediction)
+    horizon_hours = max(1, int(selected_horizon_hours or _parse_float_maybe(features.get('forecast_horizon_hours')) or 24))
+
+    source_status = str(payload.get('source_status') or '').strip().lower()
+    basis = str(features.get('forecast_basis') or payload.get('source') or 'global_forecast_contract')
+    model_version = str(payload.get('model_type') or features.get('forecast_model_version') or features.get('model_version') or 'unknown')
+    calibration_status = str(payload.get('calibration_status') or _infer_forecast_calibration_status(model_version, basis, source_status))
+
+    horizon_bundle = _build_structural_forecast_horizons(
+        current_risk=current_risk,
+        proposed_risk=risk_candidate,
+        confidence_ratio=confidence_ratio,
+        mode=mode,
+        horizon_hours=horizon_hours,
+    )
+    horizon_map = {int(item.get('hours', 0)): item for item in horizon_bundle.get('horizons', []) if isinstance(item, dict)}
+    selected_horizon = horizon_map.get(24) or next(iter(horizon_map.values()), {'risk_score': current_risk, 'risk_delta': 0.0})
+
+    if gate_action == 'suppress':
+        source_status = 'withheld'
+        calibration_status = 'withheld'
+        risk_score = None
+        risk_delta = None
+        prediction_interval = None
+        horizons = []
+    else:
+        if not source_status:
+            if calibration_status == 'calibrated':
+                source_status = 'calibrated_model'
+            elif calibration_status == 'fallback':
+                source_status = 'fallback'
+            else:
+                source_status = 'derived_estimate' if risk_candidate is not None else 'model_unavailable'
+        risk_score = round(max(0.0, min(float(selected_horizon.get('risk_score', current_risk) or current_risk), 100.0)), 2)
+        risk_delta = round(float(selected_horizon.get('risk_delta', risk_score - current_risk) or 0.0), 2)
+        prediction_interval = _normalize_prediction_interval(selected_prediction.get('interval'))
+        horizons = horizon_bundle.get('horizons', [])
+
+    reasons = [str(reason) for reason in (quality.get('reasons') or []) if str(reason).strip()]
+    fallback_reason = str(payload.get('fallback_reason') or '').strip()
+    if fallback_reason and fallback_reason not in reasons:
+        reasons.append(fallback_reason)
+    if gate_action != 'suppress' and risk_candidate is not None and abs(float(risk_candidate) - float(risk_score or current_risk)) >= 3.0:
+        reasons.append('Forecast bounded by structural global-risk support to prevent unrealistic unwind.')
+
+    contract = {
+        'source': str(payload.get('source') or 'global_forecast_contract'),
+        'source_status': source_status,
+        'calibration_status': calibration_status,
+        'gating_action': gate_action,
+        'prediction_available': gate_action != 'suppress',
+        'withheld': gate_action == 'suppress',
+        'risk_score': risk_score,
+        'confidence_ratio': round(confidence_ratio, 4),
+        'confidence_score': round(confidence_ratio * 100.0, 2),
+        'risk_delta': risk_delta,
+        'horizon_hours': 24,
+        'prediction_interval': prediction_interval,
+        'advisory': str(payload.get('fallback_reason') or quality.get('advisory') or 'Forecast available'),
+        'reasons': reasons,
+        'quality_status': str(quality.get('data_quality_status') or 'healthy'),
+        'basis': basis,
+        'model_version': model_version,
+        'generated_at': generated_at or str(features.get('timestamp') or datetime.now(timezone.utc).isoformat()),
+        'support_floor': horizon_bundle.get('support_floor'),
+        'horizons': horizons,
+        'score_semantics': {
+            'risk_score': '0-100 forecast risk score; null when quality gating withholds the forecast.',
+            'confidence_score': '0-100 forecast confidence after gating and calibration semantics are applied.',
+            'gating_action': 'allow, downgrade, or suppress depending on freshness, coverage, and source-health reliability.',
+            'source_status': 'calibrated_model, degraded_calibrated_model, fallback, degraded_fallback, derived_estimate, model_unavailable, or withheld.',
+        },
+    }
+    return contract
+
+
+def _extract_advanced_insights_results(insights: Any) -> dict[str, Any]:
+    if isinstance(insights, dict) and 'results' in insights:
+        return insights.get('results', {}) or {}
+    if isinstance(insights, dict) and 'status' in insights:
+        return insights
+    return insights if isinstance(insights, dict) else {}
+
+
+def _store_advanced_insights_cache(result: dict[str, Any]) -> dict[str, Any]:
+    global ADVANCED_INSIGHTS_CACHE
+    global ADVANCED_INSIGHTS_CACHE_AT
+    ADVANCED_INSIGHTS_CACHE = result
+    ADVANCED_INSIGHTS_CACHE_AT = time.time()
+    return result
+
+
+def _load_advanced_insights_results() -> dict[str, Any]:
+    global ADVANCED_INSIGHTS_FUTURE
+    global ADVANCED_INSIGHTS_FUTURE_STARTED_AT
+
+    from machine_learning.advanced_analytics import run_advanced_analytics
+
+    now_ts = time.time()
+    future = None
+    with ADVANCED_INSIGHTS_CACHE_LOCK:
+        if _advanced_insights_cache_fresh(now_ts):
+            return ADVANCED_INSIGHTS_CACHE
+
+        if ADVANCED_INSIGHTS_FUTURE is not None and ADVANCED_INSIGHTS_FUTURE.done():
+            try:
+                completed = _extract_advanced_insights_results(ADVANCED_INSIGHTS_FUTURE.result())
+            except Exception as exc:
+                logger.warning('advanced_insights_cached_future_failed error=%s', exc)
+            else:
+                _store_advanced_insights_cache(completed)
+            ADVANCED_INSIGHTS_FUTURE = None
+            ADVANCED_INSIGHTS_FUTURE_STARTED_AT = 0.0
+            if _advanced_insights_cache_fresh(now_ts):
+                return ADVANCED_INSIGHTS_CACHE
+
+        if ADVANCED_INSIGHTS_FUTURE is not None and (now_ts - ADVANCED_INSIGHTS_FUTURE_STARTED_AT) > ADVANCED_INSIGHTS_STALL_SECONDS:
+            _reset_advanced_insights_executor('stalled_future')
+
+        if ADVANCED_INSIGHTS_FUTURE is None:
+            ADVANCED_INSIGHTS_FUTURE = ADVANCED_INSIGHTS_EXECUTOR.submit(run_advanced_analytics)
+            ADVANCED_INSIGHTS_FUTURE_STARTED_AT = now_ts
+
+        future = ADVANCED_INSIGHTS_FUTURE
+
+    try:
+        resolved = _extract_advanced_insights_results(future.result(timeout=ADVANCED_INSIGHTS_WAIT_TIMEOUT_SECONDS))
+    except FuturesTimeoutError as exc:
+        with ADVANCED_INSIGHTS_CACHE_LOCK:
+            if _advanced_insights_cache_fresh():
+                return ADVANCED_INSIGHTS_CACHE
+        raise RuntimeError('Advanced analytics computation still in progress') from exc
+    except Exception as exc:
+        with ADVANCED_INSIGHTS_CACHE_LOCK:
+            if ADVANCED_INSIGHTS_FUTURE is future:
+                ADVANCED_INSIGHTS_FUTURE = None
+                ADVANCED_INSIGHTS_FUTURE_STARTED_AT = 0.0
+            if _advanced_insights_cache_fresh():
+                return ADVANCED_INSIGHTS_CACHE
+        raise RuntimeError(f'Advanced analytics computation failed: {exc}') from exc
+
+    with ADVANCED_INSIGHTS_CACHE_LOCK:
+        if ADVANCED_INSIGHTS_FUTURE is future:
+            ADVANCED_INSIGHTS_FUTURE = None
+            ADVANCED_INSIGHTS_FUTURE_STARTED_AT = 0.0
+        return _store_advanced_insights_cache(resolved)
 
 
 @app.get("/trust/reliability")
 @limiter.limit("20/minute")
 def trust_reliability(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
+    cache_key = f"mode={mode}"
+    cached = _dashboard_cache_get("trust", cache_key)
+    if isinstance(cached, dict):
+        return cached
+
     runtime_snapshot = runtime_metrics.snapshot()
     started_at = _coerce_utc_datetime(runtime_snapshot.get("started_at")) or datetime.now(timezone.utc)
     uptime_seconds = max(0.0, (datetime.now(timezone.utc) - started_at).total_seconds())
@@ -5641,7 +7069,7 @@ def trust_reliability(request: Request, role: str = Depends(check_role), mode: s
     if ready_error:
         payload["api_health"]["error"] = ready_error
 
-    return payload
+    return _dashboard_cache_set("trust", cache_key, payload)
 
 
 @app.get("/trust/backtests/country")
@@ -5914,7 +7342,10 @@ def _connect_live_consumer(topic: str, group_prefix: str):
 
 
 def _latest_online_global_doc() -> dict:
-    return db.global_features.find_one({"mode": "online"}, sort=[("_id", DESCENDING)]) or {}
+    try:
+        return get_latest_global_doc(mode="online") or {}
+    except Exception:
+        return db.global_features.find_one({"mode": "online"}, sort=[("_id", DESCENDING)]) or {}
 
 
 
@@ -6022,13 +7453,23 @@ async def websocket_risk(
         await websocket.send_json(_build_live_risk_snapshot())
         last_snapshot_emit = time.monotonic()
         while True:
-            if consumer is None:
+            if consumer is None and _consumer_retry_allowed("risk"):
                 try:
                     consumer = await asyncio.to_thread(_connect_live_consumer, LIVE_UPDATE_TOPIC, "dashboard-live-risk")
                 except Exception as exc:
+                    _mark_consumer_unavailable("risk")
                     logger.warning("live_risk_ws_consumer_unavailable", extra={"event": {"error": str(exc)}})
-                    await asyncio.sleep(3)
-                    continue
+
+            if consumer is None:
+                if time.monotonic() - last_snapshot_emit >= snapshot_interval_seconds:
+                    await websocket.send_json(_build_live_risk_snapshot())
+                    last_snapshot_emit = time.monotonic()
+                    last_keepalive = time.monotonic()
+                elif time.monotonic() - last_keepalive >= WS_IDLE_KEEPALIVE_SECONDS:
+                    await websocket.send_json(_heartbeat_message("risk"))
+                    last_keepalive = time.monotonic()
+                await asyncio.sleep(0.5)
+                continue
 
             try:
                 messages = await asyncio.to_thread(_drain_consumer_messages, consumer)
@@ -6104,10 +7545,14 @@ async def websocket_country_risk_map(
 
         while True:
             if consumer is None:
-                await asyncio.sleep(3)
+                await asyncio.sleep(0.5)
+                if not _consumer_retry_allowed("country_risk_map"):
+                    continue
                 try:
                     consumer = await asyncio.to_thread(_connect_live_consumer, LIVE_UPDATE_TOPIC, "dashboard-country-risk")
-                except Exception:
+                except Exception as exc:
+                    _mark_consumer_unavailable("country_risk_map")
+                    logger.warning("country_risk_ws_consumer_unavailable", extra={"event": {"error": str(exc)}})
                     continue
                 continue
 
@@ -6130,8 +7575,9 @@ async def websocket_country_risk_map(
                 await asyncio.sleep(0.1)
                 continue
 
+            quality_context = _country_intelligence_global_context(mode="online")
             for payload in messages:
-                await websocket.send_json(payload)
+                await websocket.send_json(_canonicalize_country_intelligence_row(payload, mode="online", global_quality=quality_context))
     except WebSocketDisconnect:
         return
     finally:
@@ -6315,24 +7761,8 @@ def analytics_advanced_insights(request: Request, role: str = Depends(check_role
     Returns data in the format expected by the frontend AdvancedAnalyticsPanel.
     """
     try:
-        from machine_learning.advanced_analytics import run_advanced_analytics
-        # Guard against long-running advanced analytics calls so frontend does not timeout.
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(run_advanced_analytics)
-            try:
-                insights = future.result(timeout=12)
-            except FuturesTimeoutError:
-                logger.warning("advanced_analytics_timeout")
-                future.cancel()
-                raise RuntimeError("Advanced analytics computation timed out")
-        
-        # Handle nested 'results' structure if present
-        if isinstance(insights, dict) and "results" in insights:
-            results = insights.get("results", {})
-        elif isinstance(insights, dict) and "status" in insights:
-            results = insights
-        else:
-            results = insights
+        results = _load_advanced_insights_results()
+        generated_at = datetime.utcnow().isoformat()
         
         # Transform predictions
         predictions_data = results.get("predictions", results.get("lstm", {}))
@@ -6434,14 +7864,75 @@ def analytics_advanced_insights(request: Request, role: str = Depends(check_role
                 "risk_level": "moderate"
             }
         
+        latest_doc = get_latest_global_doc("online")
+        latest_features = (latest_doc or {}).get("features", {}) if isinstance(latest_doc, dict) else {}
+        quality = _prediction_gate_action(mode="online")
+        gate_action = str(quality.get("gate_action") or "allow")
+        prediction_source_status = "fallback" if "fallback" in str(predictions_transformed.get("model_type", "")).lower() else ("calibrated_model" if predictions_transformed.get("predictions") else "model_unavailable")
+        predictions_payload = {
+            **predictions_transformed,
+            "source": "advanced_analytics",
+            "source_status": prediction_source_status,
+            "calibration_status": "calibrated" if prediction_source_status == "calibrated_model" else "fallback",
+            "fallback_reason": None if prediction_source_status == "calibrated_model" else "Advanced analytics returned fallback or partial prediction output.",
+        }
+        if gate_action == "suppress":
+            predictions_payload.update({
+                "predictions": [],
+                "model_type": "withheld_by_quality_gate",
+                "source_status": "withheld",
+                "calibration_status": "withheld",
+                "fallback_reason": "Predictions suppressed because reliability thresholds failed.",
+            })
+        elif gate_action == "downgrade":
+            predictions_payload["predictions"] = [
+                {
+                    **row,
+                    "confidence": round(min(float(row.get("confidence", 0.0) or 0.0), 0.35), 2),
+                }
+                for row in (predictions_payload.get("predictions") or [])
+                if isinstance(row, dict)
+            ]
+            predictions_payload["source_status"] = "degraded_calibrated_model"
+            predictions_payload["fallback_reason"] = "Predictions downgraded because reliability thresholds were not fully met."
+
+        forecast_contract = _build_global_forecast_contract(
+            mode="online",
+            features=latest_features,
+            predictions_payload=predictions_payload,
+            quality=quality,
+            generated_at=generated_at,
+        )
+        canonical_predictions = {
+            **predictions_payload,
+            "predictions": [
+                {
+                    "horizon": str(item.get("label") or f"{int(item.get('hours', 24))}h"),
+                    "risk_score": float(item.get("risk_score", forecast_contract.get("risk_score", 50.0)) or 50.0),
+                    "confidence": float(forecast_contract.get("confidence_ratio", 0.0) or 0.0),
+                    "interval": forecast_contract.get("prediction_interval"),
+                }
+                for item in (forecast_contract.get("horizons") or [])
+                if isinstance(item, dict)
+            ],
+            "source_status": forecast_contract.get("source_status"),
+            "calibration_status": forecast_contract.get("calibration_status"),
+            "model_type": forecast_contract.get("model_version") or predictions_payload.get("model_type"),
+            "fallback_reason": forecast_contract.get("advisory") or predictions_payload.get("fallback_reason"),
+        }
         return {
-            "timestamp": datetime.utcnow().isoformat(),
-            "predictions": predictions_transformed,
+            "timestamp": generated_at,
+            "generated_at": generated_at,
+            "predictions": canonical_predictions,
+            "forecast_contract": forecast_contract,
             "anomalies": anomalies_transformed,
             "causal_graph": causal_graph_transformed,
             "sentiment_momentum": sentiment_momentum_transformed,
             "ai_report": ai_report_transformed,
+            "feature_snapshot": _build_prediction_feature_snapshot("online"),
+            "governance": _build_governance_payload("online"),
             "ml_observability": results.get("ml_observability", {}),
+            **quality,
         }
         
     except Exception as e:
@@ -6470,12 +7961,62 @@ def analytics_advanced_insights(request: Request, role: str = Depends(check_role
                 }
             )
 
+        quality = _prediction_gate_action(mode="online")
+        gate_action = str(quality.get("gate_action") or "allow")
+        generated_at = datetime.utcnow().isoformat()
+        predictions_payload = {
+            "predictions": dynamic_preds,
+            "model_type": "statistical_fallback",
+            "source": "advanced_analytics",
+            "source_status": "fallback",
+            "calibration_status": "fallback",
+            "fallback_reason": "Advanced analytics failed, so dynamic statistical fallback projections were used.",
+        }
+        if gate_action == "suppress":
+            predictions_payload.update({
+                "predictions": [],
+                "model_type": "withheld_by_quality_gate",
+                "source_status": "withheld",
+                "calibration_status": "withheld",
+                "fallback_reason": "Predictions suppressed because reliability thresholds failed.",
+            })
+        elif gate_action == "downgrade":
+            predictions_payload["predictions"] = [
+                {**row, "confidence": round(min(float(row.get("confidence", 0.0) or 0.0), 0.35), 2)}
+                for row in predictions_payload.get("predictions", [])
+                if isinstance(row, dict)
+            ]
+            predictions_payload["source_status"] = "degraded_fallback"
+            predictions_payload["fallback_reason"] = "Fallback projections downgraded because reliability thresholds were not fully met."
+        forecast_contract = _build_global_forecast_contract(
+            mode="online",
+            features=latest_features,
+            predictions_payload=predictions_payload,
+            quality=quality,
+            generated_at=generated_at,
+        )
+        canonical_predictions = {
+            **predictions_payload,
+            "predictions": [
+                {
+                    "horizon": str(item.get("label") or f"{int(item.get('hours', 24))}h"),
+                    "risk_score": float(item.get("risk_score", forecast_contract.get("risk_score", 50.0)) or 50.0),
+                    "confidence": float(forecast_contract.get("confidence_ratio", 0.0) or 0.0),
+                    "interval": forecast_contract.get("prediction_interval"),
+                }
+                for item in (forecast_contract.get("horizons") or [])
+                if isinstance(item, dict)
+            ],
+            "source_status": forecast_contract.get("source_status"),
+            "calibration_status": forecast_contract.get("calibration_status"),
+            "model_type": forecast_contract.get("model_version") or predictions_payload.get("model_type"),
+            "fallback_reason": forecast_contract.get("advisory") or predictions_payload.get("fallback_reason"),
+        }
         return {
-            "timestamp": datetime.utcnow().isoformat(),
-            "predictions": {
-                "predictions": dynamic_preds,
-                "model_type": "statistical_fallback"
-            },
+            "timestamp": generated_at,
+            "generated_at": generated_at,
+            "predictions": canonical_predictions,
+            "forecast_contract": forecast_contract,
             "anomalies": [],
             "causal_graph": [],
             "sentiment_momentum": {
@@ -6491,7 +8032,11 @@ def analytics_advanced_insights(request: Request, role: str = Depends(check_role
                 "key_findings": [],
                 "recommendations": [],
                 "risk_level": "moderate"
-            }
+            },
+            "feature_snapshot": _build_prediction_feature_snapshot("online"),
+            "governance": _build_governance_payload("online"),
+            "ml_observability": {},
+            **quality,
         }
 
 
@@ -6701,7 +8246,28 @@ def _compute_country_coverage_snapshot(mode: str = "online") -> dict:
     no_data = 0
     for row in docs:
         features = (row.get("doc") or {}).get("features") or {}
-        quality = assess_country_risk_quality(features.get("top_topics"), features.get("timestamp"))
+        quality = assess_country_risk_quality(
+            features.get("top_topics"),
+            features.get("timestamp"),
+            source_count=features.get("source_count"),
+            external_signal_freshness=features.get("external_signal_freshness"),
+            external_sources=features.get("external_sources"),
+            evidence_quality_score=features.get("evidence_quality_score"),
+            war_state_rules=features.get("war_state_rules"),
+            public_attention_score=features.get("public_attention_score"),
+            narrative_velocity_score=features.get("narrative_velocity_score"),
+            coordination_risk_score=features.get("coordination_risk_score"),
+            mobility_disruption_score=features.get("mobility_disruption_score"),
+            logistics_stress_score=features.get("logistics_stress_score"),
+            household_stress_score=features.get("household_stress_score"),
+            fuel_price_pressure=features.get("fuel_price_pressure"),
+            food_price_pressure=features.get("food_price_pressure"),
+            labor_stress_score=features.get("labor_stress_score"),
+            fx_pressure_score=features.get("fx_pressure_score"),
+            remittance_stress_score=features.get("remittance_stress_score"),
+            energy_stress_score=features.get("energy_stress_score"),
+            weather_stress=features.get("weather_stress"),
+        )
         if quality.get("validated_today"):
             verified += 1
         elif quality.get("data_quality") == "stale":

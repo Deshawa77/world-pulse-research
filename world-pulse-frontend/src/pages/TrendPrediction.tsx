@@ -11,10 +11,15 @@ import predictionService, {
 
 import API, {
   API_HEADERS,
-  getGovernanceData,
+  getAdvancedInsights,
+  getLatestGlobalFeatures,
   getRiskMap,
+  getTrustReliability,
+  type AdvancedInsightsData,
   type GovernanceData,
+  type LatestGlobalResponse,
   type RiskMapPoint,
+  type TrustReliabilitySnapshot,
 } from "../services/api";
 import ConsoleNavigation from "../components/ConsoleNavigation";
 import "../components/futuristic-dashboard.css";
@@ -25,7 +30,6 @@ const WorldGlobe3D = lazy(() => import("../components/WorldGlobe3D"));
 const RiskCorrelationMatrix = lazy(() => import("../components/RiskCorrelationMatrix"));
 const HistoricalPlayback = lazy(() => import("../components/HistoricalPlayback"));
 const CountryComparison = lazy(() => import("../components/CountryComparison"));
-const AdvancedAnalyticsPanel = lazy(() => import("../components/AdvancedAnalyticsPanel"));
 
 type MLModel = {
   name: string;
@@ -48,6 +52,14 @@ type PredictionData = {
   intelligence_adjustment?: number;
   intelligence_pressure?: number;
   confidence_weight?: number;
+  source?: string;
+  source_status?: string;
+  calibration_status?: string;
+  prediction_interval?: Record<string, number> | null;
+  fallback_reason?: string | null;
+  data_quality_status?: string;
+  advisory?: string;
+  reasons?: string[];
 };
 
 type SnapshotLike = {
@@ -58,12 +70,22 @@ type SnapshotLike = {
 
 type PanelStatus = "live" | "no-data" | "error";
 
+type RiskForecastPoint = {
+  horizon: string;
+  risk_score: number;
+  confidence: number;
+  p10?: number;
+  p50?: number;
+  p90?: number;
+};
+
 const PREDICTION_LOGS_CACHE_KEY = "wp_v1_prediction_logs";
 const CURRENT_PREDICTION_CACHE_KEY = "wp_v1_current_prediction";
 type Timeframe = "1h" | "6h" | "24h" | "7d";
 
 const DEFAULT_FEATURE_NAMES = MODEL_FEATURE_DEFS.map((item) => item.label);
 const DEFAULT_FEATURE_KEYS = MODEL_FEATURE_DEFS.map((item) => item.key);
+const AUTO_REFRESH_INTERVAL_MS = 90000;
 
 function safeN(value: unknown, fallback = 0): number {
   const n = Number(value);
@@ -118,6 +140,20 @@ function normalizeHistoricalRows(rows: unknown[]): HistoricalDataPoint[] {
       global_attention_index: safeN(row.global_attention_index ?? nested.global_attention_index),
       global_disruption_index: safeN(row.global_disruption_index ?? nested.global_disruption_index),
       global_economic_stress_index: safeN(row.global_economic_stress_index ?? nested.global_economic_stress_index),
+      direct_behavior_score: safeN(row.direct_behavior_score ?? nested.direct_behavior_score),
+      contextual_pressure_score: safeN(row.contextual_pressure_score ?? nested.contextual_pressure_score),
+      evidence_quality_score: safeN(row.evidence_quality_score ?? nested.evidence_quality_score),
+      narrative_velocity_score: safeN(row.narrative_velocity_score ?? nested.narrative_velocity_score),
+      coordination_risk_score: safeN(row.coordination_risk_score ?? nested.coordination_risk_score),
+      mobility_disruption_score: safeN(row.mobility_disruption_score ?? nested.mobility_disruption_score),
+      logistics_stress_score: safeN(row.logistics_stress_score ?? nested.logistics_stress_score),
+      household_stress_score: safeN(row.household_stress_score ?? nested.household_stress_score),
+      fuel_price_pressure: safeN(row.fuel_price_pressure ?? nested.fuel_price_pressure),
+      food_price_pressure: safeN(row.food_price_pressure ?? nested.food_price_pressure),
+      labor_stress_score: safeN(row.labor_stress_score ?? nested.labor_stress_score),
+      fx_pressure_score: safeN(row.fx_pressure_score ?? nested.fx_pressure_score),
+      remittance_stress_score: safeN(row.remittance_stress_score ?? nested.remittance_stress_score),
+      energy_stress_score: safeN(row.energy_stress_score ?? nested.energy_stress_score),
       global_mood_score: safeN(row.global_mood_score ?? nested.global_mood_score),
       forecast_risk_score: safeN(row.forecast_risk_score ?? nested.forecast_risk_score),
       forecast_risk_delta: safeN(row.forecast_risk_delta ?? nested.forecast_risk_delta),
@@ -243,13 +279,6 @@ function filterLogsForTimeframe(logs: PredictionLog[], timeframe: Timeframe): Pr
       return aTs - bTs;
     });
 }
-function toPredictionUnit(prediction: unknown, probability: unknown, fallback = 0.5): number {
-  const pred = safeN(prediction, fallback);
-  const probUnit = normalizeUnitValue(probability, fallback);
-  // Many logs store class labels (0/1) as prediction; use probability for trajectory in that case.
-  if (pred === 0 || pred === 1) return probUnit;
-  return normalizeUnitValue(pred, probUnit);
-}
 function computePearsonCorrelation(a: number[], b: number[]): number | null {
   const n = Math.min(a.length, b.length);
   if (n < 2) return null;
@@ -271,6 +300,42 @@ function computePearsonCorrelation(a: number[], b: number[]): number | null {
   if (!Number.isFinite(den) || den <= 1e-9) return null;
   return Math.max(-1, Math.min(1, num / den));
 }
+function classifyRiskThreat(score: number): string {
+  if (score >= 75) return "Critical";
+  if (score >= 50) return "Elevated";
+  if (score >= 25) return "Guarded";
+  return "Stable";
+}
+
+function buildPredictionPageHorizons(activeRiskForecast: RiskForecastPoint[], activeSentimentForecast: SentimentForecast | null): Array<{ label: string; risk_score: number; confidence: number; delta: number }> {
+  if (activeRiskForecast.length > 0) {
+    const normalized = activeRiskForecast.map((point, index) => ({
+      label: String(point.horizon || ["Current", "1h", "6h", "24h", "7d"][index] || `H${index}`),
+      risk_score: safeN(point.risk_score, 0),
+      confidence: safeN(point.confidence, 0.5),
+    }));
+    const baseline = normalized.find((point) => point.label.toLowerCase() === 'current')?.risk_score ?? normalized[0]?.risk_score ?? 0;
+    return normalized
+      .filter((point) => point.label.toLowerCase() !== 'current')
+      .map((point) => ({
+        ...point,
+        delta: point.risk_score - baseline,
+      }));
+  }
+
+  if (activeSentimentForecast) {
+    const baseline = safeN(activeSentimentForecast.current_sentiment, 0);
+    return [
+      { label: '1h', risk_score: safeN(activeSentimentForecast.forecast_1h, baseline), confidence: safeN(activeSentimentForecast.confidence, 0.5), delta: safeN(activeSentimentForecast.forecast_1h, baseline) - baseline },
+      { label: '6h', risk_score: safeN(activeSentimentForecast.forecast_6h, baseline), confidence: safeN(activeSentimentForecast.confidence, 0.5), delta: safeN(activeSentimentForecast.forecast_6h, baseline) - baseline },
+      { label: '24h', risk_score: safeN(activeSentimentForecast.forecast_24h, baseline), confidence: safeN(activeSentimentForecast.confidence, 0.5), delta: safeN(activeSentimentForecast.forecast_24h, baseline) - baseline },
+      { label: '7d', risk_score: safeN(activeSentimentForecast.forecast_7d, safeN(activeSentimentForecast.forecast_24h, baseline)), confidence: safeN(activeSentimentForecast.confidence, 0.5), delta: safeN(activeSentimentForecast.forecast_7d, safeN(activeSentimentForecast.forecast_24h, baseline)) - baseline },
+    ];
+  }
+
+  return [];
+}
+
 function buildLogsFromHistory(rows: HistoricalDataPoint[]): PredictionLog[] {
   return rows.map((row, idx) => ({
     _id: `history-${idx}`,
@@ -288,21 +353,46 @@ function buildLogsFromHistory(rows: HistoricalDataPoint[]): PredictionLog[] {
 
 function deriveSentimentForecastFromHistory(rows: HistoricalDataPoint[]): SentimentForecast | null {
   if (!rows.length) return null;
+  const riskSeries = rows.map((row) => safeN(row.risk_score)).filter((value) => Number.isFinite(value));
+  if (!riskSeries.length) return null;
   const last = rows[rows.length - 1];
-  const first = rows[0];
-  const current = safeN(last.news_sentiment);
-  const slope = rows.length >= 2
-    ? (current - safeN(first.news_sentiment)) / Math.max(1, rows.length - 1)
-    : 0;
+  const current = safeN(last.risk_score, riskSeries[riskSeries.length - 1]);
+  const first = riskSeries[0];
   const confidence = rows.length >= 6 ? 0.75 : 0.55;
+  const proposed24 = current + ((riskSeries.length >= 2 ? (riskSeries[riskSeries.length - 1] - first) / Math.max(1, riskSeries.length - 1) : 0) * 24);
+  const recentPeak = Math.max(current, ...riskSeries.slice(-12));
+  const supportFloor = Math.max(
+    current >= 65 ? current - 6 : current >= 50 ? current - 8 : current - 12,
+    recentPeak - (current >= 65 ? 8 : 12),
+  );
+  const target24 = Math.max(Math.min(proposed24, 100), Math.max(0, supportFloor));
+  const interpolate = (hours: number) => {
+    if (hours >= 24) return target24;
+    const progress = 1 - Math.exp(-hours / 9);
+    return current + ((target24 - current) * progress);
+  };
+  const forecast1h = interpolate(1);
+  const forecast6h = interpolate(6);
+  const forecast24h = target24;
+  const forecast7d = Math.max(supportFloor, forecast24h + Math.max(0, forecast24h - current) * 0.35);
 
   return {
     timestamp: last.timestamp || new Date().toISOString(),
     current_sentiment: current,
-    forecast_1h: current + slope,
-    forecast_6h: current + (slope * 6),
-    forecast_24h: current + (slope * 24),
+    forecast_1h: forecast1h,
+    forecast_6h: forecast6h,
+    forecast_24h: forecast24h,
+    forecast_7d: forecast7d,
     confidence,
+    source: "bounded_risk_projection",
+    source_status: "derived_estimate",
+    model_version: "history_structural_projection_v2",
+    calibration_status: "structural_guarded",
+    prediction_interval: null,
+    fallback_reason: "Derived in the client from historical risk support so weak trend noise cannot force an unrealistic unwind.",
+    data_quality_status: "estimated",
+    advisory: "Structurally bounded risk outlook",
+    reasons: ["client-side structural support"],
   };
 }
 
@@ -357,6 +447,43 @@ function DeferredPanelPlaceholder({ label }: { label: string }) {
   );
 }
 
+
+function formatSourceLabel(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "Unknown";
+  const normalized = raw.replace(/[_.-]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  if (normalized === "live model") return "Live model";
+  if (normalized === "degraded live model") return "Live model (degraded)";
+  if (normalized === "derived estimate") return "Derived estimate";
+  if (normalized === "historical reconstruction") return "Historical reconstruction";
+  if (normalized === "trend extrapolation") return "Trend extrapolation";
+  if (normalized === "playback reconstruction") return "Playback reconstruction";
+  if (normalized === "fallback") return "Fallback";
+  if (normalized === "model unavailable") return "Model unavailable";
+  return normalized.split(" ").map((token) => token ? token[0].toUpperCase() + token.slice(1) : "").join(" ");
+}
+
+function isLiveModelStatus(value: unknown): boolean {
+  return String(value ?? "").trim().toLowerCase() === "live_model";
+}
+
+function summarizeTrustQuality(snapshot: TrustReliabilitySnapshot | null): { label: string; detail: string } {
+  const qualityGate = (snapshot?.quality_gate ?? {}) as Record<string, unknown>;
+  const active = Boolean(qualityGate.active);
+  const message = typeof qualityGate.message === "string" && qualityGate.message
+    ? qualityGate.message
+    : active
+    ? "Reliability degraded"
+    : "Coverage healthy";
+  const reasons = Array.isArray(qualityGate.reasons)
+    ? qualityGate.reasons.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  return {
+    label: active ? "Degraded" : "Healthy",
+    detail: reasons.length ? `${message}: ${reasons.join(" | ")}` : message,
+  };
+}
+
 export default function TrendPrediction() {
   const navigate = useNavigate();
   const token = localStorage.getItem("token");
@@ -370,7 +497,7 @@ export default function TrendPrediction() {
   const [latestFeatures, setLatestFeatures] = useState<number[]>([]);
   const [latestFeatureNames, setLatestFeatureNames] = useState<string[]>(DEFAULT_FEATURE_NAMES);
   const [latestFeatureKeys, setLatestFeatureKeys] = useState<string[]>(DEFAULT_FEATURE_KEYS);
-  const [latestFeaturesLoaded, setLatestFeaturesLoaded] = useState(false);
+  const [, setLatestFeaturesLoaded] = useState(false);
   const [currentPrediction, setCurrentPrediction] = useState<PredictionData | null>(() => readCurrentPredictionCache());
   const [selectedTimeframe, setSelectedTimeframe] = useState<Timeframe>("24h");
   const [modelEnsemble, setModelEnsemble] = useState<MLModel[]>([]);
@@ -385,13 +512,18 @@ export default function TrendPrediction() {
   const [historicalData, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
   const [plotlyReady, setPlotlyReady] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState("");
+  const [lastCanonicalRefreshAt, setLastCanonicalRefreshAt] = useState("");
   const [playbackFrame, setPlaybackFrame] = useState<SnapshotLike | null>(null);
   const [playbackActive, setPlaybackActive] = useState(false);
   const [showHeavyPanels, setShowHeavyPanels] = useState(false);
+  const [trustSnapshot, setTrustSnapshot] = useState<TrustReliabilitySnapshot | null>(null);
+  const [advancedInsights, setAdvancedInsights] = useState<AdvancedInsightsData | null>(null);
+  const [latestGlobalDoc, setLatestGlobalDoc] = useState<LatestGlobalResponse | null>(null);
 
   const mlChartRef = useRef<HTMLDivElement | null>(null);
   const sentimentChartRef = useRef<HTMLDivElement | null>(null);
   const marketChartRef = useRef<HTMLDivElement | null>(null);
+  const featureChartRef = useRef<HTMLDivElement | null>(null);
   const plotlyRef = useRef<any>(null);
   const plotlyLoadingRef = useRef<Promise<any> | null>(null);
   const loadRequestIdRef = useRef(0);
@@ -417,6 +549,14 @@ export default function TrendPrediction() {
     }, 200);
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!token || playbackActive) return undefined;
+    const interval = window.setInterval(() => {
+      loadData();
+    }, AUTO_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [token, playbackActive, selectedTimeframe]);
 
   async function loadPlotly() {
     if (plotlyRef.current) return plotlyRef.current;
@@ -462,6 +602,8 @@ export default function TrendPrediction() {
         headers: API_HEADERS,
         params: { mode: "online" },
       });
+      const trustPromise = getTrustReliability("online");
+      const advancedPromise = getAdvancedInsights();
       let logs: PredictionLog[] = readPredictionLogsCache();
       try {
         const logsRes = await logsPromise;
@@ -496,6 +638,13 @@ export default function TrendPrediction() {
         console.error("Latest features load failed:", e);
       }
 
+      try {
+        const trust = await trustPromise;
+        if (requestId === loadRequestIdRef.current) setTrustSnapshot(trust);
+      } catch (e) {
+        console.error("Trust reliability load failed:", e);
+      }
+
       let resolvedCurrentPrediction: PredictionData | null = currentPrediction;
       if (features) {
         const featureProfile = predictionService.buildFeatureProfile(features as Record<string, unknown>);
@@ -506,52 +655,37 @@ export default function TrendPrediction() {
         setLatestFeatureNames(combinedFeatureNames);
         setLatestFeatureKeys(combinedFeatureKeys);
         setLatestFeaturesLoaded(true);
-        const globalRiskUnit = normalizeUnitValue(features.global_risk_score, 0.5);
-        const baseBlend = predictionService.blendPrediction(globalRiskUnit, features as Record<string, unknown>);
+        const unifiedRiskUnit = normalizeUnitValue(
+          features.system_global_risk_score ?? features.global_risk_score,
+          0.5,
+        );
+        const baseProfile = predictionService.buildFeatureProfile(features as Record<string, unknown>);
         const basePrediction: PredictionData = {
           timestamp: new Date().toISOString(),
-          prediction: baseBlend.probability,
-          probability: baseBlend.probability,
-          raw_probability: baseBlend.rawProbability,
-          inference_probability: baseBlend.rawProbability,
-          intelligence_adjustment: baseBlend.adjustment,
-          intelligence_pressure: baseBlend.intelligencePressure,
-          confidence_weight: baseBlend.confidenceWeight,
-          model_version: "global_features + intelligence",
+          prediction: unifiedRiskUnit,
+          probability: unifiedRiskUnit,
+          raw_probability: unifiedRiskUnit,
+          inference_probability: unifiedRiskUnit,
+          intelligence_adjustment: 0,
+          intelligence_pressure: baseProfile.intelligencePressure,
+          confidence_weight: baseProfile.confidenceWeight,
+          model_version: "global_snapshot_contract",
           features: combinedFeatureVector,
           feature_names: combinedFeatureNames,
           feature_keys: combinedFeatureKeys,
+          source: "global_features_latest",
+          source_status: "derived_estimate",
+          calibration_status: "not_calibrated",
+          prediction_interval: null,
+          fallback_reason: "Displayed from latest global risk features while canonical forecast sync completes.",
+          data_quality_status: "estimated",
+          advisory: "Live global snapshot",
+          reasons: ["no live model response"],
         };
 
-        try {
-          const predRes = await predictionService.getPrediction({
-            feature_map: featureProfile.modelFeatureMap,
-            feature_names: featureProfile.modelFeatureKeys,
-            features: featureProfile.modelFeatures,
-          });
-          const nextBlend = predictionService.blendPrediction(predRes.probability, features as Record<string, unknown>);
-          const nextPrediction: PredictionData = {
-            ...basePrediction,
-            timestamp: new Date().toISOString(),
-            prediction: nextBlend.probability,
-            probability: nextBlend.probability,
-            raw_probability: nextBlend.rawProbability,
-            inference_probability: nextBlend.rawProbability,
-            intelligence_adjustment: nextBlend.adjustment,
-            intelligence_pressure: nextBlend.intelligencePressure,
-            confidence_weight: nextBlend.confidenceWeight,
-            model_version: `${predRes.model_version} + intelligence`,
-            drift_score: predRes.drift_score ?? undefined,
-          };
-          setCurrentPrediction(nextPrediction);
-          writeCurrentPredictionCache(nextPrediction);
-          resolvedCurrentPrediction = nextPrediction;
-        } catch (e) {
-          console.error("Current prediction load failed:", e);
-          setCurrentPrediction(basePrediction);
-          writeCurrentPredictionCache(basePrediction);
-          resolvedCurrentPrediction = basePrediction;
-        }
+        setCurrentPrediction(basePrediction);
+        writeCurrentPredictionCache(basePrediction);
+        resolvedCurrentPrediction = basePrediction;
 
       }
 
@@ -593,6 +727,14 @@ export default function TrendPrediction() {
             ? latestLog.feature_names
             : DEFAULT_FEATURE_KEYS.slice(0, fallbackFeatures.length),
           drift_score: latestLog.drift_score ?? undefined,
+          source: "prediction_log_cache",
+          source_status: "historical_reconstruction",
+          calibration_status: "unknown",
+          prediction_interval: null,
+          fallback_reason: "Reconstructed from the latest stored prediction log because live inference was unavailable.",
+          data_quality_status: "estimated",
+          advisory: "Historical reconstruction",
+          reasons: ["prediction log fallback"],
         };
         setCurrentPrediction(fallbackPrediction);
         writeCurrentPredictionCache(fallbackPrediction);
@@ -601,13 +743,14 @@ export default function TrendPrediction() {
 
       finishPrimaryLoad(requestId);
 
-      const [forecastResult, reactionsResult, eventsResult, governanceResult, mapResult, historyResult] = await Promise.allSettled([
+      const [advancedResult, forecastResult, reactionsResult, eventsResult, mapResult, historyResult, globalResult] = await Promise.allSettled([
+        advancedPromise,
         predictionService.getSentimentForecast(),
         predictionService.getMarketReactions(30),
         predictionService.getEventPredictions(233),
-        getGovernanceData(),
         getRiskMap(),
         predictionService.getHistoricalData(start, end, selectedTimeframe === "7d" ? 1000 : 400),
+        getLatestGlobalFeatures(),
       ]);
 
       if (requestId !== loadRequestIdRef.current) return;
@@ -616,6 +759,80 @@ export default function TrendPrediction() {
         ? normalizeHistoricalRows(historyResult.value as unknown[])
         : [];
       setHistoricalData(resolvedHistory);
+
+      if (globalResult.status === "fulfilled") {
+        setLatestGlobalDoc(globalResult.value);
+      }
+
+      if (advancedResult.status === "fulfilled") {
+        const advancedPayload = advancedResult.value;
+        setAdvancedInsights(advancedPayload);
+        setLastCanonicalRefreshAt(String(advancedPayload.generated_at || advancedPayload.timestamp || new Date().toISOString()));
+
+        if (advancedPayload.governance) {
+          const governance = advancedPayload.governance;
+          setGovernanceData(governance);
+          setModelEnsemble(
+            governance.models.map((m, idx) => ({
+              name: m.name,
+              vote: normalizeRisk(m.vote ?? 50),
+              confidence: safeN(m.confidence, m.calibration),
+              color: ["#22d3ee", "#a3e635", "#60a5fa", "#f472b6"][idx % 4],
+            })),
+          );
+        } else {
+          setGovernanceData({ models: [], disagreement: [], calibrationTrend: [], calibrationTrendByModel: {}, selectedCalibrationModel: undefined });
+          setModelEnsemble([]);
+        }
+
+        const forecastContract = advancedPayload.forecast_contract;
+        const primaryForecast = Array.isArray(advancedPayload.predictions?.predictions) ? advancedPayload.predictions.predictions[0] : undefined;
+        if (primaryForecast || forecastContract) {
+          const canonicalRiskUnit = forecastContract?.risk_score != null
+            ? normalizeUnitValue(safeN(forecastContract.risk_score, 50), 0.5)
+            : normalizeUnitValue(safeN(primaryForecast?.risk_score, 50), 0.5);
+          const snapshot = Array.isArray(advancedPayload.feature_snapshot) ? advancedPayload.feature_snapshot : [];
+          const snapshotValues = snapshot.map((item) => safeN(item.value));
+          const snapshotNames = snapshot.map((item) => item.label || item.key);
+          const snapshotKeys = snapshot.map((item) => item.key);
+          const canonicalPrediction: PredictionData = {
+            ...(resolvedCurrentPrediction || {
+              timestamp: advancedPayload.timestamp || new Date().toISOString(),
+              prediction: canonicalRiskUnit,
+              probability: canonicalRiskUnit,
+              model_version: String(forecastContract?.model_version || advancedPayload.ml_observability?.model_version || advancedPayload.predictions?.model_type || "advanced_analytics"),
+              features: snapshotValues.length ? snapshotValues : latestFeatures,
+            }),
+            timestamp: advancedPayload.timestamp || new Date().toISOString(),
+            prediction: forecastContract?.withheld ? 0 : canonicalRiskUnit,
+            probability: forecastContract?.withheld ? 0 : canonicalRiskUnit,
+            raw_probability: forecastContract?.withheld ? 0 : canonicalRiskUnit,
+            inference_probability: forecastContract?.withheld ? 0 : canonicalRiskUnit,
+            confidence_weight: forecastContract?.withheld ? 0 : safeN(forecastContract?.confidence_ratio, safeN(primaryForecast?.confidence, canonicalRiskUnit)),
+            model_version: String(forecastContract?.model_version || advancedPayload.ml_observability?.model_version || advancedPayload.predictions?.model_type || "advanced_analytics"),
+            features: snapshotValues.length ? snapshotValues : (resolvedCurrentPrediction?.features || latestFeatures),
+            feature_names: snapshotNames.length ? snapshotNames : (resolvedCurrentPrediction?.feature_names || latestFeatureNames),
+            feature_keys: snapshotKeys.length ? snapshotKeys : (resolvedCurrentPrediction?.feature_keys || latestFeatureKeys),
+            source: advancedPayload.predictions?.source || forecastContract?.source,
+            source_status: forecastContract?.source_status || advancedPayload.predictions?.source_status,
+            calibration_status: forecastContract?.calibration_status || advancedPayload.predictions?.calibration_status,
+            prediction_interval: forecastContract?.prediction_interval ?? primaryForecast?.interval ?? null,
+            fallback_reason: advancedPayload.predictions?.fallback_reason ?? forecastContract?.advisory ?? null,
+            data_quality_status: advancedPayload.data_quality_status || forecastContract?.quality_status,
+            advisory: forecastContract?.advisory || advancedPayload.advisory,
+            reasons: forecastContract?.reasons || advancedPayload.reasons,
+          };
+          setCurrentPrediction(canonicalPrediction);
+          writeCurrentPredictionCache(canonicalPrediction);
+          resolvedCurrentPrediction = canonicalPrediction;
+        }
+      } else {
+        console.error("Advanced insights load failed:", advancedResult.reason);
+        setAdvancedInsights(null);
+        setLastCanonicalRefreshAt("");
+        setGovernanceData({ models: [], disagreement: [], calibrationTrend: [], calibrationTrendByModel: {}, selectedCalibrationModel: undefined });
+        setModelEnsemble([]);
+      }
 
       if (forecastResult.status === "fulfilled") {
         setSentimentForecast(forecastResult.value);
@@ -636,23 +853,6 @@ export default function TrendPrediction() {
       } else {
         console.error("Event predictions load failed:", eventsResult.reason);
         setEventPredictions([]);
-      }
-
-      if (governanceResult.status === "fulfilled") {
-        const governance = governanceResult.value;
-        setGovernanceData(governance);
-        setModelEnsemble(
-          governance.models.map((m, idx) => ({
-            name: m.name,
-            vote: normalizeRisk(m.vote ?? 50),
-            confidence: safeN(m.confidence, m.calibration),
-            color: ["#22d3ee", "#a3e635", "#60a5fa", "#f472b6"][idx % 4],
-          })),
-        );
-      } else {
-        console.error("Governance load failed:", governanceResult.reason);
-        setGovernanceData({ models: [], disagreement: [], calibrationTrend: [], calibrationTrendByModel: {}, selectedCalibrationModel: undefined });
-        setModelEnsemble([]);
       }
 
       if (mapResult.status === "fulfilled") {
@@ -696,6 +896,14 @@ export default function TrendPrediction() {
               ? latest.feature_names
               : DEFAULT_FEATURE_KEYS.slice(0, historyFeatures.length),
             drift_score: latest.drift_score ?? undefined,
+            source: "historical_feature_rows",
+            source_status: "historical_reconstruction",
+            calibration_status: "unknown",
+            prediction_interval: null,
+            fallback_reason: "Built from historical feature rows because neither live inference nor prediction logs were available.",
+            data_quality_status: "estimated",
+            advisory: "Historical reconstruction",
+            reasons: ["history-derived fallback"],
           };
           setCurrentPrediction(fromHistoryPrediction);
           writeCurrentPredictionCache(fromHistoryPrediction);
@@ -730,15 +938,6 @@ export default function TrendPrediction() {
     return sliced.length ? sliced : historicalData;
   }, [historicalData, playbackTimestampMs]);
 
-  const visiblePredictionLogs = useMemo(() => {
-    if (playbackTimestampMs === null) return predictionLogs;
-    const sliced = predictionLogs.filter((row) => {
-      const ts = parseTimestampMs(row.timestamp);
-      return ts !== null && ts <= playbackTimestampMs;
-    });
-    return sliced.length ? sliced : predictionLogs;
-  }, [predictionLogs, playbackTimestampMs]);
-
   const activePredictionData = useMemo<PredictionData | null>(() => {
     if (!playbackActive || !playbackFrame) return currentPrediction;
     return {
@@ -750,17 +949,33 @@ export default function TrendPrediction() {
       feature_names: MODEL_FEATURE_DEFS.map((item) => item.label),
       feature_keys: MODEL_FEATURE_DEFS.map((item) => item.key),
       drift_score: currentPrediction?.drift_score,
+      source: "historical_playback",
+      source_status: "historical_reconstruction",
+      calibration_status: "not_applicable",
+      prediction_interval: null,
+      fallback_reason: "Playback mode rehydrates a historical frame instead of calling live inference.",
+      data_quality_status: currentPrediction?.data_quality_status,
+      advisory: "Playback reconstruction",
+      reasons: ["playback mode"],
     };
   }, [playbackActive, playbackFrame, currentPrediction]);
 
+  const canonicalFeatureSnapshot = useMemo(() => (Array.isArray(advancedInsights?.feature_snapshot) ? advancedInsights.feature_snapshot : []), [advancedInsights]);
+
   const activeFeatureVector = useMemo<number[]>(() => {
+    if (!playbackActive && canonicalFeatureSnapshot.length) {
+      return canonicalFeatureSnapshot.map((entry) => safeN(entry.value));
+    }
     if (activePredictionData && Array.isArray(activePredictionData.features) && activePredictionData.features.length) {
       return activePredictionData.features.map((v: unknown) => safeN(v));
     }
     return latestFeatures;
-  }, [activePredictionData, latestFeatures]);
+  }, [playbackActive, canonicalFeatureSnapshot, activePredictionData, latestFeatures]);
 
   const activeFeatureNames = useMemo<string[]>(() => {
+    if (!playbackActive && canonicalFeatureSnapshot.length === activeFeatureVector.length) {
+      return canonicalFeatureSnapshot.map((entry) => entry.label || entry.key);
+    }
     if (activePredictionData && Array.isArray(activePredictionData.feature_names) && activePredictionData.feature_names.length === activeFeatureVector.length) {
       return activePredictionData.feature_names;
     }
@@ -771,9 +986,12 @@ export default function TrendPrediction() {
       return DEFAULT_FEATURE_NAMES.slice(0, activeFeatureVector.length);
     }
     return activeFeatureVector.map((_, idx) => `Feature ${idx + 1}`);
-  }, [activePredictionData, activeFeatureVector, latestFeatureNames]);
+  }, [playbackActive, canonicalFeatureSnapshot, activePredictionData, activeFeatureVector, latestFeatureNames]);
 
   const activeFeatureKeys = useMemo<string[]>(() => {
+    if (!playbackActive && canonicalFeatureSnapshot.length === activeFeatureVector.length) {
+      return canonicalFeatureSnapshot.map((entry) => entry.key);
+    }
     if (activePredictionData && Array.isArray(activePredictionData.feature_keys) && activePredictionData.feature_keys.length === activeFeatureVector.length) {
       return activePredictionData.feature_keys;
     }
@@ -784,7 +1002,7 @@ export default function TrendPrediction() {
       return DEFAULT_FEATURE_KEYS.slice(0, activeFeatureVector.length);
     }
     return activeFeatureVector.map((_, idx) => `feature_${idx + 1}`);
-  }, [activePredictionData, activeFeatureVector, latestFeatureKeys]);
+  }, [playbackActive, canonicalFeatureSnapshot, activePredictionData, activeFeatureVector, latestFeatureKeys]);
 
   const activeFeatureEntries = useMemo(
     () => activeFeatureVector.map((value, idx) => ({
@@ -794,6 +1012,45 @@ export default function TrendPrediction() {
     })),
     [activeFeatureKeys, activeFeatureNames, activeFeatureVector],
   );
+
+  const featureImportanceEntries = useMemo(() => {
+    if (!playbackActive && canonicalFeatureSnapshot.length) {
+      return canonicalFeatureSnapshot
+        .map((entry, idx) => {
+          const rawValue = safeN((entry as any).raw_value ?? entry.value);
+          const displayValue = safeN(entry.value);
+          const normalizedValue = safeN((entry as any).normalized_value, rawValue);
+          const importance = Math.max(0, safeN((entry as any).importance, Math.abs(normalizedValue) * 100));
+          const direction = String((entry as any).direction || (normalizedValue >= 0 ? "positive" : "negative"));
+          return {
+            key: entry.key || `feature_${idx + 1}`,
+            label: entry.label || entry.key || `Feature ${idx + 1}`,
+            rawValue,
+            displayValue,
+            normalizedValue,
+            importance,
+            direction,
+            scale: String((entry as any).scale || "normalized"),
+          };
+        })
+        .sort((left, right) => right.importance - left.importance)
+        .slice(0, 10);
+    }
+
+    return activeFeatureEntries
+      .map((entry) => ({
+        key: entry.key,
+        label: entry.label,
+        rawValue: entry.value,
+        displayValue: entry.value,
+        normalizedValue: entry.value,
+        importance: Math.min(100, Math.abs(entry.value) * 100),
+        direction: entry.value >= 0 ? "positive" : "negative",
+        scale: "fallback",
+      }))
+      .sort((left, right) => right.importance - left.importance)
+      .slice(0, 10);
+  }, [playbackActive, canonicalFeatureSnapshot, activeFeatureEntries]);
 
   const topRiskDriver = useMemo(() => {
     if (!activeFeatureEntries.length) return "No live feature vector";
@@ -808,6 +1065,11 @@ export default function TrendPrediction() {
       "forecast_risk_score",
       "forecast_risk_delta",
       "top_topic_pressure",
+      "contextual_pressure_score",
+      "mobility_disruption_score",
+      "logistics_stress_score",
+      "household_stress_score",
+      "energy_stress_score",
     ]);
     const pressureEntries = activeFeatureEntries.filter((entry) => keys.has(entry.key));
     if (!pressureEntries.length) return false;
@@ -815,9 +1077,62 @@ export default function TrendPrediction() {
     return avgPressure > 0.32;
   }, [activeFeatureEntries]);
 
+  const activeRiskForecast = useMemo<RiskForecastPoint[]>(() => {
+    const contractHorizons = Array.isArray(advancedInsights?.forecast_contract?.horizons)
+      ? advancedInsights?.forecast_contract?.horizons
+      : [];
+    if (contractHorizons.length) {
+      return contractHorizons.map((item) => ({
+        horizon: String(item.label ?? `${safeN(item.hours, 24)}h`),
+        risk_score: safeN(item.risk_score, 50),
+        confidence: safeN(advancedInsights?.forecast_contract?.confidence_ratio, 0.5),
+        p10: safeN(advancedInsights?.forecast_contract?.prediction_interval?.p10, safeN(item.risk_score, 50)),
+        p50: safeN(advancedInsights?.forecast_contract?.prediction_interval?.p50, safeN(item.risk_score, 50)),
+        p90: safeN(advancedInsights?.forecast_contract?.prediction_interval?.p90, safeN(item.risk_score, 50)),
+      }));
+    }
+
+    const predictions = advancedInsights?.predictions?.predictions;
+    if (Array.isArray(predictions) && predictions.length) {
+      return predictions.map((item) => ({
+        horizon: String(item.horizon ?? "Unknown"),
+        risk_score: safeN(item.risk_score, 50),
+        confidence: safeN(item.confidence, 0.5),
+        p10: safeN(item.interval?.p10, safeN(item.risk_score, 50)),
+        p50: safeN(item.interval?.p50, safeN(item.risk_score, 50)),
+        p90: safeN(item.interval?.p90, safeN(item.risk_score, 50)),
+      }));
+    }
+
+    if (activePredictionData) {
+      const currentRisk = normalizeUnitValue(activePredictionData.probability, 0.5) * 100;
+      return [{
+        horizon: "Current",
+        risk_score: currentRisk,
+        confidence: safeN(activePredictionData.confidence_weight, safeN(activePredictionData.probability, 0.5)),
+        p10: currentRisk,
+        p50: currentRisk,
+        p90: currentRisk,
+      }];
+    }
+
+    return [];
+  }, [advancedInsights, activePredictionData]);
+
   const activeSentimentForecast = useMemo<SentimentForecast | null>(() => {
     if (playbackActive) {
-      return deriveSentimentForecastFromHistory(visibleHistoricalData) ?? sentimentForecast;
+      const derived = deriveSentimentForecastFromHistory(visibleHistoricalData);
+      if (derived) {
+        return {
+          ...derived,
+          source: "historical_playback",
+          source_status: "historical_reconstruction",
+          fallback_reason: "Playback mode is replaying historical sentiment rather than showing live forecast service output.",
+          advisory: "Playback reconstruction",
+          reasons: ["playback mode"],
+        };
+      }
+      return sentimentForecast;
     }
     return sentimentForecast;
   }, [playbackActive, visibleHistoricalData, sentimentForecast]);
@@ -829,6 +1144,23 @@ export default function TrendPrediction() {
     return marketReactions;
   }, [playbackActive, visibleHistoricalData, marketReactions]);
 
+  const domainSignalHistory = useMemo(() => {
+    const rows = playbackActive ? visibleHistoricalData : historicalData;
+    return rows.slice(-24).map((row, idx) => {
+      const ts = parseTimestampMs(row.timestamp);
+      return {
+        label: ts !== null ? new Date(ts).toLocaleTimeString() : `Snapshot ${idx + 1}`,
+        direct_behavior: safeN(row.direct_behavior_score),
+        contextual_pressure: safeN(row.contextual_pressure_score),
+        attention_pressure: safeN(row.global_attention_index),
+        disruption_pressure: safeN(row.global_disruption_index),
+        economic_stress: safeN(row.global_economic_stress_index),
+        logistics_stress: safeN(row.logistics_stress_score),
+        household_stress: safeN(row.household_stress_score),
+      };
+    });
+  }, [playbackActive, visibleHistoricalData, historicalData]);
+
   const activeEventPredictions = useMemo<EventPrediction[]>(() => {
     if (playbackTimestampMs === null) return eventPredictions;
     const filtered = eventPredictions.filter((row) => {
@@ -839,18 +1171,15 @@ export default function TrendPrediction() {
   }, [eventPredictions, playbackTimestampMs]);
 
   const mlSeries = useMemo(() => {
-    if (visiblePredictionLogs.length) {
-      return visiblePredictionLogs.map((log, idx) => {
-        const ts = parseTimestampMs(log.timestamp);
-        return {
-          label: ts !== null ? new Date(ts).toLocaleString() : `Point ${idx + 1}`,
-          prediction: toPredictionUnit(log.prediction, log.probability, 0.5),
-          probabilityPct: normalizeUnitValue(log.probability, 0.5) * 100,
-        };
-      });
+    if (!playbackActive && activeRiskForecast.length) {
+      return activeRiskForecast.map((point) => ({
+        label: point.horizon,
+        prediction: normalizeUnitValue(point.risk_score, 0.5),
+        probabilityPct: safeN(point.confidence, 0.5) * 100,
+      }));
     }
 
-    if (visibleHistoricalData.length) {
+    if (playbackActive && visibleHistoricalData.length) {
       return visibleHistoricalData.map((row, idx) => {
         const ts = parseTimestampMs(row.timestamp);
         const p = normalizeUnitValue(safeN(row.risk_score) / 100, 0.5);
@@ -862,21 +1191,8 @@ export default function TrendPrediction() {
       });
     }
 
-    if (activePredictionData) {
-      const ts = parseTimestampMs(activePredictionData.timestamp);
-      return [{
-        label: ts !== null ? new Date(ts).toLocaleString() : "Current",
-        prediction: toPredictionUnit(activePredictionData.prediction, activePredictionData.probability, 0.5),
-        probabilityPct: normalizeUnitValue(activePredictionData.probability, 0.5) * 100,
-      }];
-    }
-
-    return [{
-      label: "Current",
-      prediction: 0.5,
-      probabilityPct: 50,
-    }];
-  }, [visiblePredictionLogs, visibleHistoricalData, activePredictionData]);  // Render ML Prediction Chart
+    return [];
+  }, [playbackActive, activeRiskForecast, visibleHistoricalData]);  // Render ML Prediction Chart
 
   useEffect(() => {
     if (!mlChartRef.current || !plotlyRef.current || !plotlyReady) return;
@@ -971,43 +1287,112 @@ export default function TrendPrediction() {
   }, [mlSeries, plotlyReady]);
 
 
-  // Render Sentiment Forecast Chart
+  // Render Risk Forecast Chart
   useEffect(() => {
-    if (!sentimentChartRef.current || !activeSentimentForecast || !plotlyRef.current || !plotlyReady) return;
+    if (!sentimentChartRef.current || !plotlyRef.current || !plotlyReady) return;
+    if (!activeRiskForecast.length && !activeSentimentForecast) return;
 
-    const currentSentiment = safeN(activeSentimentForecast.current_sentiment);
-    const forecast1h = safeN(activeSentimentForecast.forecast_1h);
-    const forecast6h = safeN(activeSentimentForecast.forecast_6h);
-    const forecast24h = safeN(activeSentimentForecast.forecast_24h);
-    const confidencePct = safeN(activeSentimentForecast.confidence) * 100;
+    const usingAdvancedForecast = activeRiskForecast.length > 1;
+    const forecastPoints = usingAdvancedForecast
+      ? activeRiskForecast
+      : [{
+          horizon: "Current",
+          risk_score: safeN(activeSentimentForecast?.current_sentiment, 0),
+          confidence: safeN(activeSentimentForecast?.confidence, 0.5),
+          p10: safeN(activeSentimentForecast?.current_sentiment, 0),
+          p50: safeN(activeSentimentForecast?.current_sentiment, 0),
+          p90: safeN(activeSentimentForecast?.current_sentiment, 0),
+        }, {
+          horizon: "1h",
+          risk_score: safeN(activeSentimentForecast?.forecast_1h, 0),
+          confidence: safeN(activeSentimentForecast?.confidence, 0.5),
+          p10: safeN(activeSentimentForecast?.forecast_1h, 0),
+          p50: safeN(activeSentimentForecast?.forecast_1h, 0),
+          p90: safeN(activeSentimentForecast?.forecast_1h, 0),
+        }, {
+          horizon: "6h",
+          risk_score: safeN(activeSentimentForecast?.forecast_6h, 0),
+          confidence: safeN(activeSentimentForecast?.confidence, 0.5),
+          p10: safeN(activeSentimentForecast?.forecast_6h, 0),
+          p50: safeN(activeSentimentForecast?.forecast_6h, 0),
+          p90: safeN(activeSentimentForecast?.forecast_6h, 0),
+        }, {
+          horizon: "24h",
+          risk_score: safeN(activeSentimentForecast?.forecast_24h, 0),
+          confidence: safeN(activeSentimentForecast?.confidence, 0.5),
+          p10: safeN(activeSentimentForecast?.forecast_24h, 0),
+          p50: safeN(activeSentimentForecast?.forecast_24h, 0),
+          p90: safeN(activeSentimentForecast?.forecast_24h, 0),
+        }, {
+          horizon: "7d",
+          risk_score: safeN(activeSentimentForecast?.forecast_7d, safeN(activeSentimentForecast?.forecast_24h, 0)),
+          confidence: safeN(activeSentimentForecast?.confidence, 0.5),
+          p10: safeN(activeSentimentForecast?.forecast_7d, safeN(activeSentimentForecast?.forecast_24h, 0)),
+          p50: safeN(activeSentimentForecast?.forecast_7d, safeN(activeSentimentForecast?.forecast_24h, 0)),
+          p90: safeN(activeSentimentForecast?.forecast_7d, safeN(activeSentimentForecast?.forecast_24h, 0)),
+        }];
 
-    const sentimentX = ["Current", "1h Forecast", "6h Forecast", "24h Forecast"];
-    const sentimentY = [currentSentiment, forecast1h, forecast6h, forecast24h];
+    const x = forecastPoints.map((point) => point.horizon);
+    const risk = forecastPoints.map((point) => point.risk_score);
+    const p10 = forecastPoints.map((point) => safeN(point.p10, point.risk_score));
+    const p90 = forecastPoints.map((point) => safeN(point.p90, point.risk_score));
+    const confidence = forecastPoints.map((point) => safeN(point.confidence, 0.5) * 100);
+
     const forecastData = [
       {
-        x: sentimentX,
-        y: sentimentY,
+        x,
+        y: p90,
+        type: "scatter",
+        mode: "lines",
+        name: "P90",
+        line: { color: "rgba(56, 189, 248, 0.0)", width: 0 },
+        hoverinfo: "skip",
+        showlegend: false,
+      },
+      {
+        x,
+        y: p10,
+        type: "scatter",
+        mode: "lines",
+        name: "Prediction Interval",
+        line: { color: "rgba(56, 189, 248, 0.0)", width: 0 },
+        fill: "tonexty",
+        fillcolor: "rgba(56, 189, 248, 0.14)",
+        hoverinfo: "skip",
+      },
+      {
+        x,
+        y: risk,
         type: "scatter",
         mode: "lines+markers+text",
-        name: "Sentiment Path",
+        name: usingAdvancedForecast ? "Calibrated Risk Forecast" : "Trend Extrapolation",
         line: { color: "#7c9bff", width: 4, shape: "spline" },
         marker: {
           size: 9,
-          color: ["#2ad1f5", "#3fa1ff", "#7c9bff", "#b084ff"],
+          color: ["#2ad1f5", "#3fa1ff", "#7c9bff", "#b084ff", "#f59e0b"].slice(0, x.length),
           line: { color: "#0a1428", width: 2 },
         },
-        fill: "tozeroy",
-        fillcolor: "rgba(124, 155, 255, 0.16)",
-        text: sentimentY.map((v) => v.toFixed(1)),
+        text: risk.map((v) => v.toFixed(1)),
         textposition: "top center",
         textfont: { color: "#edf3ff", size: 12 },
-        hovertemplate: "Sentiment: %{y:.2f}<extra></extra>",
+        hovertemplate: "Forecast: %{y:.2f}<extra></extra>",
+      },
+      {
+        x,
+        y: confidence,
+        type: "scatter",
+        mode: "lines+markers",
+        name: "Confidence %",
+        line: { color: "rgba(251, 191, 36, 0.95)", width: 3, dash: "dot" },
+        marker: { size: 6, color: "rgba(251, 191, 36, 0.95)" },
+        yaxis: "y2",
+        hovertemplate: "Confidence: %{y:.1f}%<extra></extra>",
       },
     ];
 
     const layout = {
       title: {
-        text: `Sentiment Forecast (Confidence: ${confidencePct.toFixed(0)}%)`,
+        text: usingAdvancedForecast ? "Advanced Multi-Horizon Risk Forecast" : `Trend Extrapolation (Confidence: ${(confidence[0] ?? 0).toFixed(0)}%)`,
         font: { color: "#eaf3ff", size: 16 },
       },
       paper_bgcolor: "rgba(0,0,0,0)",
@@ -1027,76 +1412,214 @@ export default function TrendPrediction() {
         zeroline: false,
       },
       yaxis: {
-        title: "Sentiment Score",
+        title: usingAdvancedForecast ? "Risk Score" : "Sentiment Score",
         titlefont: { color: "#c4d7ff" },
         gridcolor: "rgba(148, 163, 184, 0.16)",
         tickfont: { color: "#d6e4ff", size: 12 },
         linecolor: "rgba(148, 163, 184, 0.28)",
         tickcolor: "rgba(148, 163, 184, 0.28)",
         zeroline: false,
-        range: [-100, 100],
+        range: usingAdvancedForecast ? [0, 100] : [-100, 100],
       },
-      margin: { t: 62, r: 42, b: 56, l: 70 },
+      yaxis2: {
+        title: "Confidence %",
+        titlefont: { color: "#fbbf24" },
+        overlaying: "y",
+        side: "right",
+        range: [0, 100],
+        tickfont: { color: "#d7e3f5", size: 12 },
+        showgrid: false,
+      },
+      legend: {
+        font: { color: "#d6e4ff" },
+        x: 0.02,
+        y: 1.12,
+        orientation: "h",
+        bgcolor: "rgba(12, 31, 56, 0.74)",
+        bordercolor: "rgba(96, 165, 250, 0.35)",
+        borderwidth: 1,
+      },
+      margin: { t: 62, r: 56, b: 56, l: 70 },
     };
 
     plotlyRef.current.react(sentimentChartRef.current, forecastData, layout, {
       displayModeBar: false,
       responsive: true,
     });
-  }, [activeSentimentForecast, plotlyReady]);
-  // Render Market Reaction Chart
-  useEffect(() => {
-    if (!marketChartRef.current || !activeMarketReactions.length || !plotlyRef.current || !plotlyReady) return;
+  }, [activeRiskForecast, activeSentimentForecast, plotlyReady]);
 
-    const labels = activeMarketReactions.map((r, idx) => {
-      const ts = parseTimestampMs(r.timestamp);
-      return ts !== null ? new Date(ts).toLocaleTimeString() : `Shift ${idx + 1}`;
+  // Render Feature Importance Chart
+  useEffect(() => {
+    if (!featureChartRef.current || !plotlyRef.current || !plotlyReady) return;
+    if (!featureImportanceEntries.length) return;
+
+    const labels = featureImportanceEntries.map((entry) => entry.label);
+    const importance = featureImportanceEntries.map((entry) => safeN(entry.importance, 0));
+    const rawLabels = featureImportanceEntries.map((entry) => {
+      if (entry.scale === "normalized") return `${entry.displayValue.toFixed(1)}% signal`;
+      if (entry.scale === "absolute_100") return `${entry.displayValue.toFixed(1)} / 100`;
+      if (entry.scale === "return") return `${entry.displayValue.toFixed(2)}% return`;
+      if (entry.scale === "volatility") return `${entry.displayValue.toFixed(2)} vol`;
+      return `${entry.displayValue.toFixed(3)}`;
     });
-    const sentimentImpacts = activeMarketReactions.map((r) => safeN(r.sentiment_impact));
-    const cryptoReactions = activeMarketReactions.map((r) => safeN(r.crypto_reaction));
-    const stockReactions = activeMarketReactions.map((r) => safeN(r.stock_reaction));
+    const markerColors = featureImportanceEntries.map((entry) =>
+      entry.direction === "negative" ? "#ff6b6b" : "#38bdf8"
+    );
 
     const data = [
       {
         x: labels,
-        y: sentimentImpacts,
+        y: importance,
         type: "scatter",
-        mode: "lines+markers",
-        name: "Sentiment Impact",
-        marker: { color: "#2ad1f5", size: 8, line: { color: "#0a1428", width: 2 } },
-        line: { color: "#2ad1f5", width: 3, shape: "spline" },
+        mode: "lines+markers+text",
+        name: "Importance",
+        line: {
+          color: "rgba(167, 139, 250, 0.95)",
+          width: 4,
+          shape: "spline",
+        },
+        marker: {
+          size: 12,
+          color: markerColors,
+          line: { color: "#f8fbff", width: 1.5 },
+          symbol: "circle",
+        },
         fill: "tozeroy",
-        fillcolor: "rgba(42, 209, 245, 0.14)",
-        yaxis: "y",
-        hovertemplate: "Impact: %{y:.2f}<extra></extra>",
+        fillcolor: "rgba(167, 139, 250, 0.18)",
+        text: importance.map((value) => `${value.toFixed(0)}%`),
+        textposition: "top center",
+        textfont: { color: "#edf3ff", size: 11 },
+        customdata: featureImportanceEntries.map((entry, idx) => [rawLabels[idx], entry.direction, entry.key]),
+        hovertemplate: "%{x}<br>Importance: %{y:.1f}%<br>Value: %{customdata[0]}<br>Direction: %{customdata[1]}<extra></extra>",
       },
       {
         x: labels,
-        y: cryptoReactions,
-        type: "scatter",
-        mode: "lines+markers",
-        name: "Crypto Reaction %",
-        marker: { color: "#7dd3fc", size: 8, line: { color: "#0b1730", width: 2 } },
-        line: { color: "#7dd3fc", width: 3 },
-        yaxis: "y2",
-        hovertemplate: "Crypto: %{y:.2f}%<extra></extra>",
-      },
-      {
-        x: labels,
-        y: stockReactions,
-        type: "scatter",
-        mode: "lines+markers",
-        name: "Stock Reaction %",
-        marker: { color: "#fbbf24", size: 8, line: { color: "#0b1730", width: 2 } },
-        line: { color: "#fbbf24", width: 3 },
-        yaxis: "y2",
-        hovertemplate: "Stock: %{y:.2f}%<extra></extra>",
+        y: importance,
+        type: "bar",
+        name: "Signal Shadow",
+        marker: {
+          color: markerColors.map((color) => color === "#ff6b6b" ? "rgba(255,107,107,0.18)" : "rgba(56,189,248,0.18)"),
+          line: { color: "rgba(255,255,255,0.06)", width: 1 },
+        },
+        hoverinfo: "skip",
+        opacity: 0.55,
       },
     ];
 
     const layout = {
       title: {
-        text: "Market Reaction to Events",
+        text: "Animated Feature Importance Signals",
+        font: { color: "#eaf3ff", size: 16 },
+      },
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      font: { color: "#d6e4ff" },
+      hovermode: "x unified",
+      hoverlabel: {
+        bgcolor: "rgba(10, 25, 46, 0.96)",
+        bordercolor: "rgba(167, 139, 250, 0.55)",
+        font: { color: "#eaf3ff", size: 12 },
+      },
+      xaxis: {
+        gridcolor: "rgba(148, 163, 184, 0.08)",
+        tickfont: { color: "#d6e4ff", size: 11 },
+        tickangle: -24,
+        linecolor: "rgba(148, 163, 184, 0.22)",
+        tickcolor: "rgba(148, 163, 184, 0.22)",
+        zeroline: false,
+      },
+      yaxis: {
+        title: "Importance %",
+        titlefont: { color: "#c4d7ff" },
+        gridcolor: "rgba(148, 163, 184, 0.14)",
+        tickfont: { color: "#d6e4ff", size: 12 },
+        linecolor: "rgba(148, 163, 184, 0.22)",
+        tickcolor: "rgba(148, 163, 184, 0.22)",
+        zeroline: false,
+        range: [0, Math.max(100, Math.ceil(Math.max(0.001, ...featureImportanceEntries.map((entry) => safeN(entry.importance, 0))) / 10) * 10)],
+      },
+      legend: {
+        font: { color: "#d6e4ff" },
+        x: 0.02,
+        y: 1.12,
+        orientation: "h",
+        bgcolor: "rgba(12, 31, 56, 0.74)",
+        bordercolor: "rgba(167, 139, 250, 0.28)",
+        borderwidth: 1,
+      },
+      margin: { t: 64, r: 28, b: 100, l: 56 },
+      bargap: 0.48,
+      transition: { duration: 650, easing: "cubic-in-out" },
+    };
+
+    plotlyRef.current.react(featureChartRef.current, data, layout, {
+      displayModeBar: false,
+      responsive: true,
+    });
+  }, [featureImportanceEntries, plotlyReady]);
+
+  // Render Cross-Domain Pressure Chart
+  useEffect(() => {
+    if (!marketChartRef.current || !plotlyRef.current || !plotlyReady) return;
+    if (!domainSignalHistory.length) return;
+
+    const labels = domainSignalHistory.map((row) => row.label);
+    const data = [
+      {
+        x: labels,
+        y: domainSignalHistory.map((row) => row.contextual_pressure * 100),
+        type: "scatter",
+        mode: "lines+markers",
+        name: "Context Pressure",
+        marker: { color: "#2ad1f5", size: 7, line: { color: "#0a1428", width: 2 } },
+        line: { color: "#2ad1f5", width: 3, shape: "spline" },
+        hovertemplate: "Context: %{y:.2f}<extra></extra>",
+      },
+      {
+        x: labels,
+        y: domainSignalHistory.map((row) => row.attention_pressure),
+        type: "scatter",
+        mode: "lines+markers",
+        name: "Attention",
+        marker: { color: "#7dd3fc", size: 7, line: { color: "#0b1730", width: 2 } },
+        line: { color: "#7dd3fc", width: 3 },
+        hovertemplate: "Attention: %{y:.2f}<extra></extra>",
+      },
+      {
+        x: labels,
+        y: domainSignalHistory.map((row) => row.disruption_pressure),
+        type: "scatter",
+        mode: "lines+markers",
+        name: "Disruption",
+        marker: { color: "#f59e0b", size: 7, line: { color: "#0b1730", width: 2 } },
+        line: { color: "#f59e0b", width: 3 },
+        hovertemplate: "Disruption: %{y:.2f}<extra></extra>",
+      },
+      {
+        x: labels,
+        y: domainSignalHistory.map((row) => row.economic_stress),
+        type: "scatter",
+        mode: "lines+markers",
+        name: "Economic Stress",
+        marker: { color: "#f472b6", size: 7, line: { color: "#0b1730", width: 2 } },
+        line: { color: "#f472b6", width: 3 },
+        hovertemplate: "Economic: %{y:.2f}<extra></extra>",
+      },
+      {
+        x: labels,
+        y: domainSignalHistory.map((row) => row.logistics_stress * 100),
+        type: "scatter",
+        mode: "lines+markers",
+        name: "Logistics",
+        marker: { color: "#a3e635", size: 7, line: { color: "#0b1730", width: 2 } },
+        line: { color: "#a3e635", width: 3, dash: "dot" },
+        hovertemplate: "Logistics: %{y:.2f}<extra></extra>",
+      },
+    ];
+
+    const layout = {
+      title: {
+        text: "Cross-Domain Pressure Signals",
         font: { color: "#eaf3ff", size: 16 },
       },
       paper_bgcolor: "rgba(0,0,0,0)",
@@ -1117,22 +1640,13 @@ export default function TrendPrediction() {
         tickangle: -30,
       },
       yaxis: {
-        title: "Sentiment Impact",
+        title: "Signal Intensity",
         titlefont: { color: "#c4d7ff" },
         gridcolor: "rgba(148, 163, 184, 0.16)",
         tickfont: { color: "#d6e4ff", size: 12 },
         linecolor: "rgba(148, 163, 184, 0.28)",
         tickcolor: "rgba(148, 163, 184, 0.28)",
         zeroline: false,
-      },
-      yaxis2: {
-        title: "Market Reaction %",
-        titlefont: { color: "#93c5fd" },
-        overlaying: "y",
-        side: "right",
-        showgrid: false,
-        zeroline: false,
-        tickfont: { color: "#d7e3f5", size: 12 },
       },
       legend: {
         font: { color: "#d6e4ff" },
@@ -1143,14 +1657,14 @@ export default function TrendPrediction() {
         bordercolor: "rgba(96, 165, 250, 0.35)",
         borderwidth: 1,
       },
-      margin: { t: 56, r: 80, b: 96, l: 70 },
+      margin: { t: 56, r: 42, b: 96, l: 70 },
     };
 
     plotlyRef.current.react(marketChartRef.current, data, layout, {
       displayModeBar: false,
       responsive: true,
     });
-  }, [activeMarketReactions, plotlyReady]);
+  }, [domainSignalHistory, plotlyReady]);
 
   // Load Plotly on mount
   useEffect(() => {
@@ -1166,10 +1680,28 @@ export default function TrendPrediction() {
     return Number((Math.max(...votes) - Math.min(...votes)).toFixed(2));
   }, [modelEnsemble]);
 
+  const canonicalForecastPoint = useMemo(() => activeRiskForecast.find((point) => String(point.horizon).toLowerCase() === "24h") || activeRiskForecast[0] || null, [activeRiskForecast]);
+
   const avgConfidence = useMemo(() => {
+    const contractConfidence = safeN(advancedInsights?.forecast_contract?.confidence_ratio, NaN);
+    if (Number.isFinite(contractConfidence)) {
+      return contractConfidence;
+    }
+    if (activeRiskForecast.length) {
+      return activeRiskForecast.reduce((acc, row) => acc + safeN(row.confidence, 0), 0) / activeRiskForecast.length;
+    }
     if (!modelEnsemble.length) return 0;
     return modelEnsemble.reduce((acc, m) => acc + m.confidence, 0) / modelEnsemble.length;
-  }, [modelEnsemble]);
+  }, [activeRiskForecast, modelEnsemble]);
+
+  const canonicalRiskDisplay = useMemo<number | null>(() => {
+    if (String(advancedInsights?.predictions?.source_status ?? "").trim().toLowerCase() === "withheld") return null;
+    const liveRisk = safeN((latestGlobalDoc?.features as Record<string, unknown> | undefined)?.global_risk_score, NaN);
+    if (Number.isFinite(liveRisk)) return normalizeRisk(liveRisk);
+    if (canonicalForecastPoint) return safeN(canonicalForecastPoint.risk_score, 50);
+    if (activePredictionData) return normalizeUnitValue(activePredictionData.probability, 0.5) * 100;
+    return 50;
+  }, [advancedInsights, canonicalForecastPoint, activePredictionData, latestGlobalDoc]);
 
   const deepHistory = useMemo<SnapshotLike[]>(
     () => historicalData.map((row) => ({
@@ -1183,6 +1715,25 @@ export default function TrendPrediction() {
         stock_return: safeN(row.stock_return),
         stock_volatility: safeN(row.stock_volatility),
         weather_anomaly: safeN(row.weather_anomaly),
+        direct_behavior_score: safeN(row.direct_behavior_score),
+        contextual_pressure_score: safeN(row.contextual_pressure_score),
+        evidence_quality_score: safeN(row.evidence_quality_score),
+        narrative_velocity_score: safeN(row.narrative_velocity_score),
+        coordination_risk_score: safeN(row.coordination_risk_score),
+        mobility_disruption_score: safeN(row.mobility_disruption_score),
+        logistics_stress_score: safeN(row.logistics_stress_score),
+        household_stress_score: safeN(row.household_stress_score),
+        fuel_price_pressure: safeN(row.fuel_price_pressure),
+        food_price_pressure: safeN(row.food_price_pressure),
+        labor_stress_score: safeN(row.labor_stress_score),
+        fx_pressure_score: safeN(row.fx_pressure_score),
+        remittance_stress_score: safeN(row.remittance_stress_score),
+        energy_stress_score: safeN(row.energy_stress_score),
+        global_behavior_index: safeN(row.global_behavior_index),
+        global_context_index: safeN(row.global_context_index),
+        global_attention_index: safeN(row.global_attention_index),
+        global_disruption_index: safeN(row.global_disruption_index),
+        global_economic_stress_index: safeN(row.global_economic_stress_index),
       },
     })),
     [historicalData],
@@ -1330,19 +1881,30 @@ export default function TrendPrediction() {
     const avgFallback = activeMarketReactions.reduce((acc, row) => acc + safeN(row.correlation_strength), 0) / activeMarketReactions.length;
     return Number.isFinite(avgFallback) ? avgFallback : null;
   }, [activeMarketReactions]);
-  const featureMaxAbs = useMemo(() => Math.max(0.001, ...activeFeatureVector.map((v) => Math.abs(safeN(v)))), [activeFeatureVector]);
 
+  const canonicalSourceStatus = String(advancedInsights?.forecast_contract?.source_status ?? advancedInsights?.predictions?.source_status ?? activePredictionData?.source_status ?? "").trim().toLowerCase();
+  const predictionsWithheld = canonicalSourceStatus === "withheld";
+  const trustQuality = summarizeTrustQuality(trustSnapshot);
+  const predictionsDegraded = canonicalSourceStatus.includes("degraded") || (!predictionsWithheld && trustQuality.label === "Degraded");
   const hasMlData = mlSeries.length > 0;
-  const hasFeatureData = playbackActive ? activeFeatureVector.length > 0 : latestFeaturesLoaded;
-  const hasSentimentData = Boolean(activeSentimentForecast);
-  const hasMarketData = activeMarketReactions.length > 0;
-  const hasEventData = activeEventPredictions.length > 0;
-  const hasInsightsData = Boolean(activePredictionData) || hasFeatureData || hasMarketData;
+  const hasFeatureData = featureImportanceEntries.length > 0;
+  const hasSentimentData = !predictionsWithheld && (activeRiskForecast.length > 0 || Boolean(activeSentimentForecast));
+  const hasMarketData = domainSignalHistory.length > 0;
+  const hasEventData = !predictionsWithheld && activeEventPredictions.length > 0;
+  const hasInsightsData = Boolean(activePredictionData) || hasFeatureData || hasMarketData || (advancedInsights?.anomalies?.length || 0) > 0;
   const hasAdvancedData =
     governanceData.models.length > 0 ||
     activeGlobeData.length > 0 ||
     deepHistoryForPanels.length > 1 ||
-    comparisonCountries.length > 1;
+    comparisonCountries.length > 1 ||
+    (advancedInsights?.anomalies?.length || 0) > 0;
+  const activePredictionSourceLabel = formatSourceLabel(advancedInsights?.forecast_contract?.source_status ?? advancedInsights?.predictions?.source_status ?? latestGlobalDoc?.features?.forecast_source_status ?? activePredictionData?.source_status);
+  const sentimentSourceLabel = formatSourceLabel(advancedInsights?.forecast_contract?.source_status ?? advancedInsights?.predictions?.source_status ?? (activeSentimentForecast?.source_status ?? activeSentimentForecast?.source));
+  const eventSourceLabel = formatSourceLabel(activeEventPredictions[0]?.source_status ?? activeEventPredictions[0]?.source);
+  const advancedAnalyticsHorizons = buildPredictionPageHorizons(activeRiskForecast, activeSentimentForecast);
+  const honestSubtitle = !playbackActive && isLiveModelStatus(activePredictionData?.source_status) && trustQuality.label === "Healthy"
+    ? "ML-Powered Risk Forecasting and market intelligence."
+    : "Risk forecasting with explicit live, derived, degraded, and fallback provenance.";
 
   const mlStatus: PanelStatus = error ? "error" : hasMlData ? "live" : "no-data";
   const featureStatus: PanelStatus = error ? "error" : hasFeatureData ? "live" : "no-data";
@@ -1351,6 +1913,7 @@ export default function TrendPrediction() {
   const eventsStatus: PanelStatus = error ? "error" : hasEventData ? "live" : "no-data";
   const insightsStatus: PanelStatus = error ? "error" : hasInsightsData ? "live" : "no-data";
   const advancedStatus: PanelStatus = error ? "error" : hasAdvancedData ? "live" : "no-data";
+  const canonicalStatusBadge = predictionsWithheld ? "Unavailable" : (predictionsDegraded ? "Degraded" : undefined);
 
   function handlePlaybackFrameChange(frame: SnapshotLike | null) {
     setPlaybackFrame(frame);
@@ -1381,12 +1944,12 @@ export default function TrendPrediction() {
     <main className="wp-shell">
       <ConsoleNavigation
         title={<>TREND <span>PREDICTION</span></>}
-        subtitle="ML-Powered Risk Forecasting and market intelligence."
+        subtitle={honestSubtitle}
         sectionTabs={[
-          { label: "Summary", targetId: "prediction-summary" },
+          { label: "Summary", targetId: "prediction-summary", badge: canonicalStatusBadge },
           { label: "Deep Intel", targetId: "prediction-deep-intel" },
-          { label: "Prediction History", targetId: "prediction-history" },
-          { label: "Signals", targetId: "prediction-signals" },
+          { label: "Prediction History", targetId: "prediction-history", badge: canonicalStatusBadge },
+          { label: "Signals", targetId: "prediction-signals", badge: predictionsDegraded ? "Degraded" : undefined },
           { label: "Support", targetId: "prediction-support" },
         ]}
       />
@@ -1395,25 +1958,27 @@ export default function TrendPrediction() {
         <article className="wp-card prediction-summary-card">
           <span className="prediction-summary-label">Risk Score</span>
           <strong className="prediction-summary-value">
-            {activePredictionData ? (activePredictionData.probability * 100).toFixed(1) : "50.0"}
+            {canonicalRiskDisplay !== null ? canonicalRiskDisplay.toFixed(1) : "WITHHELD"}
           </strong>
           <small>/100 global risk probability</small>
         </article>
         <article className="wp-card prediction-summary-card">
           <span className="prediction-summary-label">Confidence</span>
-          <strong className="prediction-summary-value">{(avgConfidence * 100).toFixed(1)}%</strong>
+          <strong className="prediction-summary-value">{predictionsWithheld ? "0.0%" : `${(avgConfidence * 100).toFixed(1)}%`}</strong>
           <small>ensemble average confidence</small>
         </article>
         <article className="wp-card prediction-summary-card">
           <span className="prediction-summary-label">Active Model</span>
-          <strong className="prediction-summary-value">{activePredictionData?.model_version || "v1.0.0"}</strong>
-          <small>{playbackActive ? "historical playback model state" : "production inference model"}</small>
+          <strong className="prediction-summary-value">{predictionsWithheld ? "quality gate" : (activePredictionSourceLabel || "canonical forecast")}</strong>
+          <small>{playbackActive ? "historical playback model state" : (advancedInsights?.forecast_contract?.model_version || activePredictionData?.model_version || "canonical forecast contract")}</small>
         </article>
         <article className="wp-card prediction-summary-card">
           <span className="prediction-summary-label">Last Update</span>
           <strong className="prediction-summary-value">
             {playbackActive && playbackFrame
               ? new Date(playbackFrame.timestamp).toLocaleTimeString()
+              : lastCanonicalRefreshAt
+              ? new Date(lastCanonicalRefreshAt).toLocaleTimeString()
               : lastUpdatedAt
               ? new Date(lastUpdatedAt).toLocaleTimeString()
               : "--:--:--"}
@@ -1421,8 +1986,8 @@ export default function TrendPrediction() {
           <small>{playbackActive ? "playback frame timestamp" : "latest data refresh"}</small>
         </article>
         <article className="wp-card prediction-summary-controls">
-          <div className="prediction-summary-controls-head">Timeframe + Refresh</div>
-          <div className="timeframe-buttons">
+          <div className="prediction-summary-controls-head">Controls</div>
+          <div className="timeframe-buttons timeframe-buttons-compact">
             {(["1h", "6h", "24h", "7d"] as const).map((tf) => (
               <button
                 key={tf}
@@ -1436,18 +2001,38 @@ export default function TrendPrediction() {
               </button>
             ))}
           </div>
-          <button onClick={loadData}>Refresh Predictions</button>
-          {playbackActive && (
-            <button onClick={stopPlaybackMode} style={{ borderColor: "#22d3ee", color: "#22d3ee" }}>
-              Back To Live
-            </button>
-          )}
-          {playbackActive && playbackFrame && (
-            <div className="wp-mini-meta">
-              <span>Playback Mode</span>
-              <span>{new Date(playbackFrame.timestamp).toLocaleString()}</span>
+          <div className="prediction-summary-actions">
+            <button onClick={loadData}>Refresh Predictions</button>
+            {playbackActive && (
+              <button onClick={stopPlaybackMode} style={{ borderColor: "#22d3ee", color: "#22d3ee" }}>
+                Back To Live
+              </button>
+            )}
+          </div>
+          <div className="prediction-summary-meta-grid prediction-summary-meta-grid-compact">
+            <div className="prediction-summary-meta-item">
+              <span>Source</span>
+              <span>{activePredictionSourceLabel}</span>
             </div>
-          )}
+            <div className="prediction-summary-meta-item">
+              <span>Reliability</span>
+              <span>{predictionsWithheld ? "Suppressed" : (predictionsDegraded ? "Downgraded" : trustQuality.label)}</span>
+            </div>
+            <div className="prediction-summary-meta-item">
+              <span>Refreshed</span>
+              <span>{lastCanonicalRefreshAt ? new Date(lastCanonicalRefreshAt).toLocaleString() : "Awaiting canonical refresh"}</span>
+            </div>
+            {playbackActive && playbackFrame && (
+              <div className="prediction-summary-meta-item">
+                <span>Playback</span>
+                <span>{new Date(playbackFrame.timestamp).toLocaleString()}</span>
+              </div>
+            )}
+          </div>
+          <div className="prediction-summary-advisory">
+            <span>{advancedInsights?.advisory || activePredictionData?.advisory || trustQuality.detail}</span>
+            {(advancedInsights?.predictions?.fallback_reason || activePredictionData?.fallback_reason) ? <span>{advancedInsights?.predictions?.fallback_reason || activePredictionData?.fallback_reason}</span> : null}
+          </div>
         </article>
       </section>
 
@@ -1493,6 +2078,25 @@ export default function TrendPrediction() {
                         stock_return: h.features.stock_return,
                         stock_volatility: h.features.stock_volatility,
                         weather_anomaly: h.features.weather_anomaly,
+                        direct_behavior_score: h.features.direct_behavior_score,
+                        contextual_pressure_score: h.features.contextual_pressure_score,
+                        evidence_quality_score: h.features.evidence_quality_score,
+                        narrative_velocity_score: h.features.narrative_velocity_score,
+                        coordination_risk_score: h.features.coordination_risk_score,
+                        mobility_disruption_score: h.features.mobility_disruption_score,
+                        logistics_stress_score: h.features.logistics_stress_score,
+                        household_stress_score: h.features.household_stress_score,
+                        fuel_price_pressure: h.features.fuel_price_pressure,
+                        food_price_pressure: h.features.food_price_pressure,
+                        labor_stress_score: h.features.labor_stress_score,
+                        fx_pressure_score: h.features.fx_pressure_score,
+                        remittance_stress_score: h.features.remittance_stress_score,
+                        energy_stress_score: h.features.energy_stress_score,
+                        global_behavior_index: h.features.global_behavior_index,
+                        global_context_index: h.features.global_context_index,
+                        global_attention_index: h.features.global_attention_index,
+                        global_disruption_index: h.features.global_disruption_index,
+                        global_economic_stress_index: h.features.global_economic_stress_index,
                         global_risk_score: h.score,
                       },
                       timestamp: h.timestamp,
@@ -1563,15 +2167,15 @@ export default function TrendPrediction() {
       <section id="prediction-history" className="prediction-row prediction-row-core">
         <article className="wp-card panel-animated prediction-card-large">
           <PanelHeader
-            title="ML Prediction History"
-            subtitle="Risk trajectory and confidence trends from real prediction logs"
+            title="Canonical Forecast Track"
+            subtitle="Canonical advanced forecast track, with explicit withheld and downgraded states"
             status={mlStatus}
           />
           {hasMlData ? (
             <div ref={mlChartRef} className="prediction-chart" />
           ) : (
             <div className="prediction-empty">
-              <p>No real prediction history available for this timeframe.</p>
+              <p>{predictionsWithheld ? (advancedInsights?.predictions?.fallback_reason || "Predictions are currently withheld by the quality gate.") : "No canonical advanced forecast track is available for this timeframe."}</p>
               <button onClick={loadData}>Retry</button>
             </div>
           )}
@@ -1579,38 +2183,20 @@ export default function TrendPrediction() {
         <article className="wp-card panel-animated prediction-card-small">
           <PanelHeader
               title="Feature Importance"
-            subtitle={playbackActive ? "Playback frame feature vector" : "Current live feature vector driving predictions"}
+            subtitle={playbackActive ? "Playback frame feature vector" : "Canonical feature snapshot from advanced insights"}
             status={featureStatus}
           />
           {hasFeatureData ? (
-            <div className="feature-importance">
-              {activeFeatureEntries.map((entry, idx) => {
-                const safeValue = safeN(entry.value);
-                return (
-                  <div key={idx} className="feature-bar">
-                    <div className="wp-mini-meta">
-                      <span>{entry.label}</span>
-                      <span>{safeValue.toFixed(3)}</span>
-                    </div>
-                    <div className="importance-track">
-                      <div
-                        className="importance-fill"
-                        style={{
-                          width: `${Math.max(6, Math.min(100, (Math.abs(safeValue) / featureMaxAbs) * 100))}%`,
-                          background:
-                            safeValue > 0
-                              ? "linear-gradient(90deg, #22d3ee, #60a5fa)"
-                              : "linear-gradient(90deg, #ef4444, #f87171)",
-                        }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            <>
+              <div className="wp-mini-meta" style={{ marginBottom: "12px", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+                <span>{playbackActive ? "Playback-derived feature shape" : "Normalized importance from canonical advanced insights"}</span>
+                <span>{featureImportanceEntries[0] ? `${featureImportanceEntries[0].label} leads at ${featureImportanceEntries[0].importance.toFixed(0)}%` : "Awaiting ranked features"}</span>
+              </div>
+              <div ref={featureChartRef} className="prediction-chart" />
+            </>
           ) : (
             <div className="prediction-empty">
-              <p>No live feature data found yet.</p>
+              <p>No canonical feature snapshot is available yet.</p>
               <button onClick={loadData}>Retry</button>
             </div>
           )}
@@ -1620,12 +2206,16 @@ export default function TrendPrediction() {
       <section id="prediction-signals" className="prediction-row prediction-row-signals">
         <article className="wp-card panel-animated prediction-card-medium">
           <PanelHeader
-            title="Sentiment Forecast"
-            subtitle="Current and projected sentiment from historical feature signals"
+            title="Risk Forecast"
+            subtitle={`Multi-horizon risk outlook (${formatSourceLabel(advancedInsights?.predictions?.source_status ?? (activeSentimentForecast?.source_status ?? activeSentimentForecast?.source)).toLowerCase()})`}
             status={sentimentStatus}
           />
           {hasSentimentData ? (
             <>
+              <div className="wp-mini-meta" style={{ marginBottom: "12px", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+                <span>{sentimentSourceLabel}</span>
+                <span>{predictionsWithheld ? (advancedInsights?.predictions?.fallback_reason || "Predictions withheld by quality gate") : (predictionsDegraded ? (advancedInsights?.predictions?.fallback_reason || "Forecast confidence downgraded by reliability policy") : (advancedInsights?.advisory || activeSentimentForecast?.advisory || activeSentimentForecast?.fallback_reason || "Canonical advanced forecast"))}</span>
+              </div>
               <div ref={sentimentChartRef} className="prediction-chart" />
               <div className="forecast-legend">
                 <div className="legend-item">
@@ -1644,26 +2234,38 @@ export default function TrendPrediction() {
                   <span className="dot" style={{ background: "#fbbf24" }} />
                   <span>24h</span>
                 </div>
+                <div className="legend-item">
+                  <span className="dot" style={{ background: "#f97316" }} />
+                  <span>7d</span>
+                </div>
               </div>
             </>
           ) : (
             <div className="prediction-empty">
-              <p>No backend sentiment forecast was returned.</p>
+              <p>{predictionsWithheld ? (advancedInsights?.predictions?.fallback_reason || "Forecast suppressed by quality gate.") : "No canonical risk forecast was returned."}</p>
               <button onClick={loadData}>Retry</button>
             </div>
           )}
         </article>
         <article className="wp-card panel-animated prediction-card-medium">
           <PanelHeader
-            title="Market Reaction Forecast"
-            subtitle="Impact projections across sentiment, crypto, and stock responses"
+            title="Cross-Domain Pressure"
+            subtitle="Behavior, attention, disruption, logistics, and economic stress signals over time"
             status={marketStatus}
           />
           {hasMarketData ? (
-            <div ref={marketChartRef} className="prediction-chart" />
+            <>
+              {predictionsDegraded && !predictionsWithheld ? (
+                <div className="wp-mini-meta" style={{ marginBottom: "12px", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+                  <span>Downgraded view</span>
+                  <span>Cross-domain context remains visible, but predictive confidence is currently downgraded.</span>
+                </div>
+              ) : null}
+              <div ref={marketChartRef} className="prediction-chart" />
+            </>
           ) : (
             <div className="prediction-empty">
-              <p>No market reaction entries available right now.</p>
+              <p>No cross-domain signal history is available right now.</p>
               <button onClick={loadData}>Retry</button>
             </div>
           )}
@@ -1674,10 +2276,17 @@ export default function TrendPrediction() {
         <article className="wp-card panel-animated prediction-card-medium">
           <PanelHeader
             title="Event-Based Predictions"
-            subtitle="Country-level risk outlook with readable severity bands and impacted regions"
+            subtitle={`Country-level risk outlook (${eventSourceLabel.toLowerCase()})`}
             status={eventsStatus}
           />
           {hasEventData ? (
+            <>
+              {(activeEventPredictions[0]?.fallback_reason || activeEventPredictions[0]?.source_status) ? (
+                <div className="wp-mini-meta" style={{ marginBottom: "12px", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+                  <span>{eventSourceLabel}</span>
+                  <span>{activeEventPredictions[0]?.fallback_reason || "Derived country baseline deltas"}</span>
+                </div>
+              ) : null}
             <div className="event-predictions">
               {activeEventPredictions.map((event) => {
                 const severityLevel = normalizeSeverityLevel(event.severity);
@@ -1723,9 +2332,10 @@ export default function TrendPrediction() {
                 );
               })}
             </div>
+            </>
           ) : (
             <div className="prediction-empty">
-              <p>No event predictions are available for the selected range.</p>
+              <p>{predictionsWithheld ? (advancedInsights?.predictions?.fallback_reason || "Event predictions withheld by quality gate.") : "No event predictions are available for the selected range."}</p>
               <button onClick={loadData}>Retry</button>
             </div>
           )}
@@ -1733,7 +2343,7 @@ export default function TrendPrediction() {
         <article className="wp-card panel-animated prediction-card-medium">
           <PanelHeader
             title="Prediction Insights"
-            subtitle="Condensed decision signal summary from live analytics"
+            subtitle="Condensed decision signal summary from the canonical advanced insights payload"
             status={insightsStatus}
           />
           {hasInsightsData ? (
@@ -1784,22 +2394,62 @@ export default function TrendPrediction() {
         <div className="prediction-deep-intel-grid">
           <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide prediction-deep-card-auto">
             <PanelHeader
-              title="Advanced Analytics"
-              subtitle="Anomalies, causality, and generated reports"
+              title="Canonical Advanced Analytics"
+              subtitle="Anomalies, causality, and report outputs from the same advanced insights response"
               status={advancedStatus}
             />
             {showHeavyPanels ? (
-              <Suspense fallback={<DeferredPanelPlaceholder label="Loading advanced analytics..." />}>
-                <AdvancedAnalyticsPanel />
-              </Suspense>
+              <div className="insights-panel">
+                <div className="insight-item">
+                  <span className="insight-label">Anomalies</span>
+                  <strong className="insight-value">{advancedInsights?.anomalies?.length ?? 0}</strong>
+                </div>
+                <div className="insight-item">
+                  <span className="insight-label">Top Anomaly</span>
+                  <strong className="insight-value">{advancedInsights?.anomalies?.[0] ? `${(safeN(advancedInsights.anomalies[0].anomaly_score) * 100).toFixed(0)}% ${String(advancedInsights.anomalies[0].severity || "medium")}` : "None"}</strong>
+                </div>
+                <div className="insight-item">
+                  <span className="insight-label">Causal Links</span>
+                  <strong className="insight-value">{advancedInsights?.causal_graph?.length ?? 0}</strong>
+                </div>
+                <div className="insight-item">
+                  <span className="insight-label">Report Risk</span>
+                  <strong className="insight-value">{advancedInsights?.ai_report?.risk_level || "unknown"}</strong>
+                </div>
+                <div className="insight-item">
+                  <span className="insight-label">Report Summary</span>
+                  <strong className="insight-value">{advancedInsights?.ai_report?.summary || advancedInsights?.advisory || "Canonical advanced report unavailable."}</strong>
+                </div>
+              </div>
             ) : (
-              <DeferredPanelPlaceholder label="Preparing advanced analytics..." />
+              <DeferredPanelPlaceholder label="Preparing canonical advanced analytics..." />
+            )}
+          </article>
+          <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide prediction-deep-card-auto">
+            <PanelHeader
+              title="Advanced Analytics"
+              subtitle={`Multi-horizon risk outlook (${sentimentSourceLabel.toLowerCase()})`}
+              status={sentimentStatus}
+            />
+            {advancedAnalyticsHorizons.length ? (
+              <div className="insights-panel">
+                {advancedAnalyticsHorizons.map((point) => (
+                  <div key={point.label} className="insight-item" title={predictionsWithheld ? (advancedInsights?.predictions?.fallback_reason || 'Forecast withheld by quality gate') : (advancedInsights?.advisory || activeSentimentForecast?.advisory || 'Canonical advanced forecast')}>
+                    <span className="insight-label">Risk {point.label}</span>
+                    <strong className="insight-value">{point.risk_score.toFixed(1)} / 100</strong>
+                    <span className="insight-label">Delta {point.delta >= 0 ? '+' : ''}{point.delta.toFixed(2)}</span>
+                    <span className="insight-label">{classifyRiskThreat(point.risk_score)} | {(point.confidence * 100).toFixed(0)}% confidence</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <DeferredPanelPlaceholder label="Preparing advanced analytics horizon outlook..." />
             )}
           </article>
           <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide">
             <PanelHeader
               title="Model Governance"
-              subtitle="Ensemble behavior and calibration integrity"
+              subtitle={`Ensemble behavior and calibration integrity for ${advancedInsights?.ml_observability?.model_version || governanceData.selectedCalibrationModel || "the active canonical model"}`}
               status={governanceData.models.length ? "live" : advancedStatus}
             />
             {showHeavyPanels ? (

@@ -7,11 +7,12 @@ import requests
 from bson import ObjectId
 
 from backend.kafka_client import send_to_kafka
+from collectors.network_resilience import is_name_resolution_error, summarize_request_exception, warn_once
 from database.mongo import insert
 
 BASE_URL = "https://api.coingecko.com/api/v3"
 PROCESSED_CSV = "processed_crypto.csv"
-ROLLING_WINDOW = 5  # number of periods for rolling return/volatility
+ROLLING_WINDOW = 5
 DEFAULT_COIN_METADATA = {
     "bitcoin": {"name": "Bitcoin", "symbol": "BTC"},
     "ethereum": {"name": "Ethereum", "symbol": "ETH"},
@@ -27,15 +28,11 @@ DEFAULT_COIN_METADATA = {
 DEFAULT_COIN_IDS = ("bitcoin", "ethereum", "solana", "binancecoin", "ripple", "cardano")
 
 
-# ----------------------------
-# Utilities
-# ----------------------------
 def generate_uuid():
     return str(uuid.uuid4())
 
 
 def convert_for_json(obj):
-    """Convert datetimes and Mongo ObjectIds to JSON-safe values."""
     if isinstance(obj, dict):
         return {k: convert_for_json(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -90,8 +87,8 @@ def _fetch_single_crypto(coin_id="bitcoin", vs_currency="usd", days=1):
         data = response.json()
 
         if "prices" not in data:
-            print("[ERROR] CoinGecko response invalid:", data)
-            return []
+            print("[crypto] CoinGecko response invalid:", data)
+            return [], True
 
         df = _load_crypto_frame()
         market_caps = {ts_ms: cap for ts_ms, cap in data.get("market_caps", [])}
@@ -129,12 +126,12 @@ def _fetch_single_crypto(coin_id="bitcoin", vs_currency="usd", days=1):
             print(f"[Mongo] Inserted {inserted_count} new records for {coin_id}")
 
         if df.empty:
-            return new_records
+            return new_records, True
 
         df["data_timestamp"] = pd.to_datetime(df["data_timestamp"], errors="coerce")
         coin_df = df[df.get("data_coin_id") == coin_id].copy()
         if coin_df.empty:
-            return new_records
+            return new_records, True
 
         coin_df = coin_df.sort_values("data_timestamp")
         coin_df["return"] = coin_df["data_price"].pct_change(periods=ROLLING_WINDOW)
@@ -146,15 +143,15 @@ def _fetch_single_crypto(coin_id="bitcoin", vs_currency="usd", days=1):
             f"Volatility: {latest.get('volatility', 0.0):.6f}"
         )
 
-        return new_records
-    except requests.RequestException as e:
-        print("[ERROR] Failed to fetch crypto data:", e)
-        return []
+        return new_records, True
+    except requests.RequestException as exc:
+        if is_name_resolution_error(exc):
+            warn_once("crypto:dns", summarize_request_exception("crypto", exc))
+            return [], False
+        print(f"[crypto] {coin_id}: {summarize_request_exception('crypto', exc)}")
+        return [], True
 
 
-# ----------------------------
-# Main Fetch Function
-# ----------------------------
 def fetch_crypto(coin_id="bitcoin", vs_currency="usd", days=1):
     """
     Fetch crypto price history from CoinGecko.
@@ -170,20 +167,21 @@ def fetch_crypto(coin_id="bitcoin", vs_currency="usd", days=1):
             normalized_coin_id = str(single_coin_id).strip().lower()
             if not normalized_coin_id:
                 continue
-            all_records.extend(_fetch_single_crypto(normalized_coin_id, vs_currency=vs_currency, days=days))
+            records, source_available = _fetch_single_crypto(normalized_coin_id, vs_currency=vs_currency, days=days)
+            all_records.extend(records)
+            if not source_available:
+                break
         return all_records
 
     normalized_coin_id = str(coin_id).strip().lower() if coin_id else "bitcoin"
-    return _fetch_single_crypto(normalized_coin_id, vs_currency=vs_currency, days=days)
+    records, _ = _fetch_single_crypto(normalized_coin_id, vs_currency=vs_currency, days=days)
+    return records
 
 
-# ----------------------------
-# Standalone Test
-# ----------------------------
 if __name__ == "__main__":
     data = fetch_crypto(get_configured_coin_ids(), "usd", days=5)
     if data:
         import json
 
         safe_data = convert_for_json(data)
-        print(json.dumps(safe_data[:3], indent=2))  # print first 3 records
+        print(json.dumps(safe_data[:3], indent=2))

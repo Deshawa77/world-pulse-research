@@ -1840,8 +1840,8 @@ button:hover {
 
 .prediction-summary-card {
   display: grid;
-  gap: 6px;
-  min-height: 108px;
+  gap: 5px;
+  min-height: 92px;
   background: linear-gradient(180deg, rgba(22, 32, 52, 0.96), rgba(17, 27, 45, 0.98));
   border: 1px solid rgba(71, 85, 105, 0.32);
   box-shadow: 0 10px 28px rgba(2, 6, 23, 0.22);
@@ -1858,10 +1858,10 @@ button:hover {
   display: flex;
   align-items: center;
   width: 100%;
-  min-height: 96px;
-  font-size: clamp(1.3rem, 2.1vw, 1.9rem);
+  min-height: 68px;
+  font-size: clamp(1.15rem, 1.7vw, 1.7rem);
   color: #eef6ff;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.05);
@@ -1870,13 +1870,15 @@ button:hover {
 
 .prediction-summary-card small {
   color: #8ea7cf;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
+  line-height: 1.3;
 }
 
 .prediction-summary-controls {
   display: grid;
-  gap: 10px;
-  min-height: 108px;
+  align-content: start;
+  gap: 8px;
+  min-height: 92px;
   background: linear-gradient(180deg, rgba(22, 32, 52, 0.96), rgba(17, 27, 45, 0.98));
   border: 1px solid rgba(71, 85, 105, 0.32);
   box-shadow: 0 10px 28px rgba(2, 6, 23, 0.22);
@@ -1884,12 +1886,69 @@ button:hover {
 
 .prediction-summary-controls-head {
   color: #b8cff4;
-  font-size: 0.88rem;
-  letter-spacing: 0.35px;
+  font-size: 0.82rem;
+  letter-spacing: 0.28px;
+  text-transform: uppercase;
 }
 
 .prediction-summary-controls button {
   width: 100%;
+}
+
+.timeframe-buttons-compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.prediction-summary-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.prediction-summary-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.prediction-summary-meta-grid .wp-mini-meta {
+  min-width: 0;
+}
+
+.prediction-summary-meta-item {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.prediction-summary-meta-item span:first-child {
+  color: #7f97bc;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.prediction-summary-meta-item span:last-child {
+  color: #d8e6fb;
+  font-size: 0.84rem;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.prediction-summary-advisory {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  color: #9fb3d1;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .prediction-row {
@@ -2041,13 +2100,20 @@ button:hover {
   .prediction-summary-controls {
     grid-column: 1 / -1;
   }
+
+  .prediction-summary-meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 980px) {
   .prediction-row-core,
   .prediction-row-signals,
   .prediction-row-support,
-  .prediction-summary-sticky {
+  .prediction-summary-sticky,
+  .prediction-summary-actions,
+  .prediction-summary-meta-grid,
+  .timeframe-buttons-compact {
     grid-template-columns: 1fr;
   }
 

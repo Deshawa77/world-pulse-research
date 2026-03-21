@@ -86,6 +86,8 @@ def run_country_risk_validation(day: datetime | None = None, persist: bool = Tru
             'risk_score': round(risk, 2),
             'war_state_rules': features.get('war_state_rules', []),
             'source_count': int(features.get('source_count', 0) or 0),
+            'source': str(item.get('source') or ''),
+            'notes': str(item.get('notes') or ''),
         })
 
     if not rows:

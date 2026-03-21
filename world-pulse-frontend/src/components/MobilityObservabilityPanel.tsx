@@ -57,36 +57,50 @@ export default function MobilityObservabilityPanel({ mobilitySnapshot }: Props) 
       : []),
     [mobilitySnapshot],
   );
-  const chartRows = useMemo(() => topCountries.slice(0, 5), [topCountries]);
+  const chartRows = useMemo(() => topCountries.slice(0, 6), [topCountries]);
   const combinedCountryCount = safeNumber(mobilitySnapshot?.combined_country_count);
   const overlapRatio = safeNumber(mobilitySnapshot?.crosscheck_overlap_ratio) * 100;
   const status = safeString(mobilitySnapshot?.status, "monitoring");
   const generatedAt = safeString(mobilitySnapshot?.generated_at, "");
   const mixChartRef = useRef<HTMLDivElement | null>(null);
   const mixChartInstanceRef = useRef<echarts.ECharts | null>(null);
-  const barChartRef = useRef<HTMLDivElement | null>(null);
-  const barChartInstanceRef = useRef<echarts.ECharts | null>(null);
+  const trendChartRef = useRef<HTMLDivElement | null>(null);
+  const trendChartInstanceRef = useRef<echarts.ECharts | null>(null);
 
-  const mixSeries = useMemo(() => {
-    if (!chartRows.length) {
-      return [
-        { name: "Displacement", value: 0 },
-        { name: "Aviation", value: 0 },
-        { name: "Logistics", value: 0 },
-        { name: "Risk", value: 0 },
-      ];
-    }
-    const avg = (key: string, absolute = false) => {
-      const total = chartRows.reduce((sum, row) => sum + (absolute ? toAbsolute(row[key]) : toPercent(row[key])), 0);
-      return Math.round((total / chartRows.length) * 10) / 10;
-    };
-    return [
-      { name: "Displacement", value: avg("normalized_displaced_pressure") },
-      { name: "Aviation", value: avg("aviation_disruption_score") },
-      { name: "Logistics", value: avg("logistics_stress_score") },
-      { name: "Risk", value: avg("risk_score", true) },
-    ];
-  }, [chartRows]);
+  const labels = useMemo(
+    () => chartRows.map((row) => safeString(row.country_name, safeString(row.country, "UNK"))),
+    [chartRows],
+  );
+  const displacementSeries = useMemo(
+    () => chartRows.map((row) => toPercent(row.normalized_displaced_pressure)),
+    [chartRows],
+  );
+  const aviationSeries = useMemo(
+    () => chartRows.map((row) => toPercent(row.aviation_disruption_score)),
+    [chartRows],
+  );
+  const logisticsSeries = useMemo(
+    () => chartRows.map((row) => toPercent(row.logistics_stress_score)),
+    [chartRows],
+  );
+  const severityValues = useMemo(
+    () => chartRows.map((row) => toPercent(row.severity_score)),
+    [chartRows],
+  );
+  const riskValues = useMemo(
+    () => chartRows.map((row) => Math.min(100, toAbsolute(row.risk_score) * 10)),
+    [chartRows],
+  );
+
+  const averageSeverity = useMemo(() => {
+    if (!severityValues.length) return 0;
+    return severityValues.reduce((sum, value) => sum + value, 0) / severityValues.length;
+  }, [severityValues]);
+
+  const averageRisk = useMemo(() => {
+    if (!riskValues.length) return 0;
+    return riskValues.reduce((sum, value) => sum + value, 0) / riskValues.length;
+  }, [riskValues]);
 
   useEffect(() => {
     if (!mixChartRef.current) return;
@@ -95,63 +109,86 @@ export default function MobilityObservabilityPanel({ mobilitySnapshot }: Props) 
     }
     const chart = mixChartInstanceRef.current;
     const option: echarts.EChartsOption = {
-      animationDuration: 450,
-      animationDurationUpdate: 400,
-      color: ["#1fd3ee", "#f56565", "#f0a93e", "#8b9bb4"],
+      animationDuration: 650,
+      animationDurationUpdate: 450,
+      color: ["#7c6cf6", "#61a9ff", "#2dd4bf"],
       tooltip: {
-        trigger: "item",
-        formatter: "{b}: {c} / 100 ({d}%)",
-        backgroundColor: "rgba(6, 18, 34, 0.96)",
-        borderColor: "rgba(34, 211, 238, 0.28)",
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        backgroundColor: "rgba(8, 18, 34, 0.96)",
+        borderColor: "rgba(124, 108, 246, 0.32)",
         textStyle: { color: "#e2e8f0" },
       },
       legend: {
-        bottom: 6,
-        left: "center",
-        textStyle: { color: "#94a3b8", fontSize: 11 },
-        itemWidth: 10,
-        itemHeight: 10,
+        top: 0,
+        left: 0,
+        icon: "circle",
+        itemWidth: 9,
+        itemHeight: 9,
+        textStyle: { color: "#8ea2bd", fontSize: 11 },
+        data: ["Displacement", "Aviation", "Logistics"],
       },
-      graphic: [
-        {
-          type: "text",
-          left: "center",
-          top: "40%",
-          style: {
-            text: "Signal Mix",
-            fill: "#e2e8f0",
-            fontSize: 18,
-            fontWeight: 700,
-          },
-        },
-        {
-          type: "text",
-          left: "center",
-          top: "52%",
-          style: {
-            text: `${combinedCountryCount} live`,
-            fill: "#7dd3fc",
-            fontSize: 12,
-            fontWeight: 600,
-          },
-        },
-      ],
+      grid: {
+        left: 32,
+        right: 16,
+        top: 42,
+        bottom: 28,
+      },
+      xAxis: {
+        type: "category",
+        data: labels,
+        axisLabel: { color: "#94a3b8", fontSize: 11, interval: 0 },
+        axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.14)" } },
+        axisTick: { show: false },
+      },
+      yAxis: {
+        type: "value",
+        max: 100,
+        axisLabel: { color: "#64748b", fontSize: 11 },
+        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.08)" } },
+      },
       series: [
         {
-          name: "Mobility Signal Mix",
-          type: "pie",
-          radius: ["56%", "74%"],
-          center: ["50%", "46%"],
-          avoidLabelOverlap: true,
-          itemStyle: {
-            borderColor: "#102033",
-            borderWidth: 3,
-          },
-          label: { show: false },
-          labelLine: { show: false },
-          data: mixSeries,
+          name: "Displacement",
+          type: "bar",
+          stack: "composition",
+          barWidth: 28,
+          itemStyle: { color: "#7c6cf6", borderRadius: [10, 10, 0, 0] },
+          emphasis: { focus: "series" },
+          data: displacementSeries,
+        },
+        {
+          name: "Aviation",
+          type: "bar",
+          stack: "composition",
+          barWidth: 28,
+          itemStyle: { color: "#61a9ff" },
+          emphasis: { focus: "series" },
+          data: aviationSeries,
+        },
+        {
+          name: "Logistics",
+          type: "bar",
+          stack: "composition",
+          barWidth: 28,
+          itemStyle: { color: "#2dd4bf", borderRadius: [10, 10, 0, 0] },
+          emphasis: { focus: "series" },
+          data: logisticsSeries,
         },
       ],
+      graphic: labels.length
+        ? []
+        : [{
+            type: "text",
+            left: "center",
+            top: "middle",
+            style: {
+              text: "Awaiting mobility source rows",
+              fill: "#94a3b8",
+              fontSize: 13,
+              fontWeight: 600,
+            },
+          }],
     };
     chart.setOption(option, true);
     const resizeObserver = new ResizeObserver(() => chart.resize());
@@ -162,99 +199,126 @@ export default function MobilityObservabilityPanel({ mobilitySnapshot }: Props) 
       resizeObserver.disconnect();
       window.removeEventListener("resize", handleResize);
     };
-  }, [mixSeries, combinedCountryCount]);
+  }, [aviationSeries, displacementSeries, labels, logisticsSeries, severityValues]);
 
   useEffect(() => {
-    if (!barChartRef.current) return;
-    if (!barChartInstanceRef.current) {
-      barChartInstanceRef.current = echarts.init(barChartRef.current);
+    if (!trendChartRef.current) return;
+    if (!trendChartInstanceRef.current) {
+      trendChartInstanceRef.current = echarts.init(trendChartRef.current);
     }
-    const chart = barChartInstanceRef.current;
-    const labels = chartRows.map((row) => safeString(row.country_name, safeString(row.country, "UNK")));
-    const severityValues = chartRows.map((row) => toPercent(row.severity_score));
-    const riskValues = chartRows.map((row) => toAbsolute(row.risk_score));
+    const chart = trendChartInstanceRef.current;
     const option: echarts.EChartsOption = {
-      animationDuration: 450,
-      animationDurationUpdate: 400,
-      color: ["#3b82f6", "#fb7185"],
+      animationDuration: 700,
+      animationDurationUpdate: 480,
       tooltip: {
         trigger: "axis",
-        axisPointer: { type: "shadow" },
-        backgroundColor: "rgba(6, 18, 34, 0.96)",
-        borderColor: "rgba(34, 211, 238, 0.28)",
+        backgroundColor: "rgba(8, 18, 34, 0.96)",
+        borderColor: "rgba(35, 163, 255, 0.28)",
         textStyle: { color: "#e2e8f0" },
       },
-      legend: {
-        top: 4,
-        right: 8,
-        textStyle: { color: "#94a3b8", fontSize: 11 },
-        itemWidth: 10,
-        itemHeight: 10,
-        data: ["Severity", "Risk"],
-      },
       grid: {
-        left: 42,
-        right: 16,
-        top: 42,
-        bottom: 34,
+        left: 16,
+        right: 20,
+        top: 20,
+        bottom: 22,
       },
       xAxis: {
         type: "category",
+        boundaryGap: false,
         data: labels,
-        axisLabel: { color: "#94a3b8", fontSize: 11 },
-        axisLine: { lineStyle: { color: "rgba(71, 85, 105, 0.35)" } },
+        axisLabel: { color: "#8b95a7", fontSize: 11, margin: 14 },
+        axisLine: { show: false },
+        axisTick: { show: false },
       },
       yAxis: {
         type: "value",
         min: 0,
         max: 100,
-        axisLabel: { color: "#64748b", fontSize: 11 },
-        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.10)" } },
+        axisLabel: { color: "#65748b", fontSize: 11 },
+        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.08)" } },
       },
       series: [
         {
-          name: "Severity",
-          type: "bar",
-          barWidth: 22,
-          data: severityValues,
-          itemStyle: { borderRadius: [6, 6, 0, 0] },
-        },
-        {
-          name: "Risk",
+          name: "Risk Score",
           type: "bar",
           barWidth: 22,
           data: riskValues,
-          itemStyle: { borderRadius: [6, 6, 0, 0], opacity: 0.9 },
+          itemStyle: {
+            borderRadius: [10, 10, 0, 0],
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: "rgba(255, 111, 120, 0.95)" },
+              { offset: 1, color: "rgba(255, 111, 120, 0.58)" },
+            ]),
+          },
+        },
+        {
+          name: "Severity",
+          type: "line",
+          smooth: 0.5,
+          symbol: "circle",
+          symbolSize: 10,
+          data: severityValues,
+          lineStyle: {
+            width: 4,
+            color: "#2693f2",
+            shadowBlur: 12,
+            shadowColor: "rgba(38, 147, 242, 0.25)",
+          },
+          itemStyle: {
+            color: "#1b1b1b",
+            borderColor: "#2693f2",
+            borderWidth: 4,
+          },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: "rgba(38, 147, 242, 0.28)" },
+              { offset: 0.6, color: "rgba(38, 147, 242, 0.08)" },
+              { offset: 1, color: "rgba(38, 147, 242, 0.01)" },
+            ]),
+          },
         },
       ],
+      graphic: labels.length
+        ? []
+        : [{
+            type: "text",
+            left: "center",
+            top: "middle",
+            style: {
+              text: "Country ranking will appear here",
+              fill: "#94a3b8",
+              fontSize: 13,
+              fontWeight: 600,
+            },
+          }],
     };
     chart.setOption(option, true);
     const resizeObserver = new ResizeObserver(() => chart.resize());
-    resizeObserver.observe(barChartRef.current);
+    resizeObserver.observe(trendChartRef.current);
     const handleResize = () => chart.resize();
     window.addEventListener("resize", handleResize);
     return () => {
       resizeObserver.disconnect();
       window.removeEventListener("resize", handleResize);
     };
-  }, [chartRows]);
+  }, [labels, riskValues, severityValues]);
 
   useEffect(() => () => {
     mixChartInstanceRef.current?.dispose();
     mixChartInstanceRef.current = null;
-    barChartInstanceRef.current?.dispose();
-    barChartInstanceRef.current = null;
+    trendChartInstanceRef.current?.dispose();
+    trendChartInstanceRef.current = null;
   }, []);
 
   return (
-    <article className="wp-card panel-frame operational-panel mobility-observability-panel">
+    <article className="wp-card panel-frame operational-panel mobility-observability-panel mobility-observability-panel--full">
       <div className="panel-head analytics-panel-head">
         <h3>Mobility Severity</h3>
         <span className={`analytics-pill ${status !== "healthy" ? "is-warning" : ""}`}>{status}</span>
       </div>
       <div className="panel-content operational-panel-content">
         <div className="operational-panel-intro">
-          Live mobility severity shown as a cleaner chart board: a signal-mix donut and a country severity bar chart, both refreshing with the dashboard trust snapshot.
+          Live mobility severity using direct backend metrics only: stacked displacement, aviation, and logistics scores on the left, with severity and risk score on the right.
         </div>
         <div className="mobility-observability-grid">
           <article className="mobility-observability-card">
@@ -283,47 +347,58 @@ export default function MobilityObservabilityPanel({ mobilitySnapshot }: Props) 
           <span>Snapshot {formatClock(generatedAt || displacement.last_updated || aviation.last_updated || logistics.last_updated)}</span>
         </div>
         <div className="mobility-observability-chart-board">
-          <article className="mobility-observability-chart-card">
-            <div className="mobility-observability-chart-title">Mobility Signal Mix</div>
-            <div ref={mixChartRef} className="mobility-observability-mini-chart" aria-label="Mobility signal mix chart" />
+          <article className="mobility-observability-chart-card mobility-observability-chart-card--wide mobility-observability-chart-card--light">
+            <div className="mobility-observability-chart-title">Signal Composition by Country</div>
+            <div className="mobility-observability-chart-subtitle">Actual displacement, aviation disruption, and logistics stress scores for each country.</div>
+            <div ref={mixChartRef} className="mobility-observability-mini-chart mobility-observability-mini-chart--tall" aria-label="Mobility signal composition chart" />
           </article>
-          <article className="mobility-observability-chart-card">
-            <div className="mobility-observability-chart-title">Country Severity Impact</div>
-            <div ref={barChartRef} className="mobility-observability-mini-chart" aria-label="Mobility severity bar chart" />
+          <article className="mobility-observability-chart-card mobility-observability-chart-card--dark-trend">
+            <div className="mobility-observability-trend-top">
+              <div className="mobility-observability-trend-kpis">
+                <div className="mobility-observability-trend-stat">
+                  <strong>{combinedCountryCount}</strong>
+                  <span>Countries</span>
+                </div>
+                <div className="mobility-observability-trend-stat mobility-observability-trend-stat--wide">
+                  <strong>{averageSeverity.toFixed(1)} / 100</strong>
+                  <span>Avg Severity</span>
+                  <em>{averageRisk.toFixed(1)} avg risk score</em>
+                </div>
+              </div>
+            </div>
+            <div className="mobility-observability-chart-title">Severity vs Risk Pressure</div>
+            <div className="mobility-observability-chart-subtitle">Severity score line over actual risk score bars for the same countries.</div>
+            <div ref={trendChartRef} className="mobility-observability-mini-chart mobility-observability-mini-chart--trend" aria-label="Mobility severity trend chart" />
           </article>
         </div>
         <div className="mobility-observability-list" role="list" aria-label="Country mobility severity ranking">
           {chartRows.map((row, index) => (
-            <div key={`${safeString(row.country, "UNK")}-${index}`} className="mobility-observability-row" role="listitem">
-              <div className="mobility-observability-row-head">
-                <div>
+            <div key={`${safeString(row.country, "UNK")}-${index}`} className="mobility-observability-row mobility-observability-row--compact" role="listitem">
+              <div className="mobility-observability-row-summary">
+                <div className="mobility-observability-row-country">
                   <strong>{safeString(row.country_name, safeString(row.country, "UNK"))}</strong>
                   <span>{safeString(row.country, "UNK")}</span>
                 </div>
-                <div>
+                <div className="mobility-observability-row-score">
                   <strong>{asPercent(row.severity_score)}</strong>
                   <span>Severity</span>
                 </div>
-                <div>
+                <div className="mobility-observability-row-score">
                   <strong>{asAbsolute(row.risk_score)}</strong>
                   <span>Risk Score</span>
                 </div>
+                <div className="mobility-observability-row-score">
+                  <strong>{(safeNumber(row.confidence_score) * 100).toFixed(0)}%</strong>
+                  <span>Confidence</span>
+                </div>
               </div>
-              <div className="mobility-observability-row-grid">
-                <div><strong>{asPercent(row.normalized_displaced_pressure)}</strong><span>Displacement</span></div>
-                <div><strong>{asPercent(row.aviation_disruption_score)}</strong><span>Aviation</span></div>
-                <div><strong>{asPercent(row.logistics_stress_score)}</strong><span>Logistics</span></div>
-                <div><strong>{(safeNumber(row.freshness_score) * 100).toFixed(0)}%</strong><span>Freshness</span></div>
-                <div><strong>{(safeNumber(row.confidence_score) * 100).toFixed(0)}%</strong><span>Confidence</span></div>
-                <div><strong>{asAbsolute(row.direct_behavior_score)}</strong><span>Direct</span></div>
-                <div><strong>{asAbsolute(row.contextual_pressure_score)}</strong><span>Context</span></div>
-                <div><strong>{asPercent(row.household_stress_score)}</strong><span>Household</span></div>
-                <div><strong>{asPercent(row.fuel_price_pressure)}</strong><span>Fuel</span></div>
-                <div><strong>{asPercent(row.food_price_pressure)}</strong><span>Food</span></div>
-                <div><strong>{asPercent(row.labor_stress_score)}</strong><span>Labor</span></div>
-                <div><strong>{asPercent(row.fx_pressure_score)}</strong><span>FX</span></div>
-                <div><strong>{asPercent(row.remittance_stress_score)}</strong><span>Remittance</span></div>
-                <div><strong>{asPercent(row.energy_stress_score)}</strong><span>Energy</span></div>
+              <div className="mobility-observability-pill-row">
+                <div className="mobility-observability-pill"><strong>{asPercent(row.normalized_displaced_pressure)}</strong><span>Displacement</span></div>
+                <div className="mobility-observability-pill"><strong>{asPercent(row.aviation_disruption_score)}</strong><span>Aviation</span></div>
+                <div className="mobility-observability-pill"><strong>{asPercent(row.logistics_stress_score)}</strong><span>Logistics</span></div>
+                <div className="mobility-observability-pill"><strong>{(safeNumber(row.freshness_score) * 100).toFixed(0)}%</strong><span>Freshness</span></div>
+                <div className="mobility-observability-pill"><strong>{asAbsolute(row.direct_behavior_score)}</strong><span>Direct</span></div>
+                <div className="mobility-observability-pill"><strong>{asAbsolute(row.contextual_pressure_score)}</strong><span>Context</span></div>
               </div>
             </div>
           ))}

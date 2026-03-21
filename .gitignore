@@ -2,7 +2,6 @@
 # Python
 # =========================
 __pycache__/
-**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -62,5 +61,14 @@ models/
 .DS_Store
 Thumbs.db
 
-# Processed pipeline outputs
-processed_*.csv
+# =========================
+# Node / Frontend
+# =========================
+node_modules/
+dist/
+build/
+
+# =========================
+# Temp / Screenshots
+# =========================
+tmp-*

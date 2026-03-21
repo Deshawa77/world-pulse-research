@@ -49,6 +49,10 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'test_*.py' -v
 
+      - name: Intelligence promotion gate
+        run: python scripts/check_intelligence_promotion_gate.py --output intelligence_gate_report.json
+
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -62,6 +66,12 @@ jobs:
 
       - name: Frontend typecheck
         run: npx --prefix world-pulse-frontend tsc --noEmit -p world-pulse-frontend/tsconfig.app.json
+
+      - name: Prediction page contract regression
+        run: python scripts/check_prediction_page_contract.py
+
+      - name: Country intelligence contract regression
+        run: python scripts/check_country_intelligence_contract.py
 
       - name: Frontend build
         working-directory: world-pulse-frontend

@@ -27,6 +27,7 @@ type ConsoleNavigationProps = {
   sectionTabs?: Array<{
     label: string;
     targetId: string;
+    badge?: string;
   }>;
 };
 
@@ -157,6 +158,7 @@ export default function ConsoleNavigation({
               onClick={() => handleSectionTabClick(tab.targetId)}
             >
               {tab.label}
+              {tab.badge ? <span className="console-section-tab-badge">{tab.badge}</span> : null}
             </button>
           ))}
         </div>

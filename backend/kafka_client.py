@@ -3,10 +3,15 @@ import os
 import time
 from datetime import datetime
 
-from kafka import KafkaConsumer, KafkaProducer
+try:
+    from kafka import KafkaConsumer, KafkaProducer
+except ImportError:  # pragma: no cover - optional runtime dependency
+    KafkaConsumer = None
+    KafkaProducer = None
 
 KAFKA_SERVER = os.environ.get("KAFKA_BROKER", "localhost:9092")
 TOPIC = "worldpulse.raw"
+KAFKA_AVAILABLE = KafkaConsumer is not None and KafkaProducer is not None
 
 
 def json_serializer(obj):
@@ -15,13 +20,21 @@ def json_serializer(obj):
     return str(obj)
 
 
-producer = KafkaProducer(
-    bootstrap_servers=KAFKA_SERVER,
-    value_serializer=lambda v: json.dumps(v, default=json_serializer).encode("utf-8"),
-)
+producer = None
+if KAFKA_AVAILABLE:
+    try:
+        producer = KafkaProducer(
+            bootstrap_servers=KAFKA_SERVER,
+            value_serializer=lambda v: json.dumps(v, default=json_serializer).encode("utf-8"),
+        )
+    except Exception:
+        producer = None
 
 
 def send_to_kafka(topic, message, key=None, retries=3, retry_backoff_sec=1.0):
+    if producer is None:
+        return False
+
     payload_key = None
     if key is not None:
         payload_key = str(key).encode("utf-8")
@@ -47,6 +60,9 @@ def get_consumer(
     enable_auto_commit=True,
     consumer_timeout_ms=1000,
 ):
+    if KafkaConsumer is None:
+        raise RuntimeError("Kafka support is not installed in this environment")
+
     subscribe_topics = topics or [TOPIC]
     if isinstance(subscribe_topics, str):
         subscribe_topics = [subscribe_topics]

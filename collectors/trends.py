@@ -5,6 +5,7 @@ import random
 import json
 import os
 import requests
+from collectors.network_resilience import is_name_resolution_error, summarize_request_exception, warn_once
 from database.mongo import insert
 from backend.kafka_client import send_to_kafka  # Make sure this exists
 from pytrends.exceptions import TooManyRequestsError
@@ -176,6 +177,7 @@ def fetch_trending_search_queries(regions=None, max_terms_per_region=25, max_ret
 
     effective_max_retries = 1 if len(regions) >= 120 else max_retries
     request_timeout = 8 if len(regions) >= 120 else 20
+    abort_due_to_dns = False
 
     unsupported_regions = set()
     for raw_region in regions:
@@ -203,11 +205,18 @@ def fetch_trending_search_queries(regions=None, max_terms_per_region=25, max_ret
                 xml_text = response.text
                 break
             except Exception as exc:
+                if is_name_resolution_error(exc):
+                    warn_once("trends:dns", summarize_request_exception("trends", exc))
+                    abort_due_to_dns = True
+                    xml_text = None
+                    break
                 if attempt == effective_max_retries - 1:
                     print(f"[trending_rss {region_code}] failed: {exc}")
                 time.sleep(random.uniform(1.5, 3.5))
 
         if not xml_text:
+            if abort_due_to_dns:
+                break
             continue
 
         try:

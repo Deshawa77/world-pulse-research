@@ -15,6 +15,14 @@ export interface PredictionResponse {
   predicted_risk_score?: number;
   probability: number;
   drift_score: number | null;
+  source?: string;
+  source_status?: string;
+  calibration_status?: string;
+  prediction_interval?: Record<string, number> | null;
+  fallback_reason?: string | null;
+  data_quality_status?: string;
+  advisory?: string;
+  reasons?: string[];
 }
 
 export interface PredictionLog {
@@ -45,6 +53,20 @@ export interface HistoricalDataPoint {
   global_attention_index?: number;
   global_disruption_index?: number;
   global_economic_stress_index?: number;
+  direct_behavior_score?: number;
+  contextual_pressure_score?: number;
+  evidence_quality_score?: number;
+  narrative_velocity_score?: number;
+  coordination_risk_score?: number;
+  mobility_disruption_score?: number;
+  logistics_stress_score?: number;
+  household_stress_score?: number;
+  fuel_price_pressure?: number;
+  food_price_pressure?: number;
+  labor_stress_score?: number;
+  fx_pressure_score?: number;
+  remittance_stress_score?: number;
+  energy_stress_score?: number;
   global_mood_score?: number;
   forecast_risk_score?: number;
   forecast_risk_delta?: number;
@@ -59,7 +81,17 @@ export interface SentimentForecast {
   forecast_1h: number;
   forecast_6h: number;
   forecast_24h: number;
+  forecast_7d: number;
   confidence: number;
+  source?: string;
+  source_status?: string;
+  model_version?: string;
+  calibration_status?: string;
+  prediction_interval?: Record<string, number> | null;
+  fallback_reason?: string | null;
+  data_quality_status?: string;
+  advisory?: string;
+  reasons?: string[];
 }
 
 export interface MarketReaction {
@@ -79,6 +111,10 @@ export interface EventPrediction {
   affected_regions: string[];
   confidence: number;
   timestamp: string;
+  source?: string;
+  source_status?: string;
+  model_version?: string;
+  fallback_reason?: string | null;
 }
 
 export type PredictionFeatureMetric = {
@@ -115,6 +151,20 @@ export const MODEL_FEATURE_DEFS = [
   { key: "stock_return", label: "Stock Return", scale: "raw" },
   { key: "stock_volatility", label: "Stock Volatility", scale: "raw" },
   { key: "weather_anomaly", label: "Weather Anomaly", scale: "raw" },
+  { key: "direct_behavior_score", label: "Direct Behavior", scale: "normalized" },
+  { key: "contextual_pressure_score", label: "Contextual Pressure", scale: "normalized" },
+  { key: "evidence_quality_score", label: "Evidence Quality", scale: "normalized" },
+  { key: "narrative_velocity_score", label: "Narrative Velocity", scale: "normalized" },
+  { key: "coordination_risk_score", label: "Coordination Risk", scale: "normalized" },
+  { key: "mobility_disruption_score", label: "Mobility Disruption", scale: "normalized" },
+  { key: "logistics_stress_score", label: "Logistics Stress", scale: "normalized" },
+  { key: "household_stress_score", label: "Household Stress", scale: "normalized" },
+  { key: "fuel_price_pressure", label: "Fuel Price Pressure", scale: "normalized" },
+  { key: "food_price_pressure", label: "Food Price Pressure", scale: "normalized" },
+  { key: "labor_stress_score", label: "Labor Stress", scale: "normalized" },
+  { key: "fx_pressure_score", label: "FX Pressure", scale: "normalized" },
+  { key: "remittance_stress_score", label: "Remittance Stress", scale: "normalized" },
+  { key: "energy_stress_score", label: "Energy Stress", scale: "normalized" },
   { key: "global_behavior_index", label: "Global Behavior", scale: "absolute" },
   { key: "global_context_index", label: "Global Context", scale: "absolute" },
   { key: "global_attention_index", label: "Global Attention", scale: "absolute" },
@@ -128,6 +178,20 @@ export const MODEL_FEATURE_DEFS = [
 ] as const;
 
 export const INTELLIGENCE_FEATURE_DEFS = [
+  { key: "direct_behavior_score", label: "Direct Behavior", scale: "normalized", weight: 12 },
+  { key: "contextual_pressure_score", label: "Contextual Pressure", scale: "normalized", weight: 13 },
+  { key: "evidence_quality_score", label: "Evidence Quality", scale: "normalized", weight: 10 },
+  { key: "narrative_velocity_score", label: "Narrative Velocity", scale: "normalized", weight: 9 },
+  { key: "coordination_risk_score", label: "Coordination Risk", scale: "normalized", weight: 9 },
+  { key: "mobility_disruption_score", label: "Mobility Disruption", scale: "normalized", weight: 10 },
+  { key: "logistics_stress_score", label: "Logistics Stress", scale: "normalized", weight: 9 },
+  { key: "household_stress_score", label: "Household Stress", scale: "normalized", weight: 10 },
+  { key: "fuel_price_pressure", label: "Fuel Price Pressure", scale: "normalized", weight: 7 },
+  { key: "food_price_pressure", label: "Food Price Pressure", scale: "normalized", weight: 7 },
+  { key: "labor_stress_score", label: "Labor Stress", scale: "normalized", weight: 8 },
+  { key: "fx_pressure_score", label: "FX Pressure", scale: "normalized", weight: 7 },
+  { key: "remittance_stress_score", label: "Remittance Stress", scale: "normalized", weight: 7 },
+  { key: "energy_stress_score", label: "Energy Stress", scale: "normalized", weight: 8 },
   { key: "global_behavior_index", label: "Global Behavior", scale: "absolute", weight: 14 },
   { key: "global_context_index", label: "Global Context", scale: "absolute", weight: 12 },
   { key: "global_attention_index", label: "Global Attention", scale: "absolute", weight: 10 },
