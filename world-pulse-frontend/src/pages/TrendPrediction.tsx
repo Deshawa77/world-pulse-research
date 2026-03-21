@@ -12,6 +12,7 @@ import predictionService, {
 import API, {
   API_HEADERS,
   getAdvancedInsights,
+  getGovernanceData,
   getLatestGlobalFeatures,
   getRiskMap,
   getTrustReliability,
@@ -22,6 +23,7 @@ import API, {
   type TrustReliabilitySnapshot,
 } from "../services/api";
 import ConsoleNavigation from "../components/ConsoleNavigation";
+import AdvancedAnalyticsPanel from "../components/AdvancedAnalyticsPanel";
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
 
@@ -300,42 +302,6 @@ function computePearsonCorrelation(a: number[], b: number[]): number | null {
   if (!Number.isFinite(den) || den <= 1e-9) return null;
   return Math.max(-1, Math.min(1, num / den));
 }
-function classifyRiskThreat(score: number): string {
-  if (score >= 75) return "Critical";
-  if (score >= 50) return "Elevated";
-  if (score >= 25) return "Guarded";
-  return "Stable";
-}
-
-function buildPredictionPageHorizons(activeRiskForecast: RiskForecastPoint[], activeSentimentForecast: SentimentForecast | null): Array<{ label: string; risk_score: number; confidence: number; delta: number }> {
-  if (activeRiskForecast.length > 0) {
-    const normalized = activeRiskForecast.map((point, index) => ({
-      label: String(point.horizon || ["Current", "1h", "6h", "24h", "7d"][index] || `H${index}`),
-      risk_score: safeN(point.risk_score, 0),
-      confidence: safeN(point.confidence, 0.5),
-    }));
-    const baseline = normalized.find((point) => point.label.toLowerCase() === 'current')?.risk_score ?? normalized[0]?.risk_score ?? 0;
-    return normalized
-      .filter((point) => point.label.toLowerCase() !== 'current')
-      .map((point) => ({
-        ...point,
-        delta: point.risk_score - baseline,
-      }));
-  }
-
-  if (activeSentimentForecast) {
-    const baseline = safeN(activeSentimentForecast.current_sentiment, 0);
-    return [
-      { label: '1h', risk_score: safeN(activeSentimentForecast.forecast_1h, baseline), confidence: safeN(activeSentimentForecast.confidence, 0.5), delta: safeN(activeSentimentForecast.forecast_1h, baseline) - baseline },
-      { label: '6h', risk_score: safeN(activeSentimentForecast.forecast_6h, baseline), confidence: safeN(activeSentimentForecast.confidence, 0.5), delta: safeN(activeSentimentForecast.forecast_6h, baseline) - baseline },
-      { label: '24h', risk_score: safeN(activeSentimentForecast.forecast_24h, baseline), confidence: safeN(activeSentimentForecast.confidence, 0.5), delta: safeN(activeSentimentForecast.forecast_24h, baseline) - baseline },
-      { label: '7d', risk_score: safeN(activeSentimentForecast.forecast_7d, safeN(activeSentimentForecast.forecast_24h, baseline)), confidence: safeN(activeSentimentForecast.confidence, 0.5), delta: safeN(activeSentimentForecast.forecast_7d, safeN(activeSentimentForecast.forecast_24h, baseline)) - baseline },
-    ];
-  }
-
-  return [];
-}
-
 function buildLogsFromHistory(rows: HistoricalDataPoint[]): PredictionLog[] {
   return rows.map((row, idx) => ({
     _id: `history-${idx}`,
@@ -743,8 +709,9 @@ export default function TrendPrediction() {
 
       finishPrimaryLoad(requestId);
 
-      const [advancedResult, forecastResult, reactionsResult, eventsResult, mapResult, historyResult, globalResult] = await Promise.allSettled([
+      const [advancedResult, governanceResult, forecastResult, reactionsResult, eventsResult, mapResult, historyResult, globalResult] = await Promise.allSettled([
         advancedPromise,
+        getGovernanceData(),
         predictionService.getSentimentForecast(),
         predictionService.getMarketReactions(30),
         predictionService.getEventPredictions(233),
@@ -769,15 +736,20 @@ export default function TrendPrediction() {
         setAdvancedInsights(advancedPayload);
         setLastCanonicalRefreshAt(String(advancedPayload.generated_at || advancedPayload.timestamp || new Date().toISOString()));
 
-        if (advancedPayload.governance) {
-          const governance = advancedPayload.governance;
+        const directGovernance = governanceResult.status === "fulfilled" ? governanceResult.value : null;
+        const payloadGovernance = advancedPayload.governance ?? null;
+        const governance = directGovernance && (!payloadGovernance || directGovernance.models.length >= payloadGovernance.models.length)
+          ? directGovernance
+          : payloadGovernance;
+
+        if (governance) {
           setGovernanceData(governance);
           setModelEnsemble(
             governance.models.map((m, idx) => ({
               name: m.name,
               vote: normalizeRisk(m.vote ?? 50),
               confidence: safeN(m.confidence, m.calibration),
-              color: ["#22d3ee", "#a3e635", "#60a5fa", "#f472b6"][idx % 4],
+              color: ["#22d3ee", "#a3e635", "#60a5fa", "#f472b6", "#fbbf24"][idx % 5],
             })),
           );
         } else {
@@ -830,8 +802,21 @@ export default function TrendPrediction() {
         console.error("Advanced insights load failed:", advancedResult.reason);
         setAdvancedInsights(null);
         setLastCanonicalRefreshAt("");
-        setGovernanceData({ models: [], disagreement: [], calibrationTrend: [], calibrationTrendByModel: {}, selectedCalibrationModel: undefined });
-        setModelEnsemble([]);
+        if (governanceResult.status === "fulfilled") {
+          const governance = governanceResult.value;
+          setGovernanceData(governance);
+          setModelEnsemble(
+            governance.models.map((m, idx) => ({
+              name: m.name,
+              vote: normalizeRisk(m.vote ?? 50),
+              confidence: safeN(m.confidence, m.calibration),
+              color: ["#22d3ee", "#a3e635", "#60a5fa", "#f472b6", "#fbbf24"][idx % 5],
+            })),
+          );
+        } else {
+          setGovernanceData({ models: [], disagreement: [], calibrationTrend: [], calibrationTrendByModel: {}, selectedCalibrationModel: undefined });
+          setModelEnsemble([]);
+        }
       }
 
       if (forecastResult.status === "fulfilled") {
@@ -1075,6 +1060,18 @@ export default function TrendPrediction() {
     if (!pressureEntries.length) return false;
     const avgPressure = pressureEntries.reduce((sum, entry) => sum + normalizeUnitValue(entry.value, 0), 0) / pressureEntries.length;
     return avgPressure > 0.32;
+  }, [activeFeatureEntries]);
+
+  const insightFeatureSnapshot = useMemo(() => {
+    const pick = (key: string) => activeFeatureEntries.find((entry) => entry.key === key)?.value;
+    return {
+      directBehavior: pick("direct_behavior_score"),
+      contextualPressure: pick("contextual_pressure_score"),
+      evidenceQuality: pick("evidence_quality_score"),
+      logisticsStress: pick("logistics_stress_score"),
+      householdStress: pick("household_stress_score"),
+      energyStress: pick("energy_stress_score"),
+    };
   }, [activeFeatureEntries]);
 
   const activeRiskForecast = useMemo<RiskForecastPoint[]>(() => {
@@ -1819,6 +1816,15 @@ export default function TrendPrediction() {
       stock_return: 0,
       stock_volatility: 0,
       weather_anomaly: 0,
+      direct_behavior_score: 0,
+      contextual_pressure_score: 0,
+      evidence_quality_score: 0,
+      narrative_velocity_score: 0,
+      coordination_risk_score: 0,
+      mobility_disruption_score: 0,
+      logistics_stress_score: 0,
+      household_stress_score: 0,
+      energy_stress_score: 0,
     };
     const fromRiskMap = riskMap.filter((r) => typeof r.risk === "number").map((r) => {
       const risk = normalizeRisk(r.risk ?? 0);
@@ -1840,6 +1846,15 @@ export default function TrendPrediction() {
           stock_return: safeN(baseFeatures.stock_return - pressure * 0.05 + driftB * 0.02),
           stock_volatility: safeN(Math.max(0, baseFeatures.stock_volatility + Math.abs(pressure) * 0.07 + Math.abs(driftA) * 0.04)),
           weather_anomaly: safeN(Math.max(0, baseFeatures.weather_anomaly + Math.abs(driftA) * 0.3 + Math.max(0, pressure) * 0.12)),
+          direct_behavior_score: safeN(Math.max(0, baseFeatures.direct_behavior_score + pressure * 0.18 + driftA * 0.16)),
+          contextual_pressure_score: safeN(Math.max(0, baseFeatures.contextual_pressure_score + pressure * 0.22 + Math.abs(driftB) * 0.12)),
+          evidence_quality_score: safeN(Math.max(0, baseFeatures.evidence_quality_score - Math.abs(pressure) * 0.08 + 0.04)),
+          narrative_velocity_score: safeN(Math.max(0, baseFeatures.narrative_velocity_score + pressure * 0.14 + driftA * 0.08)),
+          coordination_risk_score: safeN(Math.max(0, baseFeatures.coordination_risk_score + pressure * 0.16 + Math.abs(driftB) * 0.1)),
+          mobility_disruption_score: safeN(Math.max(0, baseFeatures.mobility_disruption_score + Math.abs(pressure) * 0.14)),
+          logistics_stress_score: safeN(Math.max(0, baseFeatures.logistics_stress_score + Math.abs(pressure) * 0.17)),
+          household_stress_score: safeN(Math.max(0, baseFeatures.household_stress_score + Math.abs(pressure) * 0.15)),
+          energy_stress_score: safeN(Math.max(0, baseFeatures.energy_stress_score + Math.abs(pressure) * 0.13)),
         },
       };
     });
@@ -1866,6 +1881,15 @@ export default function TrendPrediction() {
         stock_return: safeN(baseFeatures.stock_return - idx * 0.008),
         stock_volatility: safeN(Math.max(0, baseFeatures.stock_volatility + idx * 0.012)),
         weather_anomaly: safeN(Math.max(0, baseFeatures.weather_anomaly + idx * 0.02)),
+        direct_behavior_score: safeN(Math.max(0, baseFeatures.direct_behavior_score + idx * 0.02)),
+        contextual_pressure_score: safeN(Math.max(0, baseFeatures.contextual_pressure_score + idx * 0.025)),
+        evidence_quality_score: safeN(Math.max(0, baseFeatures.evidence_quality_score - idx * 0.01)),
+        narrative_velocity_score: safeN(Math.max(0, baseFeatures.narrative_velocity_score + idx * 0.015)),
+        coordination_risk_score: safeN(Math.max(0, baseFeatures.coordination_risk_score + idx * 0.02)),
+        mobility_disruption_score: safeN(Math.max(0, baseFeatures.mobility_disruption_score + idx * 0.018)),
+        logistics_stress_score: safeN(Math.max(0, baseFeatures.logistics_stress_score + idx * 0.02)),
+        household_stress_score: safeN(Math.max(0, baseFeatures.household_stress_score + idx * 0.018)),
+        energy_stress_score: safeN(Math.max(0, baseFeatures.energy_stress_score + idx * 0.017)),
       },
     }));
 
@@ -1901,7 +1925,6 @@ export default function TrendPrediction() {
   const activePredictionSourceLabel = formatSourceLabel(advancedInsights?.forecast_contract?.source_status ?? advancedInsights?.predictions?.source_status ?? latestGlobalDoc?.features?.forecast_source_status ?? activePredictionData?.source_status);
   const sentimentSourceLabel = formatSourceLabel(advancedInsights?.forecast_contract?.source_status ?? advancedInsights?.predictions?.source_status ?? (activeSentimentForecast?.source_status ?? activeSentimentForecast?.source));
   const eventSourceLabel = formatSourceLabel(activeEventPredictions[0]?.source_status ?? activeEventPredictions[0]?.source);
-  const advancedAnalyticsHorizons = buildPredictionPageHorizons(activeRiskForecast, activeSentimentForecast);
   const honestSubtitle = !playbackActive && isLiveModelStatus(activePredictionData?.source_status) && trustQuality.label === "Healthy"
     ? "ML-Powered Risk Forecasting and market intelligence."
     : "Risk forecasting with explicit live, derived, degraded, and fallback provenance.";
@@ -2371,6 +2394,24 @@ export default function TrendPrediction() {
                 </strong>
               </div>
               <div className="insight-item">
+                <span className="insight-label">Direct Behavior</span>
+                <strong className="insight-value">
+                  {insightFeatureSnapshot.directBehavior !== undefined ? formatInsightMetric(insightFeatureSnapshot.directBehavior) : "N/A"}
+                </strong>
+              </div>
+              <div className="insight-item">
+                <span className="insight-label">Context Pressure</span>
+                <strong className="insight-value">
+                  {insightFeatureSnapshot.contextualPressure !== undefined ? formatInsightMetric(insightFeatureSnapshot.contextualPressure) : "N/A"}
+                </strong>
+              </div>
+              <div className="insight-item">
+                <span className="insight-label">Evidence Quality</span>
+                <strong className="insight-value">
+                  {insightFeatureSnapshot.evidenceQuality !== undefined ? formatInsightMetric(insightFeatureSnapshot.evidenceQuality) : "N/A"}
+                </strong>
+              </div>
+              <div className="insight-item">
                 <span className="insight-label">Drift Score</span>
                 <strong className="insight-value">
                   {activePredictionData?.drift_score?.toFixed(4) || "0.0000"}
@@ -2379,6 +2420,24 @@ export default function TrendPrediction() {
               <div className="insight-item">
                 <span className="insight-label">Model Disagreement</span>
                 <strong className="insight-value">{disagreement.toFixed(2)}</strong>
+              </div>
+              <div className="insight-item">
+                <span className="insight-label">Logistics Stress</span>
+                <strong className="insight-value">
+                  {insightFeatureSnapshot.logisticsStress !== undefined ? formatInsightMetric(insightFeatureSnapshot.logisticsStress) : "N/A"}
+                </strong>
+              </div>
+              <div className="insight-item">
+                <span className="insight-label">Household Stress</span>
+                <strong className="insight-value">
+                  {insightFeatureSnapshot.householdStress !== undefined ? formatInsightMetric(insightFeatureSnapshot.householdStress) : "N/A"}
+                </strong>
+              </div>
+              <div className="insight-item">
+                <span className="insight-label">Energy Stress</span>
+                <strong className="insight-value">
+                  {insightFeatureSnapshot.energyStress !== undefined ? formatInsightMetric(insightFeatureSnapshot.energyStress) : "N/A"}
+                </strong>
               </div>
             </div>
           ) : (
@@ -2394,56 +2453,14 @@ export default function TrendPrediction() {
         <div className="prediction-deep-intel-grid">
           <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide prediction-deep-card-auto">
             <PanelHeader
-              title="Canonical Advanced Analytics"
-              subtitle="Anomalies, causality, and report outputs from the same advanced insights response"
+              title="Advanced Analytics"
+              subtitle="Anomalies, causality, and generated reports"
               status={advancedStatus}
             />
             {showHeavyPanels ? (
-              <div className="insights-panel">
-                <div className="insight-item">
-                  <span className="insight-label">Anomalies</span>
-                  <strong className="insight-value">{advancedInsights?.anomalies?.length ?? 0}</strong>
-                </div>
-                <div className="insight-item">
-                  <span className="insight-label">Top Anomaly</span>
-                  <strong className="insight-value">{advancedInsights?.anomalies?.[0] ? `${(safeN(advancedInsights.anomalies[0].anomaly_score) * 100).toFixed(0)}% ${String(advancedInsights.anomalies[0].severity || "medium")}` : "None"}</strong>
-                </div>
-                <div className="insight-item">
-                  <span className="insight-label">Causal Links</span>
-                  <strong className="insight-value">{advancedInsights?.causal_graph?.length ?? 0}</strong>
-                </div>
-                <div className="insight-item">
-                  <span className="insight-label">Report Risk</span>
-                  <strong className="insight-value">{advancedInsights?.ai_report?.risk_level || "unknown"}</strong>
-                </div>
-                <div className="insight-item">
-                  <span className="insight-label">Report Summary</span>
-                  <strong className="insight-value">{advancedInsights?.ai_report?.summary || advancedInsights?.advisory || "Canonical advanced report unavailable."}</strong>
-                </div>
-              </div>
+              <AdvancedAnalyticsPanel />
             ) : (
-              <DeferredPanelPlaceholder label="Preparing canonical advanced analytics..." />
-            )}
-          </article>
-          <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide prediction-deep-card-auto">
-            <PanelHeader
-              title="Advanced Analytics"
-              subtitle={`Multi-horizon risk outlook (${sentimentSourceLabel.toLowerCase()})`}
-              status={sentimentStatus}
-            />
-            {advancedAnalyticsHorizons.length ? (
-              <div className="insights-panel">
-                {advancedAnalyticsHorizons.map((point) => (
-                  <div key={point.label} className="insight-item" title={predictionsWithheld ? (advancedInsights?.predictions?.fallback_reason || 'Forecast withheld by quality gate') : (advancedInsights?.advisory || activeSentimentForecast?.advisory || 'Canonical advanced forecast')}>
-                    <span className="insight-label">Risk {point.label}</span>
-                    <strong className="insight-value">{point.risk_score.toFixed(1)} / 100</strong>
-                    <span className="insight-label">Delta {point.delta >= 0 ? '+' : ''}{point.delta.toFixed(2)}</span>
-                    <span className="insight-label">{classifyRiskThreat(point.risk_score)} | {(point.confidence * 100).toFixed(0)}% confidence</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <DeferredPanelPlaceholder label="Preparing advanced analytics horizon outlook..." />
+              <DeferredPanelPlaceholder label="Preparing advanced analytics workspace..." />
             )}
           </article>
           <article className="wp-card panel-animated prediction-deep-card prediction-deep-card-wide">

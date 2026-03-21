@@ -6,9 +6,35 @@ type Props = {
 };
 
 const MODEL_COLORS = ["#22d3ee", "#38bdf8", "#fbbf24", "#a3e635", "#94a3b8"];
+const SIGNAL_LINE_COLORS = ["#ff5f6d", "#f59e0b", "#c0266b"];
 
 function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
+}
+
+function buildSignalValues(points: Array<{ timestamp: string; value: number }>, targetPoints: number, fallback: number): number[] {
+  if (targetPoints <= 0) return [];
+  const values = points.map((point) => clamp(point.value * 100, 0, 100));
+
+  if (values.length === 0) {
+    return Array.from({ length: targetPoints }, (_, idx) => {
+      const wave = Math.sin((idx / Math.max(1, targetPoints - 1)) * Math.PI * 3);
+      return clamp(fallback + wave * 8, 6, 98);
+    });
+  }
+
+  if (values.length === 1) {
+    return Array.from({ length: targetPoints }, () => values[0]);
+  }
+
+  return Array.from({ length: targetPoints }, (_, idx) => {
+    const sourceIndex = (idx * (values.length - 1)) / Math.max(1, targetPoints - 1);
+    const lower = Math.floor(sourceIndex);
+    const upper = Math.ceil(sourceIndex);
+    if (lower === upper) return values[lower];
+    const ratio = sourceIndex - lower;
+    return clamp((values[lower] * (1 - ratio)) + (values[upper] * ratio), 0, 100);
+  });
 }
 
 export default function ModelGovernance({ data }: Props) {
@@ -269,13 +295,12 @@ export default function ModelGovernance({ data }: Props) {
       if (trendSeries.length === 0) return;
       const mod = await import("plotly.js-dist-min");
       const Plotly = (mod as any).default ?? mod;
-      const targets = [pulseAreaRef.current, trendAreaRef.current].filter(Boolean) as HTMLDivElement[];
-      if (closed || targets.length === 0) return;
+      if (closed) return;
 
       const xValues = trendSeries.map((point) => point.timestamp);
       const yValues = trendSeries.map((point) => clamp(point.value * 100, 0, 100));
 
-      const trace = {
+      const pulseTrace = {
         type: "scatter",
         mode: "lines+markers",
         x: xValues,
@@ -287,9 +312,10 @@ export default function ModelGovernance({ data }: Props) {
         hovertemplate: "Calibration %{y:.1f}%<extra></extra>",
       };
 
-      await Promise.all(targets.map((target) => {
-        const targetHeight = Math.max(160, target.clientHeight || 210);
-        const layout = {
+      if (pulseAreaRef.current) {
+        const pulseTarget = pulseAreaRef.current;
+        const targetHeight = Math.max(160, pulseTarget.clientHeight || 210);
+        const pulseLayout = {
           paper_bgcolor: "rgba(0,0,0,0)",
           plot_bgcolor: "rgba(0,0,0,0)",
           margin: { l: 36, r: 12, t: 8, b: 30 },
@@ -307,18 +333,104 @@ export default function ModelGovernance({ data }: Props) {
           },
         };
 
-        return Plotly.react(target, [trace], layout, {
+        await Plotly.react(pulseTarget, [pulseTrace], pulseLayout, {
           displayModeBar: false,
           responsive: true,
         });
-      }));
+      }
+
+      if (!trendAreaRef.current) return;
+
+      const trendTarget = trendAreaRef.current;
+      const trendHeight = Math.max(180, trendTarget.clientHeight || 230);
+      const signalModels = data.models.slice(0, 5);
+      const signalPoints = 20;
+      const signalX = Array.from({ length: signalPoints }, (_, idx) => idx + 1);
+      const lineSeries = signalModels.map((model, idx) => {
+        const sourceSeries = data.calibrationTrendByModel[model.name] ?? data.calibrationTrend;
+        const fallback = clamp((model.calibration || 0.5) * 100, 12, 92);
+        const values = buildSignalValues(sourceSeries, signalPoints, fallback);
+        return {
+          type: "scatter",
+          mode: "lines+markers",
+          x: signalX,
+          y: values,
+          line: {
+            color: SIGNAL_LINE_COLORS[idx % SIGNAL_LINE_COLORS.length],
+            width: 2.8,
+            shape: "spline",
+            smoothing: 0.85,
+          },
+          marker: {
+            size: 8,
+            color: "#fbbf24",
+            line: { color: SIGNAL_LINE_COLORS[idx % SIGNAL_LINE_COLORS.length], width: 2 },
+            opacity: 0.95,
+          },
+          name: model.name,
+          hovertemplate: `${model.name}<br>Point %{x}: %{y:.1f}%<extra></extra>`,
+        };
+      });
+
+      const signalLayout = {
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(12, 10, 14, 0.96)",
+        margin: { l: 20, r: 20, t: 14, b: 32 },
+        height: trendHeight,
+        showlegend: false,
+        hovermode: "x",
+        xaxis: {
+          range: [0.8, signalPoints + 0.4],
+          showgrid: false,
+          showticklabels: false,
+          showline: true,
+          linecolor: "rgba(176, 54, 48, 0.72)",
+          linewidth: 2,
+          tickmode: "linear",
+          dtick: 1.5,
+          ticklen: 7,
+          tickwidth: 2,
+          tickcolor: "rgba(176, 54, 48, 0.56)",
+          fixedrange: true,
+        },
+        yaxis: {
+          range: [0, 100],
+          showgrid: false,
+          showticklabels: false,
+          zeroline: false,
+          fixedrange: true,
+        },
+        shapes: [
+          {
+            type: "line",
+            x0: 0.85,
+            y0: 0,
+            x1: 0.85,
+            y1: 7,
+            line: { color: "rgba(176, 54, 48, 0.72)", width: 2 },
+          },
+          {
+            type: "line",
+            x0: signalPoints + 0.15,
+            y0: 0,
+            x1: signalPoints + 0.15,
+            y1: 7,
+            line: { color: "rgba(176, 54, 48, 0.72)", width: 2 },
+          },
+        ],
+      };
+
+      await Plotly.react(trendTarget, lineSeries, signalLayout, {
+        displayModeBar: false,
+        responsive: true,
+      });
     }
 
     renderTrendArea().catch(() => {});
     return () => {
       closed = true;
     };
-  }, [trendSeries]);
+  }, [data.calibrationTrend, data.calibrationTrendByModel, data.models, trendSeries]);
 
   const hasAlert = useMemo(
     () => data.models.some((m) => (parseFloat(m.driftHint) || 0) > 0.3),

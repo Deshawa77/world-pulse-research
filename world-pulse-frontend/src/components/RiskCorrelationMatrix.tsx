@@ -2,16 +2,7 @@ import { useEffect, useRef, useMemo } from "react";
 import * as echarts from "echarts";
 
 interface CorrelationData {
-  features: {
-    news_sentiment: number;
-    gdelt_sentiment: number;
-    crypto_return: number;
-    crypto_volatility: number;
-    stock_return: number;
-    stock_volatility: number;
-    weather_anomaly: number;
-    global_risk_score: number;
-  };
+  features: Record<string, number>;
   timestamp: string;
 }
 
@@ -20,18 +11,23 @@ interface RiskCorrelationMatrixProps {
   height?: number;
 }
 
-const FEATURE_LABELS: Record<string, string> = {
-  news_sentiment: "News Sentiment",
-  gdelt_sentiment: "GDELT Sentiment",
-  crypto_return: "Crypto Return",
-  crypto_volatility: "Crypto Volatility",
-  stock_return: "Stock Return",
-  stock_volatility: "Stock Volatility",
-  weather_anomaly: "Weather Anomaly",
-  global_risk_score: "Global Risk",
-};
+const FEATURE_DEFS = [
+  { key: "news_sentiment", label: "News Sentiment" },
+  { key: "gdelt_sentiment", label: "GDELT Sentiment" },
+  { key: "direct_behavior_score", label: "Direct Behavior" },
+  { key: "contextual_pressure_score", label: "Context Pressure" },
+  { key: "evidence_quality_score", label: "Evidence Quality" },
+  { key: "narrative_velocity_score", label: "Narrative Velocity" },
+  { key: "coordination_risk_score", label: "Coordination Risk" },
+  { key: "mobility_disruption_score", label: "Mobility Disruption" },
+  { key: "logistics_stress_score", label: "Logistics Stress" },
+  { key: "household_stress_score", label: "Household Stress" },
+  { key: "energy_stress_score", label: "Energy Stress" },
+  { key: "global_risk_score", label: "Global Risk" },
+];
 
-const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
+const FEATURE_KEYS = FEATURE_DEFS.map((item) => item.key);
+const FEATURE_LABELS: Record<string, string> = Object.fromEntries(FEATURE_DEFS.map((item) => [item.key, item.label]));
 
 export default function RiskCorrelationMatrix({ data, height = 400 }: RiskCorrelationMatrixProps) {
   const chartRef = useRef<HTMLDivElement>(null);

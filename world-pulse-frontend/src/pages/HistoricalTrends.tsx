@@ -11,6 +11,12 @@ type ComparisonEvent = {
   date: string;
   riskScore: number;
   sentiment: number;
+  directBehavior: number;
+  contextualPressure: number;
+  evidenceQuality: number;
+  logisticsStress: number;
+  householdStress: number;
+  energyStress: number;
   topics: string[];
   selected: boolean;
 };
@@ -22,6 +28,11 @@ function formatDate(dateStr: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function safeN(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 export default function HistoricalTrends() {
@@ -40,7 +51,8 @@ export default function HistoricalTrends() {
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([
     "risk_score",
     "news_sentiment",
-    "crypto_return",
+    "contextual_pressure_score",
+    "logistics_stress_score",
   ]);
   const [exportFormat, setExportFormat] = useState<"csv" | "json" | "png">("csv");
 
@@ -117,8 +129,14 @@ export default function HistoricalTrends() {
           id: `evt-${idx}-${point.timestamp}`,
           name: `${point.top_topics?.[0] || "Signal"} ${idx + 1}`,
           date: point.timestamp,
-          riskScore: point.risk_score,
-          sentiment: point.news_sentiment,
+          riskScore: safeN(point.risk_score),
+          sentiment: safeN(point.news_sentiment),
+          directBehavior: safeN(point.direct_behavior_score),
+          contextualPressure: safeN(point.contextual_pressure_score),
+          evidenceQuality: safeN(point.evidence_quality_score),
+          logisticsStress: safeN(point.logistics_stress_score),
+          householdStress: safeN(point.household_stress_score),
+          energyStress: safeN(point.energy_stress_score),
           topics: point.top_topics ?? [],
           selected: idx < 2,
         }));
@@ -200,6 +218,78 @@ export default function HistoricalTrends() {
       });
     }
 
+    if (selectedMetrics.includes("direct_behavior_score")) {
+      traces.push({
+        x: timestamps,
+        y: historicalData.map((d) => safeN(d.direct_behavior_score)),
+        type: "scatter",
+        mode: "lines",
+        name: "Direct Behavior",
+        line: { color: "#22c55e", width: 2 },
+        yaxis: "y4",
+      });
+    }
+
+    if (selectedMetrics.includes("contextual_pressure_score")) {
+      traces.push({
+        x: timestamps,
+        y: historicalData.map((d) => safeN(d.contextual_pressure_score)),
+        type: "scatter",
+        mode: "lines",
+        name: "Context Pressure",
+        line: { color: "#f59e0b", width: 2 },
+        yaxis: "y4",
+      });
+    }
+
+    if (selectedMetrics.includes("evidence_quality_score")) {
+      traces.push({
+        x: timestamps,
+        y: historicalData.map((d) => safeN(d.evidence_quality_score)),
+        type: "scatter",
+        mode: "lines",
+        name: "Evidence Quality",
+        line: { color: "#10b981", width: 2, dash: "dot" },
+        yaxis: "y4",
+      });
+    }
+
+    if (selectedMetrics.includes("logistics_stress_score")) {
+      traces.push({
+        x: timestamps,
+        y: historicalData.map((d) => safeN(d.logistics_stress_score)),
+        type: "scatter",
+        mode: "lines",
+        name: "Logistics Stress",
+        line: { color: "#eab308", width: 2 },
+        yaxis: "y4",
+      });
+    }
+
+    if (selectedMetrics.includes("household_stress_score")) {
+      traces.push({
+        x: timestamps,
+        y: historicalData.map((d) => safeN(d.household_stress_score)),
+        type: "scatter",
+        mode: "lines",
+        name: "Household Stress",
+        line: { color: "#fb7185", width: 2 },
+        yaxis: "y4",
+      });
+    }
+
+    if (selectedMetrics.includes("energy_stress_score")) {
+      traces.push({
+        x: timestamps,
+        y: historicalData.map((d) => safeN(d.energy_stress_score)),
+        type: "scatter",
+        mode: "lines",
+        name: "Energy Stress",
+        line: { color: "#84cc16", width: 2, dash: "dot" },
+        yaxis: "y4",
+      });
+    }
+
     const layout = {
       title: {
         text: "Sentiment Timeline",
@@ -235,6 +325,15 @@ export default function HistoricalTrends() {
         position: 0.95,
         range: [-50, 50],
         tickfont: { color: "#f472b6" },
+        showgrid: false,
+      },
+      yaxis4: {
+        title: "Behavior / Stress",
+        overlaying: "y",
+        side: "right",
+        position: 0.88,
+        range: [0, 1],
+        tickfont: { color: "#22c55e" },
         showgrid: false,
       },
       legend: {
@@ -276,9 +375,16 @@ export default function HistoricalTrends() {
       {
         type: "bar",
         x: selectedEvents.map((e) => e.name),
-        y: selectedEvents.map((e) => e.sentiment),
-        name: "Sentiment",
-        marker: { color: "#22d3ee" },
+        y: selectedEvents.map((e) => e.contextualPressure),
+        name: "Context Pressure",
+        marker: { color: "#f59e0b" },
+      },
+      {
+        type: "bar",
+        x: selectedEvents.map((e) => e.name),
+        y: selectedEvents.map((e) => e.logisticsStress),
+        name: "Logistics Stress",
+        marker: { color: "#eab308" },
       },
     ];
 
@@ -383,12 +489,18 @@ export default function HistoricalTrends() {
 
     const riskScores = historicalData.map((d) => d.risk_score);
     const sentiments = historicalData.map((d) => d.news_sentiment);
+    const contextual = historicalData.map((d) => safeN(d.contextual_pressure_score));
+    const logistics = historicalData.map((d) => safeN(d.logistics_stress_score));
+    const evidence = historicalData.map((d) => safeN(d.evidence_quality_score));
 
     return {
       avgRisk: riskScores.reduce((a, b) => a + b, 0) / riskScores.length,
       maxRisk: Math.max(...riskScores),
       minRisk: Math.min(...riskScores),
       avgSentiment: sentiments.reduce((a, b) => a + b, 0) / sentiments.length,
+      avgContextualPressure: contextual.reduce((a, b) => a + b, 0) / contextual.length,
+      avgLogisticsStress: logistics.reduce((a, b) => a + b, 0) / logistics.length,
+      avgEvidenceQuality: evidence.reduce((a, b) => a + b, 0) / evidence.length,
       dataPoints: historicalData.length,
     };
   }, [historicalData]);
@@ -501,6 +613,12 @@ export default function HistoricalTrends() {
                 { key: "gdelt_sentiment", label: "GDELT", color: "#a3e635" },
                 { key: "crypto_return", label: "Crypto", color: "#f472b6" },
                 { key: "stock_return", label: "Stock", color: "#60a5fa" },
+                { key: "direct_behavior_score", label: "Behavior", color: "#22c55e" },
+                { key: "contextual_pressure_score", label: "Context", color: "#f59e0b" },
+                { key: "evidence_quality_score", label: "Evidence", color: "#10b981" },
+                { key: "logistics_stress_score", label: "Logistics", color: "#eab308" },
+                { key: "household_stress_score", label: "Household", color: "#fb7185" },
+                { key: "energy_stress_score", label: "Energy", color: "#84cc16" },
               ].map((metric) => (
                 <button
                   key={metric.key}
@@ -568,6 +686,18 @@ export default function HistoricalTrends() {
                   : "0.00"}
               </strong>
             </div>
+            <div className="stat-row">
+              <span>Avg Context Pressure</span>
+              <strong>{stats?.avgContextualPressure.toFixed(2) || "0.00"}</strong>
+            </div>
+            <div className="stat-row">
+              <span>Avg Logistics Stress</span>
+              <strong>{stats?.avgLogisticsStress.toFixed(2) || "0.00"}</strong>
+            </div>
+            <div className="stat-row">
+              <span>Avg Evidence Quality</span>
+              <strong>{stats?.avgEvidenceQuality.toFixed(2) || "0.00"}</strong>
+            </div>
           </div>
         </article>
       </section>
@@ -593,6 +723,8 @@ export default function HistoricalTrends() {
                       Sentiment: {event.sentiment > 0 ? "+" : ""}
                       {event.sentiment.toFixed(1)}
                     </span>
+                    <span className="sentiment-badge">Context: {event.contextualPressure.toFixed(2)}</span>
+                    <span className="sentiment-badge">Logistics: {event.logisticsStress.toFixed(2)}</span>
                   </div>
                   <div className="event-topics">
                     {event.topics.map((topic) => (
@@ -637,6 +769,14 @@ export default function HistoricalTrends() {
                   <th>Crypto</th>
                   <th>Stock</th>
                   <th>Weather</th>
+                  <th>Direct Behavior</th>
+                  <th>Context Pressure</th>
+                  <th>Evidence Quality</th>
+                  <th>Narrative Velocity</th>
+                  <th>Coordination Risk</th>
+                  <th>Logistics Stress</th>
+                  <th>Household Stress</th>
+                  <th>Energy Stress</th>
                 </tr>
               </thead>
               <tbody>
@@ -651,6 +791,14 @@ export default function HistoricalTrends() {
                     <td>{row.crypto_return.toFixed(1)}%</td>
                     <td>{row.stock_return.toFixed(1)}%</td>
                     <td>{row.weather_anomaly.toFixed(1)}</td>
+                    <td>{safeN(row.direct_behavior_score).toFixed(2)}</td>
+                    <td>{safeN(row.contextual_pressure_score).toFixed(2)}</td>
+                    <td>{safeN(row.evidence_quality_score).toFixed(2)}</td>
+                    <td>{safeN(row.narrative_velocity_score).toFixed(2)}</td>
+                    <td>{safeN(row.coordination_risk_score).toFixed(2)}</td>
+                    <td>{safeN(row.logistics_stress_score).toFixed(2)}</td>
+                    <td>{safeN(row.household_stress_score).toFixed(2)}</td>
+                    <td>{safeN(row.energy_stress_score).toFixed(2)}</td>
                   </tr>
                 ))}
               </tbody>

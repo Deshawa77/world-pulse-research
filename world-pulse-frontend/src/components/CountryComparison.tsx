@@ -31,13 +31,14 @@ type MetricDefinition = {
 };
 
 const METRICS: MetricDefinition[] = [
-  { key: "news_sentiment", label: "News Sentiment", format: (v: number) => v.toFixed(2), signed: true },
-  { key: "gdelt_sentiment", label: "GDELT Sentiment", format: (v: number) => v.toFixed(2), signed: true },
-  { key: "crypto_return", label: "Crypto Return", format: (v: number) => `${(v * 100).toFixed(1)}%`, signed: true },
-  { key: "crypto_volatility", label: "Crypto Volatility", format: (v: number) => v.toFixed(2), signed: false },
-  { key: "stock_return", label: "Stock Return", format: (v: number) => `${(v * 100).toFixed(1)}%`, signed: true },
-  { key: "stock_volatility", label: "Stock Volatility", format: (v: number) => v.toFixed(2), signed: false },
-  { key: "weather_anomaly", label: "Weather Anomaly", format: (v: number) => v.toFixed(2), signed: false },
+  { key: "direct_behavior_score", label: "Direct Behavior", format: (v: number) => v.toFixed(2), signed: false },
+  { key: "contextual_pressure_score", label: "Context Pressure", format: (v: number) => v.toFixed(2), signed: false },
+  { key: "evidence_quality_score", label: "Evidence Quality", format: (v: number) => v.toFixed(2), signed: false },
+  { key: "narrative_velocity_score", label: "Narrative Velocity", format: (v: number) => v.toFixed(2), signed: false },
+  { key: "coordination_risk_score", label: "Coordination Risk", format: (v: number) => v.toFixed(2), signed: false },
+  { key: "logistics_stress_score", label: "Logistics Stress", format: (v: number) => v.toFixed(2), signed: false },
+  { key: "household_stress_score", label: "Household Stress", format: (v: number) => v.toFixed(2), signed: false },
+  { key: "energy_stress_score", label: "Energy Stress", format: (v: number) => v.toFixed(2), signed: false },
 ];
 
 function toNiceUpperBound(value: number, floor: number = 1): number {
