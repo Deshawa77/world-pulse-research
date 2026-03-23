@@ -670,6 +670,22 @@ def compute_global_risk_forecast(
 
 def _global_signal_indices(mode: str = "online") -> dict[str, float]:
     rows = _load_latest_country_rows(mode)
+    raw_signal_defaults = {
+        "direct_behavior_score": 0.0,
+        "contextual_pressure_score": 0.0,
+        "evidence_quality_score": 0.0,
+        "narrative_velocity_score": 0.0,
+        "coordination_risk_score": 0.0,
+        "mobility_disruption_score": 0.0,
+        "logistics_stress_score": 0.0,
+        "household_stress_score": 0.0,
+        "fuel_price_pressure": 0.0,
+        "food_price_pressure": 0.0,
+        "labor_stress_score": 0.0,
+        "fx_pressure_score": 0.0,
+        "remittance_stress_score": 0.0,
+        "energy_stress_score": 0.0,
+    }
     if not rows:
         return {
             "global_behavior_index": 50.0,
@@ -677,6 +693,7 @@ def _global_signal_indices(mode: str = "online") -> dict[str, float]:
             "global_attention_index": 0.0,
             "global_disruption_index": 0.0,
             "global_economic_stress_index": 0.0,
+            **raw_signal_defaults,
         }
 
     filtered_features: list[dict[str, Any]] = []
@@ -694,18 +711,32 @@ def _global_signal_indices(mode: str = "online") -> dict[str, float]:
             filtered_features.append(features)
 
     features = filtered_features or all_features
+
     def avg(key: str) -> float:
         vals = [_safe_float(item.get(key), 0.0) for item in features]
         return float(np.mean(vals)) if vals else 0.0
 
     return {
+        "direct_behavior_score": round(avg("direct_behavior_score"), 2),
+        "contextual_pressure_score": round(avg("contextual_pressure_score"), 2),
+        "evidence_quality_score": round(avg("evidence_quality_score"), 2),
+        "narrative_velocity_score": round(avg("narrative_velocity_score"), 4),
+        "coordination_risk_score": round(avg("coordination_risk_score"), 4),
+        "mobility_disruption_score": round(avg("mobility_disruption_score"), 4),
+        "logistics_stress_score": round(avg("logistics_stress_score"), 4),
+        "household_stress_score": round(avg("household_stress_score"), 4),
+        "fuel_price_pressure": round(avg("fuel_price_pressure"), 4),
+        "food_price_pressure": round(avg("food_price_pressure"), 4),
+        "labor_stress_score": round(avg("labor_stress_score"), 4),
+        "fx_pressure_score": round(avg("fx_pressure_score"), 4),
+        "remittance_stress_score": round(avg("remittance_stress_score"), 4),
+        "energy_stress_score": round(avg("energy_stress_score"), 4),
         "global_behavior_index": round(avg("direct_behavior_score"), 2),
         "global_context_index": round(avg("contextual_pressure_score"), 2),
         "global_attention_index": round(np.mean([avg("public_attention_score") * 100.0, avg("narrative_velocity_score") * 100.0]), 2),
         "global_disruption_index": round(np.mean([avg("mobility_disruption_score") * 100.0, avg("logistics_stress_score") * 100.0]), 2),
         "global_economic_stress_index": round(np.mean([avg("household_stress_score") * 100.0, avg("energy_stress_score") * 100.0, avg("remittance_stress_score") * 100.0]), 2),
     }
-
 
 def _compute_global_risk_consensus(current_risk_score: float | None, mode: str, mood_summary: dict[str, Any], signal_indices: dict[str, float]) -> dict[str, Any]:
     rows = _load_latest_country_rows(mode)

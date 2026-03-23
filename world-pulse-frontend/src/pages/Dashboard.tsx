@@ -156,6 +156,8 @@ const MAX_HISTORY = 1200;
 const GLOBAL_MAP_WORLD_SCALE = 1.12;
 const GLOBAL_MAP_ROTATION_DEG_PER_SEC = 4;
 const CONSENSUS_HEADLINE_MIN_VERIFIED_COUNTRIES = 40;
+const COVERAGE_ENTITY_LABEL = "regions/territories";
+const COVERAGE_ENTITY_LABEL_TITLE = "Regions/Territories";
 
 const DRIVER_LABELS: Record<string, string> = {
   news_sentiment: "News Sentiment",
@@ -516,6 +518,7 @@ export default function Dashboard() {
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [fpsLow, setFpsLow] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
+  const [drilldownCountry, setDrilldownCountry] = useState<string | null>(null);
   
   useEffect(() => {
     selectedCountryRef.current = selectedCountry;
@@ -523,6 +526,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!selectedCountry) {
+      setDrilldownCountry(null);
       setSelectedCountryFocus(null);
       setSelectedCountryNews([]);
       setSelectedCountryWeather(null);
@@ -771,7 +775,7 @@ export default function Dashboard() {
   const consensusUnderSupported = coverageState.verified < CONSENSUS_HEADLINE_MIN_VERIFIED_COUNTRIES;
   const headlineRiskScore = consensusUnderSupported ? legacyModelRiskScore : globalRiskScore;
   const headlineRiskLabel = consensusUnderSupported ? "Baseline fallback" : "Live consensus";
-  const consensusSupportWarning = `Consensus under-supported: ${coverageState.verified} verified countries. Headline pinned to legacy risk until ${CONSENSUS_HEADLINE_MIN_VERIFIED_COUNTRIES} verified countries.`;
+  const consensusSupportWarning = `Consensus under-supported: ${coverageState.verified} verified ${COVERAGE_ENTITY_LABEL}. Headline pinned to legacy risk until ${CONSENSUS_HEADLINE_MIN_VERIFIED_COUNTRIES} verified ${COVERAGE_ENTITY_LABEL}.`;
   const globalMoodScore = active?.moodScore ?? 50;
   const globalMoodConfidence = active?.moodConfidence ?? Math.min(1, coverageState.coverage_pct / 100);
   const globalMoodUncertainty = active?.moodUncertainty ?? 18;
@@ -1880,6 +1884,7 @@ export default function Dashboard() {
             if (!p?.location && !p?.customdata?.[0]) return;
             const country = String(p.customdata?.[0] ?? p.location);
             setSelectedCountry(country);
+            setDrilldownCountry(country);
             const lat = Number(p.lat);
             const lon = Number(p.lon);
             setSelectedCountryFocus(resolveCountryFocus(country, lat, lon));
@@ -2075,7 +2080,7 @@ export default function Dashboard() {
           <span className="wp-intelligence-kicker">Data Quality Gate</span>
           <span className="wp-intelligence-topic">{qualityGateMessage}</span>
           <span className="wp-intelligence-sep" />
-          <span>Verified countries {verifiedCoverageLabel} | Fresh data {qualityGateFreshnessPct}%</span>
+          <span>Verified {COVERAGE_ENTITY_LABEL} {verifiedCoverageLabel} | Fresh data {qualityGateFreshnessPct}%</span>
         </div>
         <div className="wp-intelligence-secondary">
           <span>{qualityGateDetail}</span>
@@ -2099,10 +2104,10 @@ export default function Dashboard() {
           <div className="wp-exec-label">Global Mood</div>
           <strong className="wp-highlight">{`${globalMoodScore.toFixed(1)} +/- ${globalMoodUncertainty.toFixed(1)}`}</strong>
           <div className="wp-mini-meta"><span>Confidence</span><strong>{(globalMoodConfidence * 100).toFixed(0)}%</strong></div>
-          <div className="wp-mini-meta wp-mini-meta--detail"><span>Countries</span><strong className="wp-mini-meta-detail">{globalMoodCountrySummary}</strong></div>
+          <div className="wp-mini-meta wp-mini-meta--detail"><span>{COVERAGE_ENTITY_LABEL_TITLE}</span><strong className="wp-mini-meta-detail">{globalMoodCountrySummary}</strong></div>
         </article>
         <article className="wp-card wp-exec-card">
-          <div className="wp-exec-label">Verified Countries</div>
+          <div className="wp-exec-label">Verified {COVERAGE_ENTITY_LABEL_TITLE}</div>
           <strong className="wp-highlight">{verifiedCoverageLabel}</strong>
           <div className="wp-mini-meta"><span>Coverage</span><strong>{coverageState.coverage_pct.toFixed(1)}%</strong></div>
           <div className="wp-mini-meta"><span>No-data / stale</span><strong>{coverageState.no_data + coverageState.stale}</strong></div>
@@ -2220,7 +2225,7 @@ export default function Dashboard() {
               </div>
               <div className="proposal-map-meta">
                 <p style={{ fontSize: 12, color: "#d1d5db" }}>
-                  {coverageState.verified} / {coverageState.total || riskMapRows.length} countries verified today. Gray countries have no same-day source data yet. Click a country to zoom, inspect news beacons, and open drilldown analysis.
+                  {coverageState.verified} / {coverageState.total || riskMapRows.length} {COVERAGE_ENTITY_LABEL} verified today. Gray {COVERAGE_ENTITY_LABEL} have no same-day source data yet. Click a country to zoom, inspect news beacons, and open drilldown analysis.
                 </p>
                 {selectedCountry && countryData ? (
                   <div className="proposal-map-score-strip">
@@ -2509,7 +2514,7 @@ export default function Dashboard() {
       {showDeferredPanels ? (
         <Suspense fallback={null}>
           <CountryDrilldown
-            open={Boolean(selectedCountry)}
+            open={Boolean(drilldownCountry && selectedCountry === drilldownCountry)}
             loading={countryLoading}
             data={countryData}
             countryNews={selectedCountryFeedItems}
@@ -2558,7 +2563,7 @@ export default function Dashboard() {
             weather={selectedCountryWeather}
             weatherLoading={countryWeatherLoading}
             weatherError={countryWeatherError}
-            onClose={() => setSelectedCountry(null)}
+            onClose={() => setDrilldownCountry(null)}
             workflowEnabled={false}
           />
         </Suspense>
@@ -2573,40 +2578,3 @@ export default function Dashboard() {
     </main>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

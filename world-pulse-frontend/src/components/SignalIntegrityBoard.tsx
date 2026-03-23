@@ -16,6 +16,8 @@ type Props = {
   staleSources: number;
 };
 
+const COVERAGE_ENTITY_LABEL = "regions/territories";
+
 function safeNumber(value: unknown, fallback = 0): number {
   const next = Number(value);
   return Number.isFinite(next) ? next : fallback;
@@ -63,7 +65,7 @@ export default function SignalIntegrityBoard({
       label: "Coverage",
       value: clampPercent(coverage.coverage_pct),
       display: `${coverage.coverage_pct.toFixed(1)}%`,
-      detail: `${coverage.verified} verified / ${coverage.total || 233}`,
+      detail: `${coverage.verified} verified of ${coverage.total || 233} ${COVERAGE_ENTITY_LABEL}`,
     },
     {
       label: "Freshness",
@@ -86,7 +88,7 @@ export default function SignalIntegrityBoard({
   const mobilitySnapshot = (trustSnapshot?.mobility ?? {}) as Record<string, unknown>;
   const economicSnapshot = (trustSnapshot?.economic ?? {}) as Record<string, unknown>;
   const domainRows = [
-    { label: "News", value: coverage.coverage_pct, detail: `${coverage.verified} verified countries` },
+    { label: "News", value: coverage.coverage_pct, detail: `${coverage.verified} verified ${COVERAGE_ENTITY_LABEL}` },
     { label: "Attention", value: sourceHealth.filter((row) => ["telegram_public", "youtube_public", "wikipedia"].includes(String(row.source || "")) && String(row.status || "") === "up").length * 33.3, detail: `${sourceHealth.filter((row) => ["telegram_public", "youtube_public", "wikipedia"].includes(String(row.source || ""))).length} sources tracked` },
     { label: "Mobility", value: sourceHealth.filter((row) => ["unhcr_idmc", "opensky", "logistics"].includes(String(row.source || "")) && String(row.status || "") === "up").length * 33.3, detail: `${safeNumber(mobilitySnapshot.combined_country_count)} countries covered` },
     { label: "Economics", value: sourceHealth.filter((row) => (String(row.source || "").includes("worldbank_behavior") || ["economic_behavior", "frankfurter_behavior", "eia_behavior", "fred_behavior", "fred_behavior_labor", "fred_behavior_energy"].includes(String(row.source || ""))) && String(row.status || "") === "up").length * 14.2, detail: `${safeNumber(economicSnapshot.country_count)} countries covered` },

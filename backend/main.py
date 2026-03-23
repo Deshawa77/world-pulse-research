@@ -53,7 +53,7 @@ DASHBOARD_ROUTE_CACHE: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
 DASHBOARD_ROUTE_CACHE_TTLS = {
     "risk_map": 20.0,
     "coverage": 20.0,
-    "feed": 20.0,
+    "feed": 4.0,
     "trust": 30.0,
     "global_quality": 20.0,
 }
@@ -1497,6 +1497,21 @@ def _aggregate_global_history_from_country_features(
         "stock_volatility",
         "weather_anomaly",
         "global_risk_score",
+        "public_attention_score",
+        "direct_behavior_score",
+        "contextual_pressure_score",
+        "evidence_quality_score",
+        "narrative_velocity_score",
+        "coordination_risk_score",
+        "mobility_disruption_score",
+        "logistics_stress_score",
+        "household_stress_score",
+        "fuel_price_pressure",
+        "food_price_pressure",
+        "labor_stress_score",
+        "fx_pressure_score",
+        "remittance_stress_score",
+        "energy_stress_score",
     ]
     buckets: dict[str, dict[str, Any]] = {}
 
@@ -1539,10 +1554,15 @@ def _aggregate_global_history_from_country_features(
 
     history_rows: list[dict] = []
     for row in ordered:
-        features = {}
+        features: dict[str, Any] = {}
         for field in signal_fields:
             count = row["counts"][field]
             features[field] = round((row["sums"][field] / count) if count else 0.0, 6)
+        features["global_behavior_index"] = round(float(features["direct_behavior_score"]), 2)
+        features["global_context_index"] = round(float(features["contextual_pressure_score"]), 2)
+        features["global_attention_index"] = round(((float(features["public_attention_score"]) * 100.0) + (float(features["narrative_velocity_score"]) * 100.0)) / 2.0, 2)
+        features["global_disruption_index"] = round(((float(features["mobility_disruption_score"]) * 100.0) + (float(features["logistics_stress_score"]) * 100.0)) / 2.0, 2)
+        features["global_economic_stress_index"] = round(((float(features["household_stress_score"]) * 100.0) + (float(features["energy_stress_score"]) * 100.0) + (float(features["remittance_stress_score"]) * 100.0)) / 3.0, 2)
         features["timestamp"] = row["timestamp"].isoformat()
         features["source_count"] = len(row["countries"])
         history_rows.append({
@@ -1552,7 +1572,6 @@ def _aggregate_global_history_from_country_features(
         })
 
     return history_rows
-
 
 def _derive_global_history_from_raw_mongo(
     mode: str = "online",
@@ -2077,6 +2096,35 @@ def parse_iso_dt(value: str | None) -> datetime | None:
 
 
 
+def _history_cross_domain_density(rows: list[dict]) -> int:
+    signal_keys = (
+        "direct_behavior_score",
+        "contextual_pressure_score",
+        "evidence_quality_score",
+        "narrative_velocity_score",
+        "coordination_risk_score",
+        "mobility_disruption_score",
+        "logistics_stress_score",
+        "household_stress_score",
+        "energy_stress_score",
+        "global_behavior_index",
+        "global_context_index",
+        "global_attention_index",
+        "global_disruption_index",
+        "global_economic_stress_index",
+    )
+    density = 0
+    for row in rows:
+        features = (row or {}).get("features") or {}
+        if not isinstance(features, dict):
+            continue
+        for key in signal_keys:
+            value = _parse_float_maybe(features.get(key))
+            if value is not None and abs(float(value)) > 1e-9:
+                density += 1
+    return density
+
+
 def get_global_history(mode: str = "online", limit: int = 1000, start_date: datetime | None = None, end_date: datetime | None = None):
     query: dict = {"mode": mode}
     if start_date or end_date:
@@ -2090,15 +2138,17 @@ def get_global_history(mode: str = "online", limit: int = 1000, start_date: date
     cursor = list(db.global_features.find(query).sort("timestamp", DESCENDING).limit(limit))
     if not cursor:
         cursor = list(db.dashboard_features.find(query).sort("timestamp", DESCENDING).limit(limit))
+
+    country_derived_rows = _aggregate_global_history_from_country_features(
+        mode=mode,
+        limit=limit,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
     if not cursor:
-        rows = _aggregate_global_history_from_country_features(
-            mode=mode,
-            limit=limit,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        if rows:
-            return rows
+        if country_derived_rows:
+            return country_derived_rows
         return _derive_global_history_from_raw_mongo(
             mode=mode,
             limit=limit,
@@ -2107,6 +2157,9 @@ def get_global_history(mode: str = "online", limit: int = 1000, start_date: date
         )
 
     rows = [serialize_doc(d) for d in reversed(cursor)]
+    if country_derived_rows and _history_cross_domain_density(country_derived_rows) > _history_cross_domain_density(rows):
+        rows = country_derived_rows
+
     if len(rows) >= 2:
         return rows
 
@@ -2132,12 +2185,11 @@ def get_global_history(mode: str = "online", limit: int = 1000, start_date: date
 
     merged_rows = sorted(
         merged.values(),
-        key=lambda d: _coerce_utc_datetime((d.get("features") or {}).get("timestamp") or d.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda item: str((item.get("features") or {}).get("timestamp") or item.get("timestamp") or ""),
     )
     if len(merged_rows) > limit:
         merged_rows = merged_rows[-limit:]
     return merged_rows
-
 
 
 # =====================================================
@@ -3555,7 +3607,7 @@ def dashboard_global_intelligence_feed(
         if requested_country:
             country_code = inferred_country_code if inferred_country_code != "UNK" else source_country_code
         else:
-            country_code = inferred_country_code
+            country_code = inferred_country_code if inferred_country_code != "UNK" else source_country_code
         if not country_code or country_code == "UNK":
             continue
         country_name = str(COUNTRY_NAMES.get(country_code, doc.get("country_name") or country_code))
@@ -7317,9 +7369,11 @@ WS_IDLE_KEEPALIVE_SECONDS = 20.0
 def _live_consumer_config(topic: str, group_prefix: str) -> dict:
     return {
         "topics": [topic],
-        "group_id": f"{group_prefix}-{uuid.uuid4()}",
+        # Live dashboard sockets are fan-out readers, not work-sharing consumers.
+        # Avoid creating ephemeral consumer groups for each websocket connection.
+        "group_id": None,
         "auto_offset_reset": "latest",
-        "enable_auto_commit": True,
+        "enable_auto_commit": False,
         "consumer_timeout_ms": WS_CONSUMER_TIMEOUT_MS,
     }
 
@@ -8334,9 +8388,5 @@ def observability_world_state(request: Request, role: str = Depends(require_admi
         "feature_drift": drift,
         "region_coverage": region_coverage,
     }
-
-
-
-
 
 

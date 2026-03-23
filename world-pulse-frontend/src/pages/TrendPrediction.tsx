@@ -142,8 +142,8 @@ function normalizeHistoricalRows(rows: unknown[]): HistoricalDataPoint[] {
       global_attention_index: safeN(row.global_attention_index ?? nested.global_attention_index),
       global_disruption_index: safeN(row.global_disruption_index ?? nested.global_disruption_index),
       global_economic_stress_index: safeN(row.global_economic_stress_index ?? nested.global_economic_stress_index),
-      direct_behavior_score: safeN(row.direct_behavior_score ?? nested.direct_behavior_score),
-      contextual_pressure_score: safeN(row.contextual_pressure_score ?? nested.contextual_pressure_score),
+      direct_behavior_score: safeN(row.direct_behavior_score ?? nested.direct_behavior_score ?? row.global_behavior_index ?? nested.global_behavior_index),
+      contextual_pressure_score: safeN(row.contextual_pressure_score ?? nested.contextual_pressure_score ?? row.global_context_index ?? nested.global_context_index),
       evidence_quality_score: safeN(row.evidence_quality_score ?? nested.evidence_quality_score),
       narrative_velocity_score: safeN(row.narrative_velocity_score ?? nested.narrative_velocity_score),
       coordination_risk_score: safeN(row.coordination_risk_score ?? nested.coordination_risk_score),
@@ -228,6 +228,30 @@ function normalizeUnitValue(value: unknown, fallback = 0): number {
   if (n < 0) return 0;
   if (n > 1) return 1;
   return n;
+}
+
+function toHundredScale(value: unknown, fallback = 0): number {
+  const n = safeN(value, fallback);
+  if (n < 0) return 0;
+  if (n <= 1.5) return n * 100;
+  if (n > 100) return 100;
+  return n;
+}
+
+function toNormalizedScale(value: unknown, fallback = 0): number {
+  const n = safeN(value, fallback);
+  if (n < 0) return 0;
+  if (n <= 1.5) return n;
+  if (n <= 100) return n / 100;
+  return 1;
+}
+
+function preferHundredScale(primary: unknown, secondary: unknown, fallback = 0): number {
+  const primaryValue = Number(primary);
+  if (Number.isFinite(primaryValue) && Math.abs(primaryValue) > 0) {
+    return toHundredScale(primaryValue, fallback);
+  }
+  return toHundredScale(secondary, fallback);
 }
 
 function formatInsightMetric(value: number, defaultText = "N/A"): string {
@@ -1062,17 +1086,39 @@ export default function TrendPrediction() {
     return avgPressure > 0.32;
   }, [activeFeatureEntries]);
 
+  const latestGlobalFeatures = useMemo<Record<string, unknown>>(
+    () => ((latestGlobalDoc?.features ?? {}) as Record<string, unknown>),
+    [latestGlobalDoc],
+  );
+
   const insightFeatureSnapshot = useMemo(() => {
-    const pick = (key: string) => activeFeatureEntries.find((entry) => entry.key === key)?.value;
+    const pick = (...keys: string[]) => {
+      let zeroCandidate: number | undefined;
+      for (const key of keys) {
+        const entryValueRaw = activeFeatureEntries.find((entry) => entry.key === key)?.value;
+        const entryValue = typeof entryValueRaw === "number" ? entryValueRaw : Number.NaN;
+        if (Number.isFinite(entryValue)) {
+          if (Math.abs(entryValue) > 0) return entryValue;
+          zeroCandidate = entryValue;
+        }
+        const liveValue = Number(latestGlobalFeatures[key]);
+        if (Number.isFinite(liveValue)) {
+          if (Math.abs(liveValue) > 0) return liveValue;
+          if (zeroCandidate === undefined) zeroCandidate = liveValue;
+        }
+      }
+      return zeroCandidate;
+    };
+
     return {
-      directBehavior: pick("direct_behavior_score"),
-      contextualPressure: pick("contextual_pressure_score"),
+      directBehavior: pick("direct_behavior_score", "global_behavior_index"),
+      contextualPressure: pick("contextual_pressure_score", "global_context_index"),
       evidenceQuality: pick("evidence_quality_score"),
       logisticsStress: pick("logistics_stress_score"),
       householdStress: pick("household_stress_score"),
       energyStress: pick("energy_stress_score"),
     };
-  }, [activeFeatureEntries]);
+  }, [activeFeatureEntries, latestGlobalFeatures]);
 
   const activeRiskForecast = useMemo<RiskForecastPoint[]>(() => {
     const contractHorizons = Array.isArray(advancedInsights?.forecast_contract?.horizons)
@@ -1147,13 +1193,13 @@ export default function TrendPrediction() {
       const ts = parseTimestampMs(row.timestamp);
       return {
         label: ts !== null ? new Date(ts).toLocaleTimeString() : `Snapshot ${idx + 1}`,
-        direct_behavior: safeN(row.direct_behavior_score),
-        contextual_pressure: safeN(row.contextual_pressure_score),
-        attention_pressure: safeN(row.global_attention_index),
-        disruption_pressure: safeN(row.global_disruption_index),
-        economic_stress: safeN(row.global_economic_stress_index),
-        logistics_stress: safeN(row.logistics_stress_score),
-        household_stress: safeN(row.household_stress_score),
+        direct_behavior: preferHundredScale(row.global_behavior_index, row.direct_behavior_score),
+        contextual_pressure: preferHundredScale(row.global_context_index, row.contextual_pressure_score),
+        attention_pressure: toHundredScale(row.global_attention_index),
+        disruption_pressure: toHundredScale(row.global_disruption_index),
+        economic_stress: toHundredScale(row.global_economic_stress_index),
+        logistics_stress: toHundredScale(row.logistics_stress_score),
+        household_stress: toHundredScale(row.household_stress_score),
       };
     });
   }, [playbackActive, visibleHistoricalData, historicalData]);
@@ -1564,7 +1610,7 @@ export default function TrendPrediction() {
     const data = [
       {
         x: labels,
-        y: domainSignalHistory.map((row) => row.contextual_pressure * 100),
+        y: domainSignalHistory.map((row) => row.contextual_pressure),
         type: "scatter",
         mode: "lines+markers",
         name: "Context Pressure",
@@ -1604,7 +1650,7 @@ export default function TrendPrediction() {
       },
       {
         x: labels,
-        y: domainSignalHistory.map((row) => row.logistics_stress * 100),
+        y: domainSignalHistory.map((row) => row.logistics_stress),
         type: "scatter",
         mode: "lines+markers",
         name: "Logistics",
@@ -1826,38 +1872,36 @@ export default function TrendPrediction() {
       household_stress_score: 0,
       energy_stress_score: 0,
     };
-    const fromRiskMap = riskMap.filter((r) => typeof r.risk === "number").map((r) => {
-      const risk = normalizeRisk(r.risk ?? 0);
-      const code = (r.country || "").toUpperCase();
-      const h = hashCountryCode(code);
-      const driftA = ((h % 23) - 11) / 110;
-      const driftB = (((h >> 3) % 19) - 9) / 90;
-      const pressure = (risk - 50) / 100;
-      return {
-        country: r.country,
-        countryCode: code,
-        risk,
-        timestamp: latest?.timestamp ?? new Date().toISOString(),
-        features: {
-          news_sentiment: safeN(baseFeatures.news_sentiment + pressure * 0.3 + driftA * 0.2),
-          gdelt_sentiment: safeN(baseFeatures.gdelt_sentiment + pressure * 0.26 - driftB * 0.14),
-          crypto_return: safeN(baseFeatures.crypto_return - pressure * 0.06 + driftA * 0.03),
-          crypto_volatility: safeN(Math.max(0, baseFeatures.crypto_volatility + Math.abs(pressure) * 0.08 + Math.abs(driftB) * 0.04)),
-          stock_return: safeN(baseFeatures.stock_return - pressure * 0.05 + driftB * 0.02),
-          stock_volatility: safeN(Math.max(0, baseFeatures.stock_volatility + Math.abs(pressure) * 0.07 + Math.abs(driftA) * 0.04)),
-          weather_anomaly: safeN(Math.max(0, baseFeatures.weather_anomaly + Math.abs(driftA) * 0.3 + Math.max(0, pressure) * 0.12)),
-          direct_behavior_score: safeN(Math.max(0, baseFeatures.direct_behavior_score + pressure * 0.18 + driftA * 0.16)),
-          contextual_pressure_score: safeN(Math.max(0, baseFeatures.contextual_pressure_score + pressure * 0.22 + Math.abs(driftB) * 0.12)),
-          evidence_quality_score: safeN(Math.max(0, baseFeatures.evidence_quality_score - Math.abs(pressure) * 0.08 + 0.04)),
-          narrative_velocity_score: safeN(Math.max(0, baseFeatures.narrative_velocity_score + pressure * 0.14 + driftA * 0.08)),
-          coordination_risk_score: safeN(Math.max(0, baseFeatures.coordination_risk_score + pressure * 0.16 + Math.abs(driftB) * 0.1)),
-          mobility_disruption_score: safeN(Math.max(0, baseFeatures.mobility_disruption_score + Math.abs(pressure) * 0.14)),
-          logistics_stress_score: safeN(Math.max(0, baseFeatures.logistics_stress_score + Math.abs(pressure) * 0.17)),
-          household_stress_score: safeN(Math.max(0, baseFeatures.household_stress_score + Math.abs(pressure) * 0.15)),
-          energy_stress_score: safeN(Math.max(0, baseFeatures.energy_stress_score + Math.abs(pressure) * 0.13)),
-        },
-      };
-    });
+    const latestTimestamp = latest?.timestamp ?? new Date().toISOString();
+    const fromRiskMap = riskMap
+      .filter((r): r is RiskMapPoint & { risk: number } => typeof r.risk === "number" && Boolean(r.country))
+      .map((r) => {
+        const code = (r.country || "").toUpperCase();
+        return {
+          country: r.country,
+          countryCode: code,
+          risk: normalizeRisk(toHundredScale(r.risk, 0)),
+          timestamp: String((r as Record<string, unknown>).timestamp || latestTimestamp),
+          features: {
+            news_sentiment: safeN(baseFeatures.news_sentiment),
+            gdelt_sentiment: safeN(baseFeatures.gdelt_sentiment),
+            crypto_return: safeN(baseFeatures.crypto_return),
+            crypto_volatility: safeN(baseFeatures.crypto_volatility),
+            stock_return: safeN(baseFeatures.stock_return),
+            stock_volatility: safeN(baseFeatures.stock_volatility),
+            weather_anomaly: safeN(baseFeatures.weather_anomaly),
+            direct_behavior_score: toHundredScale(r.direct_behavior_score, baseFeatures.direct_behavior_score),
+            contextual_pressure_score: toHundredScale(r.contextual_pressure_score, baseFeatures.contextual_pressure_score),
+            evidence_quality_score: toHundredScale(r.evidence_quality_score, baseFeatures.evidence_quality_score),
+            narrative_velocity_score: toNormalizedScale(r.narrative_velocity_score, baseFeatures.narrative_velocity_score),
+            coordination_risk_score: toNormalizedScale(r.coordination_risk_score, baseFeatures.coordination_risk_score),
+            mobility_disruption_score: toNormalizedScale(r.mobility_disruption_score, baseFeatures.mobility_disruption_score),
+            logistics_stress_score: toNormalizedScale(r.logistics_stress_score, baseFeatures.logistics_stress_score),
+            household_stress_score: toNormalizedScale(r.household_stress_score, baseFeatures.household_stress_score),
+            energy_stress_score: toNormalizedScale(r.energy_stress_score, baseFeatures.energy_stress_score),
+          },
+        };
+      });
     if (fromRiskMap.length >= 2) return fromRiskMap;
 
     const fallbackFromEvents = Array.from(
@@ -1872,7 +1916,7 @@ export default function TrendPrediction() {
       country: code,
       countryCode: code,
       risk: normalizeRisk(45 + (idx * 7) + (activeEventPredictions[idx]?.predicted_risk_increase ?? 0)),
-      timestamp: latest?.timestamp ?? new Date().toISOString(),
+      timestamp: latestTimestamp,
       features: {
         news_sentiment: safeN(baseFeatures.news_sentiment + idx * 0.03),
         gdelt_sentiment: safeN(baseFeatures.gdelt_sentiment - idx * 0.02),
@@ -1881,9 +1925,9 @@ export default function TrendPrediction() {
         stock_return: safeN(baseFeatures.stock_return - idx * 0.008),
         stock_volatility: safeN(Math.max(0, baseFeatures.stock_volatility + idx * 0.012)),
         weather_anomaly: safeN(Math.max(0, baseFeatures.weather_anomaly + idx * 0.02)),
-        direct_behavior_score: safeN(Math.max(0, baseFeatures.direct_behavior_score + idx * 0.02)),
-        contextual_pressure_score: safeN(Math.max(0, baseFeatures.contextual_pressure_score + idx * 0.025)),
-        evidence_quality_score: safeN(Math.max(0, baseFeatures.evidence_quality_score - idx * 0.01)),
+        direct_behavior_score: toHundredScale(baseFeatures.direct_behavior_score + idx * 0.02),
+        contextual_pressure_score: toHundredScale(baseFeatures.contextual_pressure_score + idx * 0.025),
+        evidence_quality_score: toHundredScale(Math.max(0, baseFeatures.evidence_quality_score - idx * 0.01)),
         narrative_velocity_score: safeN(Math.max(0, baseFeatures.narrative_velocity_score + idx * 0.015)),
         coordination_risk_score: safeN(Math.max(0, baseFeatures.coordination_risk_score + idx * 0.02)),
         mobility_disruption_score: safeN(Math.max(0, baseFeatures.mobility_disruption_score + idx * 0.018)),
