@@ -24,6 +24,7 @@ type ConsoleNavigationProps = {
   title: ReactNode;
   subtitle: string;
   rightSlot?: ReactNode;
+  sectionRightSlot?: ReactNode;
   sectionTabs?: Array<{
     label: string;
     targetId: string;
@@ -35,6 +36,7 @@ export default function ConsoleNavigation({
   title,
   subtitle,
   rightSlot,
+  sectionRightSlot,
   sectionTabs = [],
 }: ConsoleNavigationProps) {
   const navigate = useNavigate();
@@ -148,19 +150,24 @@ export default function ConsoleNavigation({
         </div>
         {rightSlot ? <div className="wp-header-meta">{rightSlot}</div> : null}
       </header>
-      {sectionTabs.length ? (
-        <div className="console-section-tabs" role="navigation" aria-label="Page sections">
-          {sectionTabs.map((tab) => (
-            <button
-              key={tab.targetId}
-              type="button"
-              className="console-section-tab"
-              onClick={() => handleSectionTabClick(tab.targetId)}
-            >
-              {tab.label}
-              {tab.badge ? <span className="console-section-tab-badge">{tab.badge}</span> : null}
-            </button>
-          ))}
+      {sectionTabs.length || sectionRightSlot ? (
+        <div className={`console-section-tabs${sectionRightSlot ? " has-side-slot" : ""}`}>
+          {sectionTabs.length ? (
+            <div className="console-section-tabs-list" role="navigation" aria-label="Page sections">
+              {sectionTabs.map((tab) => (
+                <button
+                  key={tab.targetId}
+                  type="button"
+                  className="console-section-tab"
+                  onClick={() => handleSectionTabClick(tab.targetId)}
+                >
+                  {tab.label}
+                  {tab.badge ? <span className="console-section-tab-badge">{tab.badge}</span> : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {sectionRightSlot ? <div className="console-section-tabs-side">{sectionRightSlot}</div> : null}
         </div>
       ) : null}
     </>

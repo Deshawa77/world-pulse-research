@@ -88,8 +88,6 @@ export function ProposalFooter() {
           <h2>One operating picture for social, news, finance, weather, and predictive signals.</h2>
         </div>
         <div className="proposal-footer-meta">
-          <span>Created by E D Ethugala</span>
-          <span>and Y M V Gimhani</span>
           <span>Role-based Access</span>
           <span>Live Decision Support</span>
         </div>

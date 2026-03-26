@@ -1,9 +1,17 @@
 import axios, { AxiosHeaders } from "axios";
 
-const PRIMARY_API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const CONFIGURED_API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const LOCAL_DEV_PRIMARY_URL_PATTERN = /^http:\/\/127\.0\.0\.1:(8000|8001)\/?$/;
+export const LOCAL_DEV_RECOVERY_API_URL = "http://127.0.0.1:8002";
+const PRIMARY_API_URL = import.meta.env.DEV && LOCAL_DEV_PRIMARY_URL_PATTERN.test(CONFIGURED_API_URL)
+  ? LOCAL_DEV_RECOVERY_API_URL
+  : CONFIGURED_API_URL;
 // Do not default to an alternate port unless explicitly configured.
-// A dead fallback (e.g. :8010) can trap auth/login in repeated connection refused loops.
-const FALLBACK_API_URL = import.meta.env.VITE_API_FALLBACK_URL || "";
+// In local dev, allow explicit fallback to the backup backend if the configured API hangs.
+const FALLBACK_API_URL = import.meta.env.VITE_API_FALLBACK_URL
+  || (import.meta.env.DEV && PRIMARY_API_URL !== LOCAL_DEV_RECOVERY_API_URL && LOCAL_DEV_PRIMARY_URL_PATTERN.test(CONFIGURED_API_URL)
+    ? LOCAL_DEV_RECOVERY_API_URL
+    : "");
 const API_KEY = import.meta.env.VITE_API_KEY || "super_secure_api_key";
 const USE_MOCK_API = String(import.meta.env.VITE_USE_MOCK_API || "").trim().toLowerCase() === "true";
 const ACTIVE_API_URL_STORAGE_KEY = "wp_active_api_url";
@@ -25,6 +33,8 @@ function setActiveApiUrl(url: string): void {
 }
 
 let activeApiUrl = readPersistedApiUrl();
+
+export const getActiveApiUrl = (): string => activeApiUrl;
 
 function isNetworkFailure(error: unknown): boolean {
   const e = (error ?? {}) as { code?: string; message?: string; response?: unknown };

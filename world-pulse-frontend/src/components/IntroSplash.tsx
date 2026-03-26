@@ -41,7 +41,6 @@ export default function IntroSplash({ onComplete, forced = false }: IntroSplashP
 
         <h1 className="wp-intro-title">THE WORLD'S PULSE</h1>
         <p className="wp-intro-subtitle">Reality Interface Initializing</p>
-        <p className="wp-intro-credit">Created by E D Ethugala and Y M V Gimhani</p>
       </div>
 
       <div className="wp-intro-actions">

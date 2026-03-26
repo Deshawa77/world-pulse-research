@@ -26,6 +26,7 @@ import ConsoleNavigation from "../components/ConsoleNavigation";
 import AdvancedAnalyticsPanel from "../components/AdvancedAnalyticsPanel";
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
+import "./TrendPrediction.css";
 
 const ModelGovernance = lazy(() => import("../components/ModelGovernance"));
 const WorldGlobe3D = lazy(() => import("../components/WorldGlobe3D"));
@@ -509,6 +510,7 @@ export default function TrendPrediction() {
   const [trustSnapshot, setTrustSnapshot] = useState<TrustReliabilitySnapshot | null>(null);
   const [advancedInsights, setAdvancedInsights] = useState<AdvancedInsightsData | null>(null);
   const [latestGlobalDoc, setLatestGlobalDoc] = useState<LatestGlobalResponse | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const mlChartRef = useRef<HTMLDivElement | null>(null);
   const sentimentChartRef = useRef<HTMLDivElement | null>(null);
@@ -517,11 +519,14 @@ export default function TrendPrediction() {
   const plotlyRef = useRef<any>(null);
   const plotlyLoadingRef = useRef<Promise<any> | null>(null);
   const loadRequestIdRef = useRef(0);
+  const hasLoadedOnceRef = useRef(false);
 
   function finishPrimaryLoad(requestId: number) {
     if (requestId !== loadRequestIdRef.current) return;
     setLastUpdatedAt(new Date().toISOString());
     setLoading(false);
+    setRefreshing(false);
+    hasLoadedOnceRef.current = true;
   }
 
   useEffect(() => {
@@ -529,7 +534,7 @@ export default function TrendPrediction() {
       navigate("/login");
       return;
     }
-    loadData();
+    loadData({ showSpinner: !hasLoadedOnceRef.current });
   }, [token, navigate, selectedTimeframe]);
 
   useEffect(() => {
@@ -543,7 +548,7 @@ export default function TrendPrediction() {
   useEffect(() => {
     if (!token || playbackActive) return undefined;
     const interval = window.setInterval(() => {
-      loadData();
+      loadData({ showSpinner: false });
     }, AUTO_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [token, playbackActive, selectedTimeframe]);
@@ -565,11 +570,16 @@ export default function TrendPrediction() {
     return plotlyLoadingRef.current;
   }
 
-  async function loadData() {
+  async function loadData(options: { showSpinner?: boolean } = {}) {
+    const showSpinner = Boolean(options.showSpinner);
     const requestId = ++loadRequestIdRef.current;
-    setLoading(true);
+    if (showSpinner || !hasLoadedOnceRef.current) {
+      setLoading(true);
+      setLatestFeaturesLoaded(false);
+    } else {
+      setRefreshing(true);
+    }
     setError("");
-    setLatestFeaturesLoaded(false);
 
     try {
       loadPlotly().catch((e) => {
@@ -1981,7 +1991,15 @@ export default function TrendPrediction() {
   const insightsStatus: PanelStatus = error ? "error" : hasInsightsData ? "live" : "no-data";
   const advancedStatus: PanelStatus = error ? "error" : hasAdvancedData ? "live" : "no-data";
   const canonicalStatusBadge = predictionsWithheld ? "Unavailable" : (predictionsDegraded ? "Degraded" : undefined);
-
+  const heroStatusTone = playbackActive ? "playback" : predictionsWithheld ? "withheld" : predictionsDegraded ? "degraded" : "live";
+  const heroStatusLabel = playbackActive ? "Playback" : predictionsWithheld ? "Withheld" : predictionsDegraded ? "Degraded" : "Live";
+  const predictionHealthLabel = predictionsWithheld ? "Suppressed" : (predictionsDegraded ? "Degraded" : trustQuality.label);
+  const selectedTimeframeLabel = selectedTimeframe === "1h" ? "1 hour window" : selectedTimeframe === "6h" ? "6 hour window" : selectedTimeframe === "24h" ? "24 hour window" : "7 day window";
+  const activeModelVersionLabel = playbackActive
+    ? "historical playback model state"
+    : (advancedInsights?.forecast_contract?.model_version || activePredictionData?.model_version || "canonical forecast contract");
+  const navControlTone = refreshing ? "refreshing" : heroStatusTone;
+  const navControlStatusLabel = refreshing ? "Refreshing" : (playbackActive ? "Playback" : predictionHealthLabel);
   function handlePlaybackFrameChange(frame: SnapshotLike | null) {
     setPlaybackFrame(frame);
   }
@@ -2008,10 +2026,45 @@ export default function TrendPrediction() {
   }
 
   return (
-    <main className="wp-shell">
+    <main className="wp-shell prediction-page">
       <ConsoleNavigation
         title={<>TREND <span>PREDICTION</span></>}
         subtitle={honestSubtitle}
+        sectionRightSlot={(
+          <div className="prediction-nav-controls" aria-label="Forecast controls">
+            <div className="prediction-nav-timeframes" role="group" aria-label="Forecast window">
+              {(["1h", "6h", "24h", "7d"] as const).map((tf) => (
+                <button
+                  key={tf}
+                  type="button"
+                  className={selectedTimeframe === tf ? "active" : ""}
+                  onClick={() => setSelectedTimeframe(tf)}
+                >
+                  {tf === "1h" && "1H"}
+                  {tf === "6h" && "6H"}
+                  {tf === "24h" && "24H"}
+                  {tf === "7d" && "7D"}
+                </button>
+              ))}
+            </div>
+            {playbackActive ? (
+              <button type="button" className="prediction-nav-action prediction-nav-action-secondary" onClick={stopPlaybackMode}>
+                Live
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="prediction-nav-action prediction-nav-action-refresh"
+              onClick={() => loadData({ showSpinner: false })}
+              disabled={refreshing}
+            >
+              {refreshing ? "Refreshing..." : "Refresh"}
+            </button>
+            <span className={`prediction-nav-state prediction-nav-state-${navControlTone}`}>
+              {navControlStatusLabel}
+            </span>
+          </div>
+        )}
         sectionTabs={[
           { label: "Summary", targetId: "prediction-summary", badge: canonicalStatusBadge },
           { label: "Deep Intel", targetId: "prediction-deep-intel" },
@@ -2021,87 +2074,106 @@ export default function TrendPrediction() {
         ]}
       />
 
-      <section id="prediction-summary" className="prediction-summary-sticky">
-        <article className="wp-card prediction-summary-card">
-          <span className="prediction-summary-label">Risk Score</span>
-          <strong className="prediction-summary-value">
-            {canonicalRiskDisplay !== null ? canonicalRiskDisplay.toFixed(1) : "WITHHELD"}
+      <section id="prediction-summary" className="wp-intelligence-bar prediction-intelligence-bar">
+        <div className="wp-intelligence-primary">
+          <span className="wp-intelligence-kicker">Forecast Command</span>
+          <span className="wp-intelligence-topic">
+            {predictionsWithheld
+              ? (advancedInsights?.predictions?.fallback_reason || "Canonical forecast output is currently withheld by the quality gate.")
+              : playbackActive
+              ? "Historical playback is active so you can inspect how the forecast evolved over time."
+              : (advancedInsights?.advisory || activePredictionData?.advisory || trustQuality.detail)}
+          </span>
+        </div>
+        <div className="wp-intelligence-secondary">
+          <span>{playbackActive ? "Playback mode" : "Live model state"}</span>
+          <span>{selectedTimeframeLabel}</span>
+          <span>{predictionHealthLabel}</span>
+          <span>Updated {playbackActive && playbackFrame
+            ? new Date(playbackFrame.timestamp).toLocaleTimeString()
+            : lastCanonicalRefreshAt
+            ? new Date(lastCanonicalRefreshAt).toLocaleTimeString()
+            : lastUpdatedAt
+            ? new Date(lastUpdatedAt).toLocaleTimeString()
+            : "--:--:--"}</span>
+        </div>
+      </section>
+
+      <section className="wp-exec-grid prediction-exec-grid">
+        <article className="wp-card wp-exec-card prediction-exec-card prediction-exec-card-primary">
+          <div className="prediction-exec-topline">
+            <div className="wp-exec-label">Canonical Risk</div>
+            <span className={`prediction-hero-status prediction-hero-status-${heroStatusTone}`}>{heroStatusLabel}</span>
+          </div>
+          <strong className="wp-highlight prediction-exec-value">
+            {canonicalRiskDisplay !== null ? `${canonicalRiskDisplay.toFixed(1)} / 100` : "WITHHELD"}
           </strong>
-          <small>/100 global risk probability</small>
+          <div className="wp-mini-meta">
+            <span>Source</span>
+            <strong>{activePredictionSourceLabel || "Canonical forecast"}</strong>
+          </div>
+          <div className="wp-mini-meta wp-mini-meta--detail">
+            <span>Brief</span>
+            <strong className="wp-mini-meta-detail">
+              {predictionsWithheld
+                ? (advancedInsights?.predictions?.fallback_reason || "Canonical forecast output is currently withheld by the quality gate.")
+                : (advancedInsights?.advisory || activePredictionData?.advisory || trustQuality.detail)}
+            </strong>
+          </div>
         </article>
-        <article className="wp-card prediction-summary-card">
-          <span className="prediction-summary-label">Confidence</span>
-          <strong className="prediction-summary-value">{predictionsWithheld ? "0.0%" : `${(avgConfidence * 100).toFixed(1)}%`}</strong>
-          <small>ensemble average confidence</small>
+
+        <article className="wp-card wp-exec-card prediction-exec-card">
+          <div className="wp-exec-label">Confidence</div>
+          <strong className="wp-highlight prediction-exec-value">{predictionsWithheld ? "0.0%" : `${(avgConfidence * 100).toFixed(1)}%`}</strong>
+          <div className="wp-mini-meta">
+            <span>Reliability</span>
+            <strong>{predictionHealthLabel}</strong>
+          </div>
+          <div className="wp-mini-meta">
+            <span>Forecast Window</span>
+            <strong>{selectedTimeframeLabel}</strong>
+          </div>
         </article>
-        <article className="wp-card prediction-summary-card">
-          <span className="prediction-summary-label">Active Model</span>
-          <strong className="prediction-summary-value">{predictionsWithheld ? "quality gate" : (activePredictionSourceLabel || "canonical forecast")}</strong>
-          <small>{playbackActive ? "historical playback model state" : (advancedInsights?.forecast_contract?.model_version || activePredictionData?.model_version || "canonical forecast contract")}</small>
+
+        <article className="wp-card wp-exec-card prediction-exec-card">
+          <div className="wp-exec-label">Active Model</div>
+          <strong className="prediction-exec-inline">{predictionsWithheld ? "Quality gate" : (activePredictionSourceLabel || "Canonical forecast")}</strong>
+          <div className="wp-mini-meta">
+            <span>Version</span>
+            <strong>{activeModelVersionLabel}</strong>
+          </div>
+          <div className="wp-mini-meta">
+            <span>Mode</span>
+            <strong>{playbackActive ? "Historical playback" : "Canonical live contract"}</strong>
+          </div>
         </article>
-        <article className="wp-card prediction-summary-card">
-          <span className="prediction-summary-label">Last Update</span>
-          <strong className="prediction-summary-value">
-            {playbackActive && playbackFrame
-              ? new Date(playbackFrame.timestamp).toLocaleTimeString()
+
+        <article className="wp-card wp-exec-card prediction-exec-card">
+          <div className="wp-exec-label">Last Update</div>
+          <strong className="prediction-exec-inline">{playbackActive && playbackFrame
+            ? new Date(playbackFrame.timestamp).toLocaleTimeString()
+            : lastCanonicalRefreshAt
+            ? new Date(lastCanonicalRefreshAt).toLocaleTimeString()
+            : lastUpdatedAt
+            ? new Date(lastUpdatedAt).toLocaleTimeString()
+            : "--:--:--"}</strong>
+          <div className="wp-mini-meta">
+            <span>Date</span>
+            <strong>{playbackActive && playbackFrame
+              ? new Date(playbackFrame.timestamp).toLocaleDateString()
               : lastCanonicalRefreshAt
-              ? new Date(lastCanonicalRefreshAt).toLocaleTimeString()
+              ? new Date(lastCanonicalRefreshAt).toLocaleDateString()
               : lastUpdatedAt
-              ? new Date(lastUpdatedAt).toLocaleTimeString()
-              : "--:--:--"}
-          </strong>
-          <small>{playbackActive ? "playback frame timestamp" : "latest data refresh"}</small>
-        </article>
-        <article className="wp-card prediction-summary-controls">
-          <div className="prediction-summary-controls-head">Controls</div>
-          <div className="timeframe-buttons timeframe-buttons-compact">
-            {(["1h", "6h", "24h", "7d"] as const).map((tf) => (
-              <button
-                key={tf}
-                className={selectedTimeframe === tf ? "active" : ""}
-                onClick={() => setSelectedTimeframe(tf)}
-              >
-                {tf === "1h" && "1 Hour"}
-                {tf === "6h" && "6 Hours"}
-                {tf === "24h" && "24 Hours"}
-                {tf === "7d" && "7 Days"}
-              </button>
-            ))}
+              ? new Date(lastUpdatedAt).toLocaleDateString()
+              : "Awaiting refresh"}</strong>
           </div>
-          <div className="prediction-summary-actions">
-            <button onClick={loadData}>Refresh Predictions</button>
-            {playbackActive && (
-              <button onClick={stopPlaybackMode} style={{ borderColor: "#22d3ee", color: "#22d3ee" }}>
-                Back To Live
-              </button>
-            )}
-          </div>
-          <div className="prediction-summary-meta-grid prediction-summary-meta-grid-compact">
-            <div className="prediction-summary-meta-item">
-              <span>Source</span>
-              <span>{activePredictionSourceLabel}</span>
-            </div>
-            <div className="prediction-summary-meta-item">
-              <span>Reliability</span>
-              <span>{predictionsWithheld ? "Suppressed" : (predictionsDegraded ? "Downgraded" : trustQuality.label)}</span>
-            </div>
-            <div className="prediction-summary-meta-item">
-              <span>Refreshed</span>
-              <span>{lastCanonicalRefreshAt ? new Date(lastCanonicalRefreshAt).toLocaleString() : "Awaiting canonical refresh"}</span>
-            </div>
-            {playbackActive && playbackFrame && (
-              <div className="prediction-summary-meta-item">
-                <span>Playback</span>
-                <span>{new Date(playbackFrame.timestamp).toLocaleString()}</span>
-              </div>
-            )}
-          </div>
-          <div className="prediction-summary-advisory">
-            <span>{advancedInsights?.advisory || activePredictionData?.advisory || trustQuality.detail}</span>
-            {(advancedInsights?.predictions?.fallback_reason || activePredictionData?.fallback_reason) ? <span>{advancedInsights?.predictions?.fallback_reason || activePredictionData?.fallback_reason}</span> : null}
+          <div className="wp-mini-meta">
+            <span>Reference</span>
+            <strong>{playbackActive ? "Playback frame" : (lastCanonicalRefreshAt ? "Canonical refresh" : "Latest data refresh")}</strong>
           </div>
         </article>
       </section>
+
 
       <section id="prediction-deep-intel" className="prediction-deep-intel">
         <div className="prediction-deep-intel-grid">
@@ -2122,7 +2194,7 @@ export default function TrendPrediction() {
             ) : (
               <div className="prediction-empty">
                 <p>No risk-map data available for globe rendering.</p>
-                <button onClick={loadData}>Retry</button>
+                <button onClick={() => loadData({ showSpinner: false })}>Retry</button>
               </div>
             )}
           </article>
@@ -2177,7 +2249,7 @@ export default function TrendPrediction() {
             ) : (
               <div className="prediction-empty">
                 <p>Need at least two historical snapshots for correlations.</p>
-                <button onClick={loadData}>Retry</button>
+                <button onClick={() => loadData({ showSpinner: false })}>Retry</button>
               </div>
             )}
           </article>
@@ -2203,7 +2275,7 @@ export default function TrendPrediction() {
             ) : (
               <div className="prediction-empty">
                 <p>Need more history to enable playback.</p>
-                <button onClick={loadData}>Retry</button>
+                <button onClick={() => loadData({ showSpinner: false })}>Retry</button>
               </div>
             )}
           </article>
@@ -2224,7 +2296,7 @@ export default function TrendPrediction() {
             ) : (
               <div className="prediction-empty">
                 <p>Need more country points for meaningful comparison.</p>
-                <button onClick={loadData}>Retry</button>
+                <button onClick={() => loadData({ showSpinner: false })}>Retry</button>
               </div>
             )}
           </article>
@@ -2243,7 +2315,7 @@ export default function TrendPrediction() {
           ) : (
             <div className="prediction-empty">
               <p>{predictionsWithheld ? (advancedInsights?.predictions?.fallback_reason || "Predictions are currently withheld by the quality gate.") : "No canonical advanced forecast track is available for this timeframe."}</p>
-              <button onClick={loadData}>Retry</button>
+              <button onClick={() => loadData({ showSpinner: false })}>Retry</button>
             </div>
           )}
         </article>
@@ -2264,7 +2336,7 @@ export default function TrendPrediction() {
           ) : (
             <div className="prediction-empty">
               <p>No canonical feature snapshot is available yet.</p>
-              <button onClick={loadData}>Retry</button>
+              <button onClick={() => loadData({ showSpinner: false })}>Retry</button>
             </div>
           )}
         </article>
@@ -2310,7 +2382,7 @@ export default function TrendPrediction() {
           ) : (
             <div className="prediction-empty">
               <p>{predictionsWithheld ? (advancedInsights?.predictions?.fallback_reason || "Forecast suppressed by quality gate.") : "No canonical risk forecast was returned."}</p>
-              <button onClick={loadData}>Retry</button>
+              <button onClick={() => loadData({ showSpinner: false })}>Retry</button>
             </div>
           )}
         </article>
@@ -2333,7 +2405,7 @@ export default function TrendPrediction() {
           ) : (
             <div className="prediction-empty">
               <p>No cross-domain signal history is available right now.</p>
-              <button onClick={loadData}>Retry</button>
+              <button onClick={() => loadData({ showSpinner: false })}>Retry</button>
             </div>
           )}
         </article>
@@ -2403,7 +2475,7 @@ export default function TrendPrediction() {
           ) : (
             <div className="prediction-empty">
               <p>{predictionsWithheld ? (advancedInsights?.predictions?.fallback_reason || "Event predictions withheld by quality gate.") : "No event predictions are available for the selected range."}</p>
-              <button onClick={loadData}>Retry</button>
+              <button onClick={() => loadData({ showSpinner: false })}>Retry</button>
             </div>
           )}
         </article>
@@ -2487,7 +2559,7 @@ export default function TrendPrediction() {
           ) : (
             <div className="prediction-empty">
               <p>Insights will appear once real prediction data is available.</p>
-              <button onClick={loadData}>Retry</button>
+              <button onClick={() => loadData({ showSpinner: false })}>Retry</button>
             </div>
           )}
         </article>

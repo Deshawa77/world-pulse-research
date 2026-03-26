@@ -5,8 +5,15 @@ type Props = {
   data: GovernanceData;
 };
 
-const MODEL_COLORS = ["#22d3ee", "#38bdf8", "#fbbf24", "#a3e635", "#94a3b8"];
-const SIGNAL_LINE_COLORS = ["#ff5f6d", "#f59e0b", "#c0266b"];
+type ModelMeta = {
+  name: string;
+  chip: string;
+  shortLabel: string;
+  fullLabel: string;
+};
+
+const MODEL_COLORS = ["#22d3ee", "#38bdf8", "#fbbf24", "#a3e635", "#f472b6"];
+const SIGNAL_LINE_COLORS = ["#ff5f6d", "#f59e0b", "#c0266b", "#14b8a6", "#60a5fa"];
 
 function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
@@ -19,7 +26,7 @@ function buildSignalValues(points: Array<{ timestamp: string; value: number }>, 
   if (values.length === 0) {
     return Array.from({ length: targetPoints }, (_, idx) => {
       const wave = Math.sin((idx / Math.max(1, targetPoints - 1)) * Math.PI * 3);
-      return clamp(fallback + wave * 8, 6, 98);
+      return clamp(fallback + (wave * 8), 6, 98);
     });
   }
 
@@ -37,6 +44,144 @@ function buildSignalValues(points: Array<{ timestamp: string; value: number }>, 
   });
 }
 
+function toTitleToken(token: string) {
+  const lower = token.toLowerCase();
+
+  if (["gb", "rf", "lstm", "rnn", "ml"].includes(lower)) return lower.toUpperCase();
+  if (lower === "reg") return "Reg";
+  if (lower === "logistic") return "Logistic";
+  if (lower === "auto") return "Auto";
+  if (lower === "global") return "Global";
+  if (lower === "expanded") return "Expanded";
+  if (lower === "baseline") return "Baseline";
+  if (lower === "contextual") return "Contextual";
+  if (lower === "model") return "Model";
+  if (lower === "ensemble") return "Ensemble";
+
+  return token.charAt(0).toUpperCase() + token.slice(1);
+}
+
+function humanizeText(value: string) {
+  return value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map(toTitleToken)
+    .join(" ");
+}
+
+function truncateLabel(label: string, maxLength: number) {
+  if (label.length <= maxLength) return label;
+  return `${label.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function prettifyModelName(name: string) {
+  const withoutTimestamp = name
+    .replace(/_20\d{6,}(?:_\d{4,6})?$/i, "")
+    .replace(/-20\d{6,}(?:-\d{4,6})?$/i, "")
+    .replace(/^expanded_global_expanded_/i, "expanded_global_")
+    .replace(/^expanded_expanded_/i, "expanded_")
+    .replace(/_/g, " ")
+    .replace(/-/g, " ")
+    .trim();
+
+  const normalized = withoutTimestamp
+    .replace(/\bgb reg\b/gi, "GB Reg")
+    .replace(/\bgb model\b/gi, "GB Model")
+    .replace(/\brf model\b/gi, "RF Model")
+    .replace(/\blogistic model\b/gi, "Logistic")
+    .replace(/\bauto gb\b/gi, "Auto GB")
+    .replace(/\bauto rf\b/gi, "Auto RF");
+
+  return humanizeText(normalized) || humanizeText(name);
+}
+
+function getCompactModelLabel(name: string) {
+  const lower = name.toLowerCase();
+
+  if (lower.includes("logistic")) return "Logistic";
+  if (lower.includes("gb_reg")) return "GB Reg";
+  if (lower.includes("gb_model")) return "GB Model";
+  if (lower.includes("rf")) return "RF";
+  if (lower.includes("lstm")) return "LSTM";
+  if (lower.includes("baseline")) return "Baseline";
+  if (lower.includes("contextual")) return "Contextual";
+
+  return truncateLabel(prettifyModelName(name), 18);
+}
+
+function buildModelMeta(models: GovernanceData["models"]): ModelMeta[] {
+  const labelCounts = new Map<string, number>();
+
+  return models.map((model, index) => {
+    const fullLabel = prettifyModelName(model.name);
+    const compactLabel = getCompactModelLabel(model.name);
+    const seen = labelCounts.get(compactLabel) ?? 0;
+    labelCounts.set(compactLabel, seen + 1);
+
+    return {
+      name: model.name,
+      chip: `M${index + 1}`,
+      shortLabel: seen === 0 ? compactLabel : `${compactLabel} ${seen + 1}`,
+      fullLabel,
+    };
+  });
+}
+function getDriftValue(driftHint: string) {
+  const parsed = Number.parseFloat(driftHint);
+  if (Number.isFinite(parsed)) return parsed;
+
+  const normalized = driftHint.toLowerCase();
+  if (normalized.includes("alert") || normalized.includes("high")) return 0.35;
+  if (normalized.includes("watch") || normalized.includes("warn") || normalized.includes("medium")) return 0.18;
+  if (normalized.includes("stable") || normalized.includes("low")) return 0.05;
+  return 0;
+}
+
+function getStatusColor(driftHint: string) {
+  const drift = getDriftValue(driftHint);
+  if (drift < 0.1) return "#22c55e";
+  if (drift < 0.3) return "#fbbf24";
+  return "#fb7185";
+}
+
+function getStatusText(driftHint: string) {
+  const drift = getDriftValue(driftHint);
+  if (drift < 0.1) return "Optimal";
+  if (drift < 0.3) return "Watch";
+  return "Alert";
+}
+
+function formatPercent(value: number, decimals = 1) {
+  return `${(value * 100).toFixed(decimals)}%`;
+}
+
+function formatDriftHint(driftHint: string) {
+  const parsed = Number.parseFloat(driftHint);
+  if (Number.isFinite(parsed)) return formatPercent(parsed);
+  return humanizeText(driftHint);
+}
+
+function getModelHealth(model: GovernanceData["models"][number]) {
+  const latencyReadiness = clamp(100 - (model.latencyMs / 8));
+  const calibration = clamp((model.calibration || 0) * 100);
+  const stability = clamp(100 - (getDriftValue(model.driftHint) * 120));
+  return (latencyReadiness + calibration + stability) / 3;
+}
+
+function getDisagreementTone(value: number, maxValue: number) {
+  const intensity = maxValue > 0 ? value / maxValue : 0;
+
+  if (intensity > 0.75 || value >= 0.08) {
+    return { color: "#fb7185", label: "Elevated divergence" };
+  }
+
+  if (intensity > 0.4 || value >= 0.04) {
+    return { color: "#fbbf24", label: "Needs review" };
+  }
+
+  return { color: "#22d3ee", label: "Aligned outputs" };
+}
+
 export default function ModelGovernance({ data }: Props) {
   const comparisonChartRef = useRef<HTMLDivElement | null>(null);
   const healthDonutRef = useRef<HTMLDivElement | null>(null);
@@ -52,13 +197,17 @@ export default function ModelGovernance({ data }: Props) {
     return () => clearInterval(interval);
   }, []);
 
+  const comparisonModels = useMemo(() => data.models.slice(0, 5), [data.models]);
+  const modelMeta = useMemo(() => buildModelMeta(data.models), [data.models]);
+  const modelMetaByName = useMemo(() => new Map(modelMeta.map((meta) => [meta.name, meta])), [modelMeta]);
+
   useEffect(() => {
-    if (selectedModel && data.models.some((m) => m.name === selectedModel)) {
+    if (selectedModel && data.models.some((model) => model.name === selectedModel)) {
       return;
     }
 
     const preferred = data.selectedCalibrationModel;
-    if (preferred && data.models.some((m) => m.name === preferred)) {
+    if (preferred && data.models.some((model) => model.name === preferred)) {
       setSelectedModel(preferred);
       return;
     }
@@ -66,11 +215,11 @@ export default function ModelGovernance({ data }: Props) {
     setSelectedModel(data.models[0]?.name ?? null);
   }, [data.models, data.selectedCalibrationModel, selectedModel]);
 
-  const trendModelName = selectedModel && data.models.some((m) => m.name === selectedModel)
+  const trendModelName = selectedModel && data.models.some((model) => model.name === selectedModel)
     ? selectedModel
-    : data.selectedCalibrationModel && data.models.some((m) => m.name === data.selectedCalibrationModel)
-    ? data.selectedCalibrationModel
-    : data.models[0]?.name;
+    : data.selectedCalibrationModel && data.models.some((model) => model.name === data.selectedCalibrationModel)
+      ? data.selectedCalibrationModel
+      : data.models[0]?.name;
 
   const trendSeries = trendModelName
     ? data.calibrationTrendByModel[trendModelName] ?? data.calibrationTrend
@@ -86,83 +235,144 @@ export default function ModelGovernance({ data }: Props) {
 
   const selectedModelEntry = useMemo(() => {
     if (!data.models.length) return null;
-    return data.models.find((m) => m.name === trendModelName) ?? data.models[0];
+    return data.models.find((model) => model.name === trendModelName) ?? data.models[0];
   }, [data.models, trendModelName]);
 
+  const selectedModelMeta = selectedModelEntry
+    ? modelMetaByName.get(selectedModelEntry.name) ?? null
+    : null;
+
+  const controlModelEntry = useMemo(() => {
+    if (!data.models.length) return null;
+
+    if (data.selectedCalibrationModel) {
+      return data.models.find((model) => model.name === data.selectedCalibrationModel)
+        ?? selectedModelEntry
+        ?? data.models[0];
+    }
+
+    return selectedModelEntry ?? data.models[0];
+  }, [data.models, data.selectedCalibrationModel, selectedModelEntry]);
+
+  const controlModelMeta = controlModelEntry
+    ? modelMetaByName.get(controlModelEntry.name) ?? null
+    : null;
+
+  const governanceHealthScore = useMemo(() => {
+    if (!data.models.length) return 0;
+    const total = data.models.reduce((sum, model) => sum + getModelHealth(model), 0);
+    return Math.round(total / data.models.length);
+  }, [data.models]);
+
+  const averageCalibration = useMemo(() => {
+    if (!data.models.length) return 0;
+    return data.models.reduce((sum, model) => sum + (model.calibration || 0), 0) / data.models.length;
+  }, [data.models]);
+
+  const averageLatency = useMemo(() => {
+    if (!data.models.length) return 0;
+    return data.models.reduce((sum, model) => sum + model.latencyMs, 0) / data.models.length;
+  }, [data.models]);
+
+  const maxDisagreement = useMemo(
+    () => data.disagreement.reduce((max, entry) => Math.max(max, entry.value), 0),
+    [data.disagreement],
+  );
+
+  const rankedDisagreements = useMemo(
+    () => [...data.disagreement].sort((left, right) => right.value - left.value).slice(0, 8),
+    [data.disagreement],
+  );
+
+  const highestDisagreement = rankedDisagreements[0] ?? null;
+  const highestDisagreementTone = highestDisagreement
+    ? getDisagreementTone(highestDisagreement.value, maxDisagreement)
+    : null;
+
+  const modelsNeedingAttention = useMemo(
+    () => data.models.filter((model) => getDriftValue(model.driftHint) >= 0.1).length,
+    [data.models],
+  );
+
+  const hasAlert = useMemo(
+    () => data.models.some((model) => getDriftValue(model.driftHint) > 0.3),
+    [data.models],
+  );
   useEffect(() => {
     let closed = false;
 
     async function renderComparisonChart() {
-      if (!comparisonChartRef.current || data.models.length === 0) return;
+      if (!comparisonChartRef.current || comparisonModels.length === 0) return;
       const mod = await import("plotly.js-dist-min");
       const Plotly = (mod as any).default ?? mod;
       if (closed || !comparisonChartRef.current) return;
 
-      const models = data.models.slice(0, 5);
-      const latencyScores = models.map((m) => clamp(100 - (m.latencyMs / 8)));
-      const calibrationScores = models.map((m) => clamp((m.calibration || 0) * 100));
-      const stabilityScores = models.map((m) => clamp(100 - ((parseFloat(m.driftHint) || 0) * 120)));
+      const latencyScores = comparisonModels.map((model) => clamp(100 - (model.latencyMs / 8)));
+      const calibrationScores = comparisonModels.map((model) => clamp((model.calibration || 0) * 100));
+      const stabilityScores = comparisonModels.map((model) => clamp(100 - (getDriftValue(model.driftHint) * 120)));
       const pointCounts = new Map<string, number>();
-      const plottedPoints = models.map((_, idx) => {
-        const baseX = latencyScores[idx];
-        const baseY = calibrationScores[idx];
+      const plottedPoints = comparisonModels.map((_, index) => {
+        const baseX = latencyScores[index];
+        const baseY = calibrationScores[index];
         const bucket = `${Math.round(baseX * 2) / 2}:${Math.round(baseY * 2) / 2}`;
         const seen = pointCounts.get(bucket) ?? 0;
         pointCounts.set(bucket, seen + 1);
         const spread = Math.floor(seen / 2) + 1;
         const sign = seen % 2 === 0 ? 1 : -1;
+
         return {
-          x: clamp(baseX + (sign * spread * 1.8), 3, 99),
-          y: clamp(baseY + ((-sign) * spread * 2.2), 2, 98),
+          x: clamp(baseX + (sign * spread * 1.6), 5, 99),
+          y: clamp(baseY + ((-sign) * spread * 1.8), 4, 98),
         };
       });
 
-      const traces = models.map((m, idx) => ({
-        type: "scatter",
-        mode: "markers+text",
-        x: [plottedPoints[idx].x],
-        y: [plottedPoints[idx].y],
-        text: [m.name],
-        textposition: plottedPoints[idx].x > 90 ? "middle left" : plottedPoints[idx].x < 12 ? "middle right" : "top center",
-        textfont: { color: "#c9dcf8", size: 10 },
-        cliponaxis: false,
-        marker: {
-          size: [12 + (stabilityScores[idx] * 0.28)],
-          color: MODEL_COLORS[idx % MODEL_COLORS.length],
-          opacity: 0.86,
-          line: { color: "rgba(8, 15, 28, 0.94)", width: 2 },
-          sizemode: "diameter",
-        },
-        customdata: [stabilityScores[idx]],
-        name: m.name,
-        hovertemplate:
-          "<b>%{text}</b><br>" +
-          "Latency readiness: %{x:.1f}<br>" +
-          "Calibration: %{y:.1f}<br>" +
-          "Stability: %{customdata:.1f}<extra></extra>",
-      }));
+      const traces = comparisonModels.map((model, index) => {
+        const meta = modelMetaByName.get(model.name);
+        const chip = meta?.chip ?? `M${index + 1}`;
+        const fullLabel = meta?.fullLabel ?? prettifyModelName(model.name);
+
+        return {
+          type: "scatter",
+          mode: "markers+text",
+          x: [plottedPoints[index].x],
+          y: [plottedPoints[index].y],
+          text: [chip],
+          textposition: "middle center",
+          textfont: {
+            color: "#03131d",
+            size: 11,
+            family: '"Segoe UI", "Helvetica Neue", Arial, sans-serif',
+          },
+          cliponaxis: false,
+          marker: {
+            size: [18 + (stabilityScores[index] * 0.2)],
+            color: MODEL_COLORS[index % MODEL_COLORS.length],
+            opacity: 0.88,
+            line: { color: "rgba(3, 10, 20, 0.96)", width: 2.5 },
+            sizemode: "diameter",
+          },
+          customdata: [stabilityScores[index]],
+          name: fullLabel,
+          hovertemplate:
+            `<b>${chip} · ${fullLabel}</b><br>` +
+            "Latency readiness: %{x:.1f}<br>" +
+            "Calibration: %{y:.1f}<br>" +
+            "Stability: %{customdata:.1f}<extra></extra>",
+        };
+      });
 
       const layout = {
         paper_bgcolor: "rgba(0,0,0,0)",
         plot_bgcolor: "rgba(0,0,0,0)",
         font: { color: "#9fb0cf", family: '"Segoe UI", "Helvetica Neue", Arial, sans-serif' },
-        margin: { l: 40, r: 20, t: 16, b: 42 },
-        legend: {
-          orientation: "v",
-          x: 1.02,
-          y: 1.0,
-          font: { color: "#a9bfd9", size: 10 },
-          bgcolor: "rgba(7, 12, 22, 0.72)",
-          bordercolor: "rgba(56, 189, 248, 0.16)",
-          borderwidth: 1,
-        },
+        margin: { l: 48, r: 16, t: 18, b: 44 },
         xaxis: {
           range: [0, 104],
           gridcolor: "rgba(148, 163, 184, 0.14)",
           zeroline: false,
           tickfont: { color: "#90a4c4", size: 10 },
           automargin: true,
-          title: { text: "Latency Readiness", font: { color: "#7dd3fc", size: 11 } },
+          title: { text: "Latency readiness", font: { color: "#7dd3fc", size: 11 } },
         },
         yaxis: {
           range: [0, 100],
@@ -171,11 +381,16 @@ export default function ModelGovernance({ data }: Props) {
           tickfont: { color: "#d6e6fb", size: 10 },
           title: { text: "Calibration", font: { color: "#8fdcff", size: 11 } },
         },
+        hoverlabel: {
+          bgcolor: "rgba(3, 10, 20, 0.96)",
+          bordercolor: "rgba(56, 189, 248, 0.28)",
+          font: { color: "#e8f6ff", size: 11 },
+        },
         shapes: [
           {
             type: "rect",
-            x0: 65,
-            y0: 65,
+            x0: 66,
+            y0: 68,
             x1: 100,
             y1: 100,
             fillcolor: "rgba(34, 197, 94, 0.08)",
@@ -204,7 +419,7 @@ export default function ModelGovernance({ data }: Props) {
             y: 98,
             xref: "x",
             yref: "y",
-            text: "High confidence zone",
+            text: "Target envelope",
             showarrow: false,
             xanchor: "right",
             font: { color: "#4ade80", size: 10 },
@@ -212,6 +427,7 @@ export default function ModelGovernance({ data }: Props) {
         ],
         showlegend: false,
         hovermode: "closest",
+        dragmode: false,
       };
 
       await Plotly.react(comparisonChartRef.current, traces, layout, {
@@ -224,7 +440,7 @@ export default function ModelGovernance({ data }: Props) {
     return () => {
       closed = true;
     };
-  }, [data.models]);
+  }, [comparisonModels, modelMetaByName]);
 
   useEffect(() => {
     let closed = false;
@@ -238,13 +454,14 @@ export default function ModelGovernance({ data }: Props) {
 
       const latencyReadiness = clamp(100 - (selectedModelEntry.latencyMs / 8));
       const calibration = clamp((selectedModelEntry.calibration || 0) * 100);
-      const stability = clamp(100 - ((parseFloat(selectedModelEntry.driftHint) || 0) * 120));
+      const stability = clamp(100 - (getDriftValue(selectedModelEntry.driftHint) * 120));
+      const healthScore = Math.round((latencyReadiness + calibration + stability) / 3);
 
       const trace = {
         type: "pie",
         labels: ["Latency", "Calibration", "Stability"],
         values: [latencyReadiness, calibration, stability],
-        hole: 0.68,
+        hole: 0.7,
         sort: false,
         textinfo: "none",
         marker: {
@@ -264,12 +481,12 @@ export default function ModelGovernance({ data }: Props) {
           orientation: "h",
           x: 0.5,
           xanchor: "center",
-          y: -0.1,
+          y: -0.12,
           font: { color: "#9fb0cf", size: 10 },
         },
         annotations: [
           {
-            text: `<b>${Math.round((latencyReadiness + calibration + stability) / 3)}</b><br>health`,
+            text: `<b>${healthScore}%</b><br>health`,
             showarrow: false,
             font: { color: "#d7ecff", size: 12 },
           },
@@ -287,7 +504,6 @@ export default function ModelGovernance({ data }: Props) {
       closed = true;
     };
   }, [selectedModelEntry]);
-
   useEffect(() => {
     let closed = false;
 
@@ -343,32 +559,34 @@ export default function ModelGovernance({ data }: Props) {
 
       const trendTarget = trendAreaRef.current;
       const trendHeight = Math.max(180, trendTarget.clientHeight || 230);
-      const signalModels = data.models.slice(0, 5);
+      const signalModels = comparisonModels;
       const signalPoints = 20;
-      const signalX = Array.from({ length: signalPoints }, (_, idx) => idx + 1);
-      const lineSeries = signalModels.map((model, idx) => {
+      const signalX = Array.from({ length: signalPoints }, (_, index) => index + 1);
+      const lineSeries = signalModels.map((model, index) => {
         const sourceSeries = data.calibrationTrendByModel[model.name] ?? data.calibrationTrend;
         const fallback = clamp((model.calibration || 0.5) * 100, 12, 92);
         const values = buildSignalValues(sourceSeries, signalPoints, fallback);
+        const meta = modelMetaByName.get(model.name);
+
         return {
           type: "scatter",
           mode: "lines+markers",
           x: signalX,
           y: values,
           line: {
-            color: SIGNAL_LINE_COLORS[idx % SIGNAL_LINE_COLORS.length],
+            color: SIGNAL_LINE_COLORS[index % SIGNAL_LINE_COLORS.length],
             width: 2.8,
             shape: "spline",
             smoothing: 0.85,
           },
           marker: {
-            size: 8,
+            size: 7,
             color: "#fbbf24",
-            line: { color: SIGNAL_LINE_COLORS[idx % SIGNAL_LINE_COLORS.length], width: 2 },
+            line: { color: SIGNAL_LINE_COLORS[index % SIGNAL_LINE_COLORS.length], width: 2 },
             opacity: 0.95,
           },
-          name: model.name,
-          hovertemplate: `${model.name}<br>Point %{x}: %{y:.1f}%<extra></extra>`,
+          name: meta?.shortLabel ?? model.name,
+          hovertemplate: `${meta?.chip ?? `M${index + 1}`} · ${meta?.fullLabel ?? model.name}<br>Point %{x}: %{y:.1f}%<extra></extra>`,
         };
       });
 
@@ -430,86 +648,217 @@ export default function ModelGovernance({ data }: Props) {
     return () => {
       closed = true;
     };
-  }, [data.calibrationTrend, data.calibrationTrendByModel, data.models, trendSeries]);
-
-  const hasAlert = useMemo(
-    () => data.models.some((m) => (parseFloat(m.driftHint) || 0) > 0.3),
-    [data.models],
-  );
-
-  const getStatusColor = (driftHint: string) => {
-    const drift = parseFloat(driftHint) || 0;
-    if (drift < 0.1) return "#22c55e";
-    if (drift < 0.3) return "#fbbf24";
-    return "#fb7185";
-  };
-
-  const getStatusText = (driftHint: string) => {
-    const drift = parseFloat(driftHint) || 0;
-    if (drift < 0.1) return "Optimal";
-    if (drift < 0.3) return "Watch";
-    return "Alert";
-  };
+  }, [comparisonModels, data.calibrationTrend, data.calibrationTrendByModel, trendSeries, modelMetaByName]);
 
   return (
     <div className="futuristic-governance">
       <div className="governance-header">
-        <h3>
-          <span className="governance-icon">SYS</span>
-          Model Governance
-          <span className="governance-badge">Control</span>
-        </h3>
+        <div className="governance-heading-group">
+          <h3>
+            <span className="governance-icon">SYS</span>
+            Model Governance
+            <span className="governance-badge">Control</span>
+          </h3>
+          <p className="governance-subtitle">
+            Readiness, calibration, and disagreement across the active model fleet.
+          </p>
+        </div>
         <div className="status-indicator">
           <span
             className="status-dot"
             style={{
               background: hasAlert ? "#fb7185" : "#22c55e",
-              boxShadow: `0 0 ${pulseState === 0 ? 12 : 6}px ${hasAlert ? "#fb7185" : "#22c55e"}`,
+              boxShadow: `0 0 ${pulseState === 0 ? 14 : 8}px ${hasAlert ? "#fb7185" : "#22c55e"}`,
             }}
           />
-          <span style={{ color: hasAlert ? "#fb7185" : "#22c55e" }}>
-            {hasAlert ? "Drift detected" : "System healthy"}
-          </span>
+          <div>
+            <span style={{ color: hasAlert ? "#fb7185" : "#22c55e" }}>
+              {hasAlert ? "Drift detected" : "System healthy"}
+            </span>
+            <small>{modelsNeedingAttention > 0 ? `${modelsNeedingAttention} models in watch state` : "No model needs intervention"}</small>
+          </div>
+        </div>
+      </div>
+
+      <div className="governance-summary-grid">
+        <div className="governance-summary-card accent-cyan">
+          <span className="summary-eyebrow">Control focus</span>
+          <div className="summary-value-row">
+            <span className="summary-chip">{controlModelMeta?.chip ?? "--"}</span>
+            <span className="summary-title">{controlModelMeta?.shortLabel ?? "No active model"}</span>
+          </div>
+          <p className="summary-copy" title={controlModelMeta?.fullLabel ?? undefined}>
+            {controlModelMeta?.fullLabel ?? "Calibration target unavailable."}
+          </p>
+        </div>
+
+        <div className="governance-summary-card accent-violet">
+          <span className="summary-eyebrow">Fleet health</span>
+          <div className="summary-value">{governanceHealthScore}</div>
+          <p className="summary-copy">Composite of latency readiness, calibration, and stability.</p>
+        </div>
+
+        <div className="governance-summary-card accent-amber">
+          <span className="summary-eyebrow">Average calibration</span>
+          <div className="summary-value">{formatPercent(averageCalibration)}</div>
+          <p className="summary-copy">Average latency {averageLatency.toFixed(0)}ms across {data.models.length || 0} models.</p>
+        </div>
+        <div className="governance-summary-card accent-rose">
+          <span className="summary-eyebrow">Peak disagreement</span>
+          <div className="summary-value" style={{ color: highestDisagreementTone?.color ?? "#e8f6ff" }}>
+            {highestDisagreement ? formatPercent(highestDisagreement.value) : "0.0%"}
+          </div>
+          <p className="summary-copy">
+            {highestDisagreement
+              ? `${modelMetaByName.get(highestDisagreement.left)?.chip ?? "M?"} vs ${modelMetaByName.get(highestDisagreement.right)?.chip ?? "M?"}`
+              : "Consensus holding across model pairs."}
+          </p>
         </div>
       </div>
 
       <div className="governance-comparison-section">
-        <div className="section-label">Model Comparison</div>
-        <div ref={comparisonChartRef} className="governance-comparison-chart" style={{ height: 240 }} />
+        <div className="governance-section-header">
+          <div>
+            <div className="section-label">Model Comparison</div>
+            <p className="section-copy">
+              Latency readiness versus calibration. Bubble size reflects stability, and chart chips map to the legend.
+            </p>
+          </div>
+          <div className="section-note">{comparisonModels.length} active models</div>
+        </div>
+
+        <div className="governance-comparison-layout">
+          <div className="governance-comparison-stage">
+            <div ref={comparisonChartRef} className="governance-comparison-chart" style={{ height: 300 }} />
+          </div>
+
+          <div className="comparison-model-list">
+            {comparisonModels.map((model, index) => {
+              const meta = modelMetaByName.get(model.name);
+              const statusColor = getStatusColor(model.driftHint);
+              const statusText = getStatusText(model.driftHint);
+              const modelColor = MODEL_COLORS[index % MODEL_COLORS.length];
+
+              return (
+                <button
+                  type="button"
+                  key={model.name}
+                  className={`comparison-model-item ${selectedModel === model.name ? "selected" : ""}`}
+                  onClick={() => setSelectedModel(model.name)}
+                  title={meta?.fullLabel ?? model.name}
+                >
+                  <span
+                    className="comparison-model-chip"
+                    style={{
+                      color: modelColor,
+                      borderColor: `${modelColor}55`,
+                      background: `${modelColor}1a`,
+                    }}
+                  >
+                    {meta?.chip ?? `M${index + 1}`}
+                  </span>
+                  <div className="comparison-model-copy">
+                    <div className="comparison-model-head">
+                      <span className="comparison-model-title">{meta?.shortLabel ?? prettifyModelName(model.name)}</span>
+                      <span
+                        className="comparison-model-status"
+                        style={{
+                          color: statusColor,
+                          borderColor: `${statusColor}44`,
+                          background: `${statusColor}14`,
+                        }}
+                      >
+                        {statusText}
+                      </span>
+                    </div>
+                    <div className="comparison-model-subtitle">{meta?.fullLabel ?? model.name}</div>
+                    <div className="comparison-model-metrics">
+                      <span>Cal {formatPercent(model.calibration)}</span>
+                      <span>Lat {model.latencyMs.toFixed(0)}ms</span>
+                      <span>Drift {formatDriftHint(model.driftHint)}</span>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       <div className="governance-visual-grid">
         <div className="governance-visual-card">
-          <div className="section-label">Health Composition</div>
+          <div className="governance-section-header compact">
+            <div>
+              <div className="section-label">Health Composition</div>
+              <p className="section-copy">Distribution of readiness, calibration, and stability for the selected model.</p>
+            </div>
+            {selectedModelMeta && <div className="section-note">{selectedModelMeta.chip}</div>}
+          </div>
+          {selectedModelMeta && (
+            <div className="visual-model-context" title={selectedModelMeta.fullLabel}>
+              {selectedModelMeta.fullLabel}
+            </div>
+          )}
           <div ref={healthDonutRef} className="governance-donut-chart" />
         </div>
+
         <div className="governance-visual-card">
-          <div className="section-label">Calibration Area Pulse</div>
+          <div className="governance-section-header compact">
+            <div>
+              <div className="section-label">Calibration Area Pulse</div>
+              <p className="section-copy">Short-horizon calibration movement for the active control model.</p>
+            </div>
+          </div>
           <div ref={pulseAreaRef} className="governance-area-chart" />
         </div>
       </div>
 
       <div className="governance-metrics">
-        <div className="section-label">Model Metrics</div>
+        <div className="governance-section-header compact">
+          <div>
+            <div className="section-label">Model Metrics</div>
+            <p className="section-copy">Select any card to sync the health and trend views.</p>
+          </div>
+        </div>
         <div className="metrics-grid">
-          {data.models.map((m, i) => {
-            const isSelected = selectedModel === m.name;
-            const statusColor = getStatusColor(m.driftHint);
-            const statusText = getStatusText(m.driftHint);
-            const modelColor = MODEL_COLORS[i % MODEL_COLORS.length];
+          {data.models.map((model, index) => {
+            const isSelected = selectedModel === model.name;
+            const statusColor = getStatusColor(model.driftHint);
+            const statusText = getStatusText(model.driftHint);
+            const modelColor = MODEL_COLORS[index % MODEL_COLORS.length];
+            const meta = modelMetaByName.get(model.name);
 
             return (
               <div
-                key={m.name}
+                key={model.name}
                 className={`model-metric-card ${isSelected ? "selected" : ""}`}
-                onClick={() => setSelectedModel(isSelected ? null : m.name)}
+                onClick={() => setSelectedModel(isSelected ? null : model.name)}
                 style={{
                   borderColor: isSelected ? `${modelColor}88` : "rgba(56, 189, 248, 0.16)",
-                  boxShadow: isSelected ? `0 18px 40px rgba(2, 6, 23, 0.34), 0 0 0 1px ${modelColor}33` : "0 18px 40px rgba(2, 6, 23, 0.26)",
+                  boxShadow: isSelected
+                    ? `0 18px 40px rgba(2, 6, 23, 0.34), 0 0 0 1px ${modelColor}33`
+                    : "0 18px 40px rgba(2, 6, 23, 0.26)",
                 }}
               >
-                <div className="model-name" style={{ color: modelColor }}>
-                  {m.name}
+                <div className="model-card-heading">
+                  <span
+                    className="model-card-chip"
+                    style={{
+                      color: modelColor,
+                      borderColor: `${modelColor}55`,
+                      background: `${modelColor}14`,
+                    }}
+                  >
+                    {meta?.chip ?? `M${index + 1}`}
+                  </span>
+                  <div className="model-name-stack">
+                    <div className="model-name" style={{ color: modelColor }}>
+                      {meta?.shortLabel ?? prettifyModelName(model.name)}
+                    </div>
+                    <div className="model-name-subtitle" title={meta?.fullLabel ?? model.name}>
+                      {meta?.fullLabel ?? model.name}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="metric-gauge">
@@ -518,8 +867,8 @@ export default function ModelGovernance({ data }: Props) {
                     <div
                       className="gauge-bar-fill"
                       style={{
-                        width: `${clamp(100 - m.latencyMs / 5)}%`,
-                        background: `linear-gradient(90deg, ${modelColor}66, ${modelColor})`,
+                        width: `${clamp(100 - (model.latencyMs / 5))}%`,
+                        background: `linear-gradient(90deg, ${modelColor}55, ${modelColor})`,
                       }}
                     />
                     <div className="gauge-grid-lines">
@@ -527,7 +876,7 @@ export default function ModelGovernance({ data }: Props) {
                     </div>
                   </div>
                   <div className="gauge-value" style={{ color: modelColor }}>
-                    {m.latencyMs.toFixed(0)}ms
+                    {model.latencyMs.toFixed(0)}ms
                   </div>
                 </div>
 
@@ -537,16 +886,16 @@ export default function ModelGovernance({ data }: Props) {
                     <div
                       className="gauge-bar-fill"
                       style={{
-                        width: `${clamp(m.calibration * 100)}%`,
-                        background: `linear-gradient(90deg, rgba(34, 211, 238, 0.75), ${m.calibration > 0.8 ? "#22d3ee" : "#fbbf24"})`,
+                        width: `${clamp(model.calibration * 100)}%`,
+                        background: `linear-gradient(90deg, rgba(34, 211, 238, 0.75), ${model.calibration > 0.8 ? "#22d3ee" : "#fbbf24"})`,
                       }}
                     />
                     <div className="gauge-grid-lines">
                       <span /><span /><span /><span />
                     </div>
                   </div>
-                  <div className="gauge-value" style={{ color: m.calibration > 0.8 ? "#22d3ee" : "#fbbf24" }}>
-                    {(m.calibration * 100).toFixed(1)}%
+                  <div className="gauge-value" style={{ color: model.calibration > 0.8 ? "#22d3ee" : "#fbbf24" }}>
+                    {formatPercent(model.calibration)}
                   </div>
                 </div>
 
@@ -561,45 +910,61 @@ export default function ModelGovernance({ data }: Props) {
                   >
                     {statusText}
                   </span>
-                  <span className="drift-value">Drift: {m.driftHint}</span>
+                  <span className="drift-value">Drift {formatDriftHint(model.driftHint)}</span>
                 </div>
               </div>
             );
           })}
         </div>
       </div>
-
-      {data.disagreement.length > 0 && (
+      {rankedDisagreements.length > 0 && (
         <div className="governance-disagreement">
-          <div className="section-label">Model Disagreement Matrix</div>
+          <div className="governance-section-header compact">
+            <div>
+              <div className="section-label">Model Disagreement Matrix</div>
+              <p className="section-copy">Highest-output divergence pairs, sorted from most to least concerning.</p>
+            </div>
+          </div>
           <div className="disagreement-heatmap">
-            {data.disagreement.map((d) => {
-              const maxDisagreement = Math.max(...data.disagreement.map((entry) => entry.value), 0.0001);
-              const intensity = Math.min(1, d.value / maxDisagreement);
-              const heatColor = intensity > 0.7 ? "#fb7185" : intensity > 0.4 ? "#fbbf24" : "#22d3ee";
+            {rankedDisagreements.map((entry, index) => {
+              const tone = getDisagreementTone(entry.value, maxDisagreement);
+              const leftMeta = modelMetaByName.get(entry.left);
+              const rightMeta = modelMetaByName.get(entry.right);
+              const intensity = maxDisagreement > 0 ? entry.value / maxDisagreement : 0;
 
               return (
                 <div
-                  key={`${d.left}-${d.right}`}
-                  className="disagreement-cell"
+                  key={`${entry.left}-${entry.right}`}
+                  className={`disagreement-cell ${index === 0 ? "top" : ""}`}
                   style={{
-                    background: `linear-gradient(90deg, ${heatColor}12, rgba(8, 15, 28, 0.92))`,
-                    borderColor: `${heatColor}3f`,
+                    background: `linear-gradient(180deg, ${tone.color}12, rgba(8, 15, 28, 0.94))`,
+                    borderColor: `${tone.color}40`,
                   }}
+                  title={`${leftMeta?.fullLabel ?? entry.left} vs ${rightMeta?.fullLabel ?? entry.right}`}
                 >
+                  <div className="disagreement-cell-header">
+                    <div className="disagreement-pair-chip-row">
+                      <span className="disagreement-model-chip">{leftMeta?.chip ?? "M?"}</span>
+                      <span className="disagreement-arrow" style={{ color: tone.color }}>↔</span>
+                      <span className="disagreement-model-chip">{rightMeta?.chip ?? "M?"}</span>
+                    </div>
+                    <div className="cell-value" style={{ color: tone.color }}>
+                      {formatPercent(entry.value)}
+                    </div>
+                  </div>
                   <div className="cell-models">
-                    {d.left} <span style={{ color: heatColor }}>&lt;-&gt;</span> {d.right}
+                    {(leftMeta?.shortLabel ?? prettifyModelName(entry.left))} vs {(rightMeta?.shortLabel ?? prettifyModelName(entry.right))}
                   </div>
-                  <div className="cell-value" style={{ color: heatColor }}>
-                    {(d.value * 100).toFixed(1)}%
+                  <div className="cell-caption">{tone.label}</div>
+                  <div className="cell-bar-track">
+                    <div
+                      className="cell-bar"
+                      style={{
+                        width: `${intensity * 100}%`,
+                        background: `linear-gradient(90deg, ${tone.color}, ${tone.color}88)`,
+                      }}
+                    />
                   </div>
-                  <div
-                    className="cell-bar"
-                    style={{
-                      width: `${intensity * 100}%`,
-                      background: heatColor,
-                    }}
-                  />
                 </div>
               );
             })}
@@ -609,44 +974,48 @@ export default function ModelGovernance({ data }: Props) {
 
       {trendSeries.length > 0 && (
         <div className="governance-trend">
-          <div className="section-label">Calibration Trend</div>
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "#9bb7d9", fontSize: 12 }}>
-              Model
-              <select
-                value={trendModelName ?? ""}
-                onChange={(e) => setSelectedModel(e.target.value || null)}
-                style={{
-                  background: "rgba(9, 17, 30, 0.96)",
-                  border: "1px solid rgba(56, 189, 248, 0.24)",
-                  color: "#d4f1ff",
-                  padding: "4px 8px",
-                  borderRadius: 6,
-                }}
-              >
-                {data.models.map((m) => (
-                  <option key={m.name} value={m.name}>{m.name}</option>
-                ))}
-              </select>
-            </label>
+          <div className="governance-section-header compact">
+            <div>
+              <div className="section-label">Calibration Trend</div>
+              <p className="section-copy">Live calibration track for the selected model and supporting comparison signals.</p>
+            </div>
+            <div className="governance-select-row">
+              <label className="governance-select-label">
+                Model
+                <select
+                  value={trendModelName ?? ""}
+                  onChange={(event) => setSelectedModel(event.target.value || null)}
+                  className="governance-select"
+                >
+                  {data.models.map((model) => {
+                    const meta = modelMetaByName.get(model.name);
+                    return (
+                      <option key={model.name} value={model.name}>
+                        {meta ? `${meta.chip} · ${meta.shortLabel}` : model.name}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+            </div>
           </div>
           <div className="trend-stats">
             <div className="trend-stat">
               <div className="stat-label">Current</div>
               <div className="stat-value" style={{ color: "#22d3ee" }}>
-                {(trendCurrent * 100).toFixed(1)}%
+                {formatPercent(trendCurrent)}
               </div>
             </div>
             <div className="trend-stat">
               <div className="stat-label">Average</div>
               <div className="stat-value" style={{ color: "#fbbf24" }}>
-                {(trendAverage * 100).toFixed(1)}%
+                {formatPercent(trendAverage)}
               </div>
             </div>
             <div className="trend-stat">
-              <div className="stat-label">Trend</div>
+              <div className="stat-label">Direction</div>
               <div className="stat-value" style={{ color: trendIsUp ? "#22d3ee" : "#fb7185" }}>
-                {trendIsUp ? "UP" : "DOWN"}
+                {trendIsUp ? "Rising" : "Falling"}
               </div>
             </div>
           </div>

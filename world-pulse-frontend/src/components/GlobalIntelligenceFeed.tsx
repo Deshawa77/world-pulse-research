@@ -170,18 +170,53 @@ export default function GlobalIntelligenceFeed({
 
   const [animatingItems, setAnimatingItems] = useState<Set<string>>(new Set());
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+
+  const mountedRef = useRef(true);
+
+  const fetchSequenceRef = useRef(0);
 
   const prevItemsRef = useRef<IntelligenceFeedItem[]>([]);
 
 
 
+  useEffect(() => {
+
+    mountedRef.current = true;
+
+    return () => {
+
+      mountedRef.current = false;
+
+      if (timeoutRef.current) {
+
+        window.clearTimeout(timeoutRef.current);
+
+        timeoutRef.current = null;
+
+      }
+
+    };
+
+  }, []);
+
+
+
   const fetchFeed = useCallback(async () => {
+    const sequence = ++fetchSequenceRef.current;
+
     try {
       const data = await getGlobalIntelligenceFeed({
         country: selectedCountry,
-        limit: Math.max(maxRows * 12, selectedCountry ? 32 : 80),
+        // This panel renders only a few rows; oversized limits can make the backend
+        // spend too long inferring countries from recent headlines.
+        limit: selectedCountry
+          ? Math.max(maxRows * 2, 12)
+          : Math.max(maxRows * 4, 20),
       });
+      if (!mountedRef.current || fetchSequenceRef.current !== sequence) {
+        return;
+      }
       const scoped = selectedCountry
         ? data.filter((item) => item.country === selectedCountry)
         : data;
@@ -206,7 +241,11 @@ export default function GlobalIntelligenceFeed({
 
         setAnimatingItems(newAnimating);
 
-        setTimeout(() => setAnimatingItems(new Set()), 600);
+        window.setTimeout(() => {
+          if (mountedRef.current && fetchSequenceRef.current === sequence) {
+            setAnimatingItems(new Set());
+          }
+        }, 600);
 
       }
 
@@ -222,15 +261,22 @@ export default function GlobalIntelligenceFeed({
 
     } catch (err) {
 
-      setError("Failed to load intelligence feed");
-
       console.error("Error fetching intelligence feed:", err);
 
-      onVisibleItemsChange?.([]);
+      if (!mountedRef.current || fetchSequenceRef.current !== sequence) {
+        return;
+      }
+
+      if (prevItemsRef.current.length === 0) {
+        setError("Failed to load intelligence feed");
+        onVisibleItemsChange?.([]);
+      }
 
     } finally {
 
-      setLoading(false);
+      if (mountedRef.current && fetchSequenceRef.current === sequence) {
+        setLoading(false);
+      }
 
     }
 
@@ -239,23 +285,32 @@ export default function GlobalIntelligenceFeed({
 
 
   useEffect(() => {
+    let cancelled = false;
 
-    void fetchFeed();
+    const run = async () => {
+      await fetchFeed();
+      if (cancelled) {
+        return;
+      }
+      timeoutRef.current = window.setTimeout(() => {
+        void run();
+      }, refreshInterval);
+    };
 
-    intervalRef.current = setInterval(() => {
+    if (timeoutRef.current) {
+      window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
 
-      void fetchFeed();
-
-    }, refreshInterval);
-
-
+    setLoading(true);
+    void run();
 
     return () => {
+      cancelled = true;
 
-      if (intervalRef.current) {
-
-        clearInterval(intervalRef.current);
-
+      if (timeoutRef.current) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
       }
 
     };
@@ -612,9 +667,9 @@ export default function GlobalIntelligenceFeed({
 
             {selectedCountry
 
-              ? `Showing ${feedItems.length} latest headline(s) for ${selectedCountry} • Auto-refresh ${refreshInterval / 1000}s`
+              ? `Showing ${feedItems.length} latest headline(s) for ${selectedCountry} | Auto-refresh ${refreshInterval / 1000}s`
 
-              : `Showing ${feedItems.length} latest global rows • Auto-refresh ${refreshInterval / 1000}s`}
+              : `Showing ${feedItems.length} latest global rows | Auto-refresh ${refreshInterval / 1000}s`}
 
           </span>
 
@@ -640,7 +695,7 @@ export default function GlobalIntelligenceFeed({
 
                   <h2 style={modalTitleStyle}>{selectedItem.country_name}</h2>
 
-                  <span style={modalSubtitleStyle}>{selectedItem.country} • {selectedItem.category}</span>
+                  <span style={modalSubtitleStyle}>{selectedItem.country} | {selectedItem.category}</span>
 
                 </div>
 

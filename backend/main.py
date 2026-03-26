@@ -59,6 +59,12 @@ DASHBOARD_ROUTE_CACHE_TTLS = {
 }
 KAFKA_UNAVAILABLE_RETRY_SECONDS = 60.0
 LIVE_CONSUMER_UNAVAILABLE_UNTIL: dict[str, float] = defaultdict(float)
+COUNTRY_REFRESH_TRIGGER_AGE_SECONDS = 900.0
+COUNTRY_REFRESH_MIN_INTERVAL_SECONDS = 900.0
+COUNTRY_REFRESH_BATCH_SIZE = 10
+COUNTRY_REFRESH_MAX_RECORDS = 4
+COUNTRY_REFRESH_LOCK = threading.Lock()
+COUNTRY_REFRESH_STARTED_AT = 0.0
 
 
 def _dashboard_cache_get(namespace: str, cache_key: str) -> Any | None:
@@ -1995,16 +2001,58 @@ def _is_flat_neutral_global_series(mode: str = "online", sample: int = 6) -> boo
 
 
 def get_latest_global_doc(mode: str = "online") -> dict:
-    # Primary source: feature store collection.
-    doc = db.global_features.find_one({"mode": mode}, sort=[("timestamp", DESCENDING), ("_id", DESCENDING)])
+    def _candidate_timestamp(candidate: dict | None) -> datetime | None:
+        if not candidate:
+            return None
+        candidate_features = candidate.get("features") if isinstance(candidate.get("features"), dict) else {}
+        return _coerce_utc_datetime(candidate_features.get("timestamp") or candidate.get("timestamp"))
 
-    # Fallback source used by orchestrator dashboard sync.
-    if not doc:
-        doc = db.dashboard_features.find_one({"mode": mode}, sort=[("timestamp", DESCENDING), ("_id", DESCENDING)])
+    global_doc = db.global_features.find_one({"mode": mode}, sort=[("timestamp", DESCENDING), ("_id", DESCENDING)])
+    dashboard_doc = db.dashboard_features.find_one({"mode": mode}, sort=[("timestamp", DESCENDING), ("_id", DESCENDING)])
+    global_ts = _candidate_timestamp(global_doc)
+    dashboard_ts = _candidate_timestamp(dashboard_doc)
 
-    # Real-data fallback: derive global snapshot from latest country-level features.
-    if not doc:
-        doc = _aggregate_latest_global_from_country_features(mode=mode)
+    if global_doc and dashboard_doc:
+        if dashboard_ts and (global_ts is None or dashboard_ts > global_ts):
+            doc = dashboard_doc
+            doc_ts = dashboard_ts
+        else:
+            doc = global_doc
+            doc_ts = global_ts
+    else:
+        doc = global_doc or dashboard_doc
+        doc_ts = global_ts or dashboard_ts
+
+    baseline_features = doc.get("features") if isinstance((doc or {}).get("features"), dict) else {}
+    baseline_system_risk = _parse_float_maybe(baseline_features.get("system_global_risk_score"))
+    if baseline_system_risk is None:
+        baseline_system_risk = _parse_float_maybe(baseline_features.get("global_risk_score"))
+    baseline_legacy_risk = _parse_float_maybe(baseline_features.get("legacy_model_global_risk_score"))
+
+    country_latest_ts = _coerce_utc_datetime(
+        _latest_collection_stamp(country_features_collection, ["timestamp", "collected_at", "created_at"], max_scan=5)
+    )
+    lag_seconds = (country_latest_ts - doc_ts).total_seconds() if country_latest_ts and doc_ts else None
+    should_promote_country_aggregate = doc is None or doc_ts is None or (lag_seconds is not None and lag_seconds > 600)
+
+    if should_promote_country_aggregate:
+        country_derived_doc = _aggregate_latest_global_from_country_features(mode=mode)
+        country_derived_ts = _candidate_timestamp(country_derived_doc)
+        if country_derived_doc and (doc_ts is None or (country_derived_ts is not None and country_derived_ts > doc_ts)):
+            doc = country_derived_doc
+            doc_ts = country_derived_ts
+            try:
+                recent = db.global_features.find_one(
+                    {"mode": mode, "source": "country_live_derived"},
+                    sort=[("timestamp", DESCENDING), ("_id", DESCENDING)],
+                )
+                recent_ts = _candidate_timestamp(recent)
+                if country_derived_ts is not None and (recent_ts is None or (country_derived_ts - recent_ts).total_seconds() > 60):
+                    persisted_doc = dict(country_derived_doc)
+                    persisted_doc["source"] = "country_live_derived"
+                    db.global_features.insert_one(persisted_doc)
+            except Exception:
+                pass
 
     # If global risk is missing/flat-neutral, derive from live source collections.
     needs_live_repair = False
@@ -2040,7 +2088,19 @@ def get_latest_global_doc(mode: str = "online") -> dict:
     doc = serialize_doc(doc)
     features = dict(doc.get("features") or {})
     current_timestamp = features.get("timestamp") or doc.get("timestamp")
-    current_risk = float(features.get("legacy_model_global_risk_score", features.get("system_global_risk_score", features.get("global_risk_score", 50.0))) or 50.0)
+    explicit_legacy_risk = _parse_float_maybe(features.get("legacy_model_global_risk_score"))
+    explicit_system_risk = _parse_float_maybe(features.get("system_global_risk_score"))
+    using_baseline_risk = explicit_legacy_risk is None and explicit_system_risk is None and baseline_system_risk is not None
+    current_risk = explicit_legacy_risk
+    if current_risk is None:
+        current_risk = explicit_system_risk
+    if current_risk is None and baseline_system_risk is not None:
+        current_risk = baseline_system_risk
+    if current_risk is None:
+        current_risk = _parse_float_maybe(features.get("global_risk_score"))
+    if current_risk is None:
+        current_risk = 50.0
+    current_risk = float(current_risk)
     features.update(
         compute_global_operational_features(
             current_risk_score=current_risk,
@@ -2049,6 +2109,11 @@ def get_latest_global_doc(mode: str = "online") -> dict:
             use_cache=True,
         )
     )
+    if using_baseline_risk and baseline_legacy_risk is not None:
+        features["legacy_model_global_risk_score"] = float(baseline_legacy_risk)
+        system_risk_score = _parse_float_maybe(features.get("system_global_risk_score"))
+        if system_risk_score is not None:
+            features["global_risk_alignment_gap"] = round(float(system_risk_score) - float(baseline_legacy_risk), 2)
     features["legacy_model_global_risk_score"] = float(features.get("legacy_model_global_risk_score", current_risk) or current_risk)
     features["global_risk_score"] = float(features.get("system_global_risk_score", current_risk) or current_risk)
     forecast_contract = _build_global_forecast_contract(mode=mode, features=features)
@@ -2484,22 +2549,32 @@ def summary(request: Request, role: str = Depends(check_role)):
 def dashboard_live_feed(request: Request, role: str = Depends(check_role), mode: str = Query("online")):
 
     latest = get_latest_global_doc(mode)
-    latest_ts = latest.get("timestamp")
-    ts_dt = parse_iso_dt(str(latest_ts)) if latest_ts else None
-    heartbeat = (datetime.utcnow() - ts_dt).total_seconds() if ts_dt else 0.0
+    latest_features = latest.get("features") if isinstance(latest.get("features"), dict) else {}
+    latest_ingestion = _build_latest_ingestion()
+    core_candidates = [
+        _coerce_utc_datetime(latest_ingestion.get("country_features")),
+        _coerce_utc_datetime(latest_ingestion.get("global_features")),
+        _coerce_utc_datetime(latest_ingestion.get("dashboard_features")),
+        _coerce_utc_datetime(latest_features.get("timestamp")),
+        _coerce_utc_datetime(latest.get("timestamp")),
+    ]
+    freshest_core_ts = max((stamp for stamp in core_candidates if stamp is not None), default=None)
+    heartbeat = (datetime.now(timezone.utc) - freshest_core_ts).total_seconds() if freshest_core_ts else 0.0
+    _trigger_country_refresh_async(heartbeat)
 
-    features = latest.get("features", {})
+    features = latest_features
     topics = features.get("top_topics", ["no data"])
     incidents = [f"Topic pressure: {t}" for t in topics[:4]] or ["No active incidents"]
 
     drift_doc = model_monitoring_collection.find_one(sort=[("timestamp", DESCENDING)])
     model_drift = float((drift_doc or {}).get("drift_score", 0.0) or 0.0)
+    last_updated = freshest_core_ts.isoformat() if freshest_core_ts else str(features.get("timestamp") or latest.get("timestamp") or datetime.utcnow().isoformat())
 
     return {
         "incidents": incidents,
         "ingestionHeartbeatSec": round(max(0.0, heartbeat), 2),
         "modelDrift": round(model_drift, 4),
-        "lastUpdated": str(latest_ts or datetime.utcnow().isoformat()),
+        "lastUpdated": last_updated,
     }
 
 
@@ -3549,7 +3624,7 @@ def dashboard_global_intelligence_feed(
             },
         )
         .sort("timestamp", DESCENDING)
-        .limit(max(limit * 12, 240))
+        .limit(max(120, min(limit * 4, 320)))
     )
 
     feed_items = []
@@ -7170,6 +7245,36 @@ def _latest_collection_stamp(collection, keys: list[str], max_scan: int = 25) ->
                 return str(nested_value)
 
     return None
+
+
+def _trigger_country_refresh_async(age_seconds: float) -> bool:
+    global COUNTRY_REFRESH_STARTED_AT
+
+    if age_seconds < COUNTRY_REFRESH_TRIGGER_AGE_SECONDS:
+        return False
+
+    now_ts = time.time()
+    if now_ts - COUNTRY_REFRESH_STARTED_AT < COUNTRY_REFRESH_MIN_INTERVAL_SECONDS:
+        return False
+
+    if not COUNTRY_REFRESH_LOCK.acquire(blocking=False):
+        return False
+
+    COUNTRY_REFRESH_STARTED_AT = now_ts
+
+    def _runner() -> None:
+        try:
+            country_daily_refresh_if_due(
+                max_records=COUNTRY_REFRESH_MAX_RECORDS,
+                batch_size=COUNTRY_REFRESH_BATCH_SIZE,
+            )
+        except Exception as exc:
+            logger.warning("country_refresh_on_demand_failed", extra={"event": {"error": str(exc)}})
+        finally:
+            COUNTRY_REFRESH_LOCK.release()
+
+    threading.Thread(target=_runner, name="country-refresh-on-demand", daemon=True).start()
+    return True
 
 
 @app.get("/admin/system-monitoring")

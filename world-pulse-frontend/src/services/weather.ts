@@ -1,6 +1,5 @@
-import { getAuthHeaders } from "./api";
+import { getActiveApiUrl, getAuthHeaders } from "./api";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 const USE_MOCK_API = String(import.meta.env.VITE_USE_MOCK_API || "").trim().toLowerCase() === "true";
 
 function buildMockWeather(lat: number, lon: number): CountryWeatherSnapshot {
@@ -91,7 +90,7 @@ export async function getCountryWeatherByCoords(
   }
 
   const retries = Math.max(0, Math.min(3, Number(options?.retries ?? 2)));
-  const endpoint = new URL("/dashboard/weather/current", API_URL);
+  const endpoint = new URL("/dashboard/weather/current", getActiveApiUrl());
   endpoint.searchParams.set("lat", String(latitude));
   endpoint.searchParams.set("lon", String(longitude));
   if (options?.country) endpoint.searchParams.set("country", String(options.country));

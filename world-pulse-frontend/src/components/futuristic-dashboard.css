@@ -1376,3 +1376,581 @@
   color: #ff0040 !important;
   text-shadow: 0 0 8px rgba(255, 0, 64, 0.5);
 }
+/* Model Governance Refresh */
+.futuristic-governance {
+  background:
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.14), transparent 36%),
+    linear-gradient(160deg, rgba(4, 12, 24, 0.98), rgba(7, 16, 30, 0.96));
+  border: 1px solid rgba(84, 138, 255, 0.18);
+  border-radius: 22px;
+  padding: 20px;
+  box-shadow: 0 28px 70px rgba(2, 6, 23, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.futuristic-governance::before {
+  height: 1px;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0), rgba(34, 211, 238, 0.75), rgba(167, 139, 250, 0.75), rgba(34, 211, 238, 0));
+  animation: none;
+  opacity: 0.9;
+}
+
+.futuristic-governance .governance-header {
+  align-items: flex-start;
+  gap: 18px;
+  margin-bottom: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid rgba(86, 108, 160, 0.22);
+}
+
+.futuristic-governance .governance-heading-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.futuristic-governance .governance-header h3 {
+  gap: 12px;
+  font-size: 1.15rem;
+  color: #ecf5ff;
+  text-shadow: none;
+}
+
+.futuristic-governance .governance-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.18), rgba(167, 139, 250, 0.18));
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  color: #7dd3fc;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  animation: none;
+}
+
+.futuristic-governance .governance-badge {
+  margin-left: 2px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  letter-spacing: 0.12em;
+}
+
+.futuristic-governance .governance-subtitle {
+  margin: 0;
+  max-width: 44rem;
+  color: #8ea6c8;
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.futuristic-governance .status-indicator {
+  min-width: 230px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, 0.16);
+  background: rgba(6, 14, 28, 0.74);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  justify-content: center;
+  gap: 10px;
+}
+
+.futuristic-governance .status-indicator > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.futuristic-governance .status-indicator small {
+  color: #7f98bb;
+  font-size: 0.68rem;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.futuristic-governance .section-label {
+  margin-bottom: 6px;
+  color: #89a6ca;
+  letter-spacing: 0.16em;
+}
+
+.futuristic-governance .governance-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.futuristic-governance .governance-section-header.compact {
+  margin-bottom: 12px;
+}
+
+.futuristic-governance .section-copy {
+  margin: 0;
+  color: #7f98bb;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.futuristic-governance .section-note {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, 0.2);
+  background: rgba(7, 18, 32, 0.84);
+  color: #ccecff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.futuristic-governance .governance-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.futuristic-governance .governance-summary-card {
+  position: relative;
+  padding: 14px 15px;
+  border-radius: 16px;
+  border: 1px solid rgba(86, 108, 160, 0.18);
+  background: linear-gradient(180deg, rgba(7, 16, 30, 0.96), rgba(5, 12, 24, 0.92));
+  overflow: hidden;
+}
+
+.futuristic-governance .governance-summary-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 2px;
+  opacity: 0.8;
+}
+
+.futuristic-governance .governance-summary-card.accent-cyan::after {
+  background: linear-gradient(90deg, #22d3ee, transparent);
+}
+
+.futuristic-governance .governance-summary-card.accent-violet::after {
+  background: linear-gradient(90deg, #a78bfa, transparent);
+}
+
+.futuristic-governance .governance-summary-card.accent-amber::after {
+  background: linear-gradient(90deg, #fbbf24, transparent);
+}
+
+.futuristic-governance .governance-summary-card.accent-rose::after {
+  background: linear-gradient(90deg, #fb7185, transparent);
+}
+
+.futuristic-governance .summary-eyebrow {
+  display: block;
+  margin-bottom: 10px;
+  color: #8ba7cb;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.futuristic-governance .summary-value-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.futuristic-governance .summary-chip,
+.futuristic-governance .model-card-chip,
+.futuristic-governance .comparison-model-chip,
+.futuristic-governance .disagreement-model-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.4rem;
+  height: 2rem;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, 0.26);
+  background: rgba(34, 211, 238, 0.12);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.futuristic-governance .summary-title,
+.futuristic-governance .summary-value {
+  color: #f5fbff;
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.futuristic-governance .summary-copy {
+  margin: 10px 0 0;
+  color: #7e96b9;
+  font-size: 0.79rem;
+  line-height: 1.45;
+}
+.futuristic-governance .governance-comparison-section,
+.futuristic-governance .governance-visual-card,
+.futuristic-governance .governance-trend {
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(86, 108, 160, 0.18);
+  background: linear-gradient(180deg, rgba(7, 16, 30, 0.96), rgba(5, 12, 24, 0.92));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.futuristic-governance .governance-comparison-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.9fr);
+  gap: 14px;
+}
+
+.futuristic-governance .governance-comparison-stage {
+  min-height: 300px;
+  padding: 10px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(3, 10, 20, 0.96), rgba(2, 8, 18, 0.92));
+  border: 1px solid rgba(34, 211, 238, 0.1);
+}
+
+.futuristic-governance .governance-comparison-chart {
+  width: 100%;
+}
+
+.futuristic-governance .comparison-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.futuristic-governance .comparison-model-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(86, 108, 160, 0.16);
+  background: rgba(6, 14, 28, 0.76);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.futuristic-governance .comparison-model-item:hover,
+.futuristic-governance .comparison-model-item.selected {
+  transform: translateY(-1px);
+  border-color: rgba(56, 189, 248, 0.26);
+  background: rgba(8, 18, 34, 0.92);
+  box-shadow: 0 16px 34px rgba(2, 6, 23, 0.28);
+}
+
+.futuristic-governance .comparison-model-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.futuristic-governance .comparison-model-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.futuristic-governance .comparison-model-title {
+  color: #eaf5ff;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.futuristic-governance .comparison-model-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.futuristic-governance .comparison-model-subtitle,
+.futuristic-governance .model-name-subtitle,
+.futuristic-governance .visual-model-context {
+  color: #7f98bb;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.futuristic-governance .comparison-model-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 8px;
+  color: #cdefff;
+  font-size: 0.74rem;
+}
+
+.futuristic-governance .governance-visual-grid {
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.futuristic-governance .visual-model-context {
+  margin-bottom: 10px;
+}
+
+.futuristic-governance .governance-donut-chart,
+.futuristic-governance .governance-area-chart,
+.futuristic-governance .trend-area-chart {
+  height: 220px;
+}
+
+.futuristic-governance .metrics-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.futuristic-governance .model-metric-card {
+  padding: 14px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(7, 16, 30, 0.96), rgba(5, 12, 24, 0.92));
+}
+
+.futuristic-governance .model-card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.futuristic-governance .model-name-stack {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.futuristic-governance .model-name {
+  margin-bottom: 0;
+  font-size: 0.92rem;
+}
+
+.futuristic-governance .metric-gauge {
+  margin-bottom: 10px;
+}
+
+.futuristic-governance .gauge-label {
+  margin-bottom: 6px;
+  letter-spacing: 0.08em;
+}
+
+.futuristic-governance .gauge-bar-container {
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.futuristic-governance .gauge-bar-fill {
+  border-radius: 999px;
+}
+
+.futuristic-governance .gauge-grid-lines span {
+  background: rgba(4, 10, 20, 0.72);
+}
+
+.futuristic-governance .model-status-row {
+  gap: 10px;
+  align-items: center;
+}
+
+.futuristic-governance .drift-value {
+  color: #9fb6d3;
+  white-space: nowrap;
+}
+.futuristic-governance .governance-disagreement {
+  margin-bottom: 18px;
+}
+
+.futuristic-governance .disagreement-heatmap {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.futuristic-governance .disagreement-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 140px;
+  padding: 14px;
+  border-radius: 16px;
+  border-width: 1px;
+}
+
+.futuristic-governance .disagreement-cell.top {
+  box-shadow: 0 18px 38px rgba(2, 6, 23, 0.24);
+}
+
+.futuristic-governance .disagreement-cell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.futuristic-governance .disagreement-pair-chip-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.futuristic-governance .disagreement-model-chip {
+  min-width: 2rem;
+  height: 1.8rem;
+  color: #dff7ff;
+}
+
+.futuristic-governance .disagreement-arrow {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.futuristic-governance .cell-models {
+  color: #edf6ff;
+  font-size: 0.94rem;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.futuristic-governance .cell-caption {
+  color: #7f98bb;
+  font-size: 0.76rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.futuristic-governance .cell-bar-track {
+  position: relative;
+  height: 7px;
+  margin-top: auto;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.futuristic-governance .cell-bar {
+  position: static;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.futuristic-governance .governance-select-row {
+  display: flex;
+  align-items: center;
+}
+
+.futuristic-governance .governance-select-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #9bb7d9;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.futuristic-governance .governance-select {
+  min-width: 170px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.24);
+  background: rgba(9, 17, 30, 0.96);
+  color: #d4f1ff;
+  outline: none;
+}
+
+.futuristic-governance .trend-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.futuristic-governance .trend-stat {
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(86, 108, 160, 0.16);
+  background: rgba(6, 14, 28, 0.7);
+}
+
+@media (max-width: 1180px) {
+  .futuristic-governance .governance-summary-grid,
+  .futuristic-governance .disagreement-heatmap {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .futuristic-governance .governance-comparison-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 780px) {
+  .futuristic-governance {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .futuristic-governance .governance-header,
+  .futuristic-governance .governance-section-header,
+  .futuristic-governance .comparison-model-head,
+  .futuristic-governance .model-status-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .futuristic-governance .status-indicator {
+    min-width: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .futuristic-governance .governance-summary-grid,
+  .futuristic-governance .disagreement-heatmap,
+  .futuristic-governance .trend-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .futuristic-governance .comparison-model-item {
+    padding: 11px;
+  }
+
+  .futuristic-governance .governance-donut-chart,
+  .futuristic-governance .governance-area-chart,
+  .futuristic-governance .trend-area-chart {
+    height: 190px;
+  }
+}
+.futuristic-governance .comparison-model-item {
+  appearance: none;
+  font: inherit;
+}

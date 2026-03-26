@@ -1,4 +1,4 @@
-﻿import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../components/futuristic-dashboard.css";
 import "./Dashboard.css";
@@ -398,6 +398,28 @@ function parseTimestampMs(value?: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+const LIVE_FEED_RECONNECTING_THRESHOLD_SEC = 180;
+const LIVE_FEED_DISCONNECTED_THRESHOLD_SEC = 900;
+
+function deriveLiveFeedConnectionState(transportState: ConnectionState, liveFeed: LiveCommandFeed): ConnectionState {
+  if (transportState === "connecting" || transportState === "disconnected") {
+    return transportState;
+  }
+
+  const heartbeatSec = Math.max(0, safeN(liveFeed.ingestionHeartbeatSec, 0));
+  const updatedAtMs = parseTimestampMs(liveFeed.lastUpdated);
+  const updateAgeSec = updatedAtMs == null ? heartbeatSec : Math.max(0, (Date.now() - updatedAtMs) / 1000);
+  const effectiveAgeSec = Math.max(heartbeatSec, updateAgeSec);
+
+  if (effectiveAgeSec >= LIVE_FEED_DISCONNECTED_THRESHOLD_SEC) {
+    return "disconnected";
+  }
+  if (effectiveAgeSec >= LIVE_FEED_RECONNECTING_THRESHOLD_SEC) {
+    return "reconnecting";
+  }
+  return transportState === "reconnecting" ? "reconnecting" : "connected";
+}
+
 function coverageFromRows(rows: RiskMapPoint[]): RiskMapCoverage {
   const total = rows.length;
   const verified = rows.filter((row) => row.validated_today).length;
@@ -606,7 +628,7 @@ export default function Dashboard() {
     liveFeed: { data: null, timestamp: 0, ttl: 3000 },
     riskMap: { data: null, timestamp: 0, ttl: 5000 },
     riskCoverage: { data: null, timestamp: 0, ttl: 5000 },
-    global: { data: null, timestamp: 0, ttl: 0 },
+    global: { data: null, timestamp: 0, ttl: 5000 },
     trust: { data: null, timestamp: 0, ttl: 5000 },
   });
 
@@ -773,9 +795,9 @@ export default function Dashboard() {
   const globalRiskScore = active?.riskScore ?? 50;
   const legacyModelRiskScore = active?.legacyRiskScore ?? globalRiskScore;
   const consensusUnderSupported = coverageState.verified < CONSENSUS_HEADLINE_MIN_VERIFIED_COUNTRIES;
-  const headlineRiskScore = consensusUnderSupported ? legacyModelRiskScore : globalRiskScore;
-  const headlineRiskLabel = consensusUnderSupported ? "Baseline fallback" : "Live consensus";
-  const consensusSupportWarning = `Consensus under-supported: ${coverageState.verified} verified ${COVERAGE_ENTITY_LABEL}. Headline pinned to legacy risk until ${CONSENSUS_HEADLINE_MIN_VERIFIED_COUNTRIES} verified ${COVERAGE_ENTITY_LABEL}.`;
+  const headlineRiskScore = globalRiskScore;
+  const headlineRiskLabel = consensusUnderSupported ? "Live consensus (limited support)" : "Live consensus";
+  const consensusSupportWarning = `Consensus under-supported: ${coverageState.verified} verified ${COVERAGE_ENTITY_LABEL}. Headline stays on the live consensus score, but interpret it with caution until ${CONSENSUS_HEADLINE_MIN_VERIFIED_COUNTRIES} verified ${COVERAGE_ENTITY_LABEL} are available.`;
   const globalMoodScore = active?.moodScore ?? 50;
   const globalMoodConfidence = active?.moodConfidence ?? Math.min(1, coverageState.coverage_pct / 100);
   const globalMoodUncertainty = active?.moodUncertainty ?? 18;
@@ -813,7 +835,8 @@ export default function Dashboard() {
     const merged = Array.from(new Set([...countryDrivers, ...topicDrivers, ...globalDrivers])).filter(Boolean);
     return merged.length ? merged.slice(0, 3) : ["Awaiting live signals"];
   })();
-  const dockConnectionLabel = `${connectionState.charAt(0).toUpperCase()}${connectionState.slice(1)}`;
+  const feedConnectionState = deriveLiveFeedConnectionState(connectionState, liveFeedState);
+  const dockConnectionLabel = `${feedConnectionState.charAt(0).toUpperCase()}${feedConnectionState.slice(1)}`;
   const liveSignalCount = coverageState.verified || verifiedRiskMap.length || liveFeedState.incidents?.length || 0;
   const telemetryStatusLine = `${dockConnectionLabel} - ${liveSignalCount} verified signals - Updated ${formatTelemetryTime(liveFeedState.lastUpdated)}`;
   const trustFreshness = (trustSnapshot?.data_freshness ?? {}) as Record<string, unknown>;
@@ -865,7 +888,7 @@ export default function Dashboard() {
       category: "Ingestion event",
       source: "Global node",
       detail: `${liveFeedState.incidents?.length ?? 0} incidents ingested, heartbeat ${liveFeedState.ingestionHeartbeatSec.toFixed(1)}s`,
-      status: connectionState,
+      status: feedConnectionState,
     });
 
     pushPacket({
@@ -926,7 +949,7 @@ export default function Dashboard() {
       .slice(0, 12);
   }, [
     active?.timestamp,
-    connectionState,
+    feedConnectionState,
     forecastRiskScore,
     freshSources,
     globalRiskScore,
@@ -948,10 +971,10 @@ export default function Dashboard() {
     const now = Date.now();
     return {
       risk: staleFor(now - panelUpdated.current.risk, 12000),
-      map: staleFor(now - panelUpdated.current.map, 12000),
+      map: Number(coverageState.stale ?? 0) > 0,
       stream: staleFor(now - panelUpdated.current.stream, 12000),
     };
-  }, [history.length, riskMapRows.length, coverageState.verified, recentSocketUpdates.length]);
+  }, [history.length, riskMapRows.length, coverageState.stale, coverageState.verified, recentSocketUpdates.length]);
 
   const rankedRiskRows = useMemo(
     () => riskMapRows.filter((row): row is RiskMapPoint & { risk: number } => typeof row.risk === "number"),
@@ -1035,9 +1058,22 @@ export default function Dashboard() {
     let stop = false;
     let timer = 0;
     
+    const STALE_SNAPSHOT_TOLERANCE_MS: Record<keyof typeof cacheRef.current, number> = {
+      liveFeed: 30000,
+      riskMap: 45000,
+      riskCoverage: 45000,
+      global: 45000,
+      trust: 60000,
+    };
+
     const isCacheValid = (key: keyof typeof cacheRef.current) => {
       const cache = cacheRef.current[key];
       return cache.data && (Date.now() - cache.timestamp) < cache.ttl;
+    };
+
+    const canServeRecentStaleCache = (key: keyof typeof cacheRef.current) => {
+      const cache = cacheRef.current[key];
+      return cache.data != null && (Date.now() - cache.timestamp) < STALE_SNAPSHOT_TOLERANCE_MS[key];
     };
 
     const getCachedOrFetch = async <T,>(
@@ -1050,7 +1086,7 @@ export default function Dashboard() {
 
       if (inFlightRef.current.has(key)) {
         while (inFlightRef.current.has(key) && !stop) {
-          await new Promise(r => setTimeout(r, 50));
+          await new Promise((resolve) => setTimeout(resolve, 50));
         }
         if (stop) throw new Error("Stopped");
         const cachedAfterWait = cacheRef.current[key].data;
@@ -1066,6 +1102,11 @@ export default function Dashboard() {
         cacheRef.current[key].data = data as any;
         cacheRef.current[key].timestamp = Date.now();
         return data;
+      } catch (error) {
+        if (canServeRecentStaleCache(key)) {
+          return cacheRef.current[key].data as T;
+        }
+        throw error;
       } finally {
         inFlightRef.current.delete(key);
       }
@@ -1104,7 +1145,7 @@ export default function Dashboard() {
           }
         };
 
-        const globalPromise = getLatestGlobalFeatures().then((global) => {
+        const globalPromise = getCachedOrFetch("global", getLatestGlobalFeatures).then((global) => {
           applySnapshot(global?.features ?? null);
           return global;
         });
@@ -1132,19 +1173,20 @@ export default function Dashboard() {
           }
           return nextMapRows;
         });
-        const trustPromise = getCachedOrFetch("trust", () => getTrustReliability("online")).then((trust) => {
-          if (!stop) {
-            setTrustSnapshot(trust);
-          }
-          return trust;
-        });
+        void getCachedOrFetch("trust", () => getTrustReliability("online"))
+          .then((trust) => {
+            if (!stop) {
+              setTrustSnapshot(trust);
+            }
+            return trust;
+          })
+          .catch(() => null);
 
-        const [liveResult, mapRowsResult, coverageResult, globalResult, trustResult] = await Promise.allSettled([
+        const [liveResult, mapRowsResult, coverageResult, globalResult] = await Promise.allSettled([
           livePromise,
           mapPromise,
           coveragePromise,
           globalPromise,
-          trustPromise,
         ]);
 
         const live = liveResult.status === "fulfilled"
@@ -1157,7 +1199,6 @@ export default function Dashboard() {
           ? coverageResult.value
           : null;
         const global = globalResult.status === "fulfilled" ? globalResult.value : null;
-        const trust = trustResult.status === "fulfilled" ? trustResult.value : null;
         const features = global?.features;
 
         if (fetchedMapRows && !coverage && !stop) {
@@ -1169,7 +1210,7 @@ export default function Dashboard() {
           flushQueuedRiskMapUpdates();
         }
 
-        const anyCriticalFailure = !features && !fetchedMapRows && !coverage && !trust && !live;
+        const anyCriticalFailure = !features && !fetchedMapRows && !coverage && !live;
         const materialFailure = globalResult.status === "rejected"
           || (coverageResult.status === "rejected" && !fetchedMapRows)
           || (mapRowsResult.status === "rejected" && !coverage);
@@ -2037,7 +2078,7 @@ export default function Dashboard() {
         subtitle="Real-Time Global Human Behavior Intelligence"
         rightSlot={(
           <div className="wp-header-status">
-            <span className="wp-status-pill">{connectionState}</span>
+            <span className="wp-status-pill">{feedConnectionState}</span>
             <span className="wp-status-text">Heartbeat {liveFeedState.ingestionHeartbeatSec.toFixed(1)}s</span>
             <span className="wp-status-text">Verified {verifiedCoverageLabel}</span>
           </div>
@@ -2061,7 +2102,7 @@ export default function Dashboard() {
           <span>{new Date(liveFeedState.lastUpdated).toISOString().replace("T", " ").slice(0, 19)} UTC</span>
           <span>Heartbeat {liveFeedState.ingestionHeartbeatSec.toFixed(1)}s</span>
           <span>Drift {liveFeedState.modelDrift.toFixed(2)}</span>
-          <span>Feed {connectionState}</span>
+          <span>Feed {feedConnectionState}</span>
           <span>Updated {new Date(liveFeedState.lastUpdated).toLocaleTimeString()}</span>
         </div>
       </section>
@@ -2304,7 +2345,7 @@ export default function Dashboard() {
                 <Suspense fallback={<DeferredPanelPlaceholder label="Loading global intelligence feed..." />}>
                   <GlobalIntelligenceFeed
                     maxRows={selectedCountry ? 6 : 5}
-                    refreshInterval={5000}
+                    refreshInterval={15000}
                     selectedCountry={selectedCountry}
                     onVisibleItemsChange={setSelectedCountryNews}
                     onClearCountry={() => setSelectedCountry(null)}
@@ -2361,7 +2402,7 @@ export default function Dashboard() {
                   </div>
                 </div>
                 <div className="brain-telemetry-status-row">
-                  <span className={`brain-telemetry-status-dot state-${connectionState}`} />
+                  <span className={`brain-telemetry-status-dot state-${feedConnectionState}`} />
                   <span className="brain-telemetry-status-line">{telemetryStatusLine}</span>
                 </div>
               </div>
@@ -2482,7 +2523,7 @@ export default function Dashboard() {
                     <SignalIntegrityBoard
                       coverage={coverageState}
                       trustSnapshot={trustSnapshot}
-                      connectionState={connectionState}
+                      connectionState={feedConnectionState}
                       heartbeatSec={liveFeedState.ingestionHeartbeatSec}
                       modelDrift={liveFeedState.modelDrift}
                       validationStatus={validationSummary?.status ?? "pending"}

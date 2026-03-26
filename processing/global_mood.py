@@ -833,8 +833,19 @@ def _compute_global_risk_consensus(current_risk_score: float | None, mode: str, 
         blend_weight = 0.18 + (confidence * 0.52)
         system_global_risk_score = (legacy_score * (1.0 - blend_weight)) + (consensus_score * blend_weight)
 
-    if high_risk_band > system_global_risk_score and (high_risk_band - system_global_risk_score) > 8.0:
-        system_global_risk_score = max(system_global_risk_score, (system_global_risk_score * 0.7) + (high_risk_band * 0.3))
+    # Keep the consensus conservative under thin coverage, but let a broad severe upper tail
+    # pull the global score up more decisively when many countries show meaningful support.
+    if high_risk_band > system_global_risk_score and (high_risk_band - system_global_risk_score) > 6.0:
+        upper_tail_uplift = 0.30
+        if meaningful_support_ratio >= 0.45:
+            upper_tail_uplift += min(0.15, (meaningful_support_ratio - 0.45) * 0.75)
+        if high_risk_band >= 75.0:
+            upper_tail_uplift += min(0.05, (high_risk_band - 75.0) / 100.0)
+        upper_tail_uplift = _clamp(upper_tail_uplift, 0.30, 0.45)
+        system_global_risk_score = max(
+            system_global_risk_score,
+            (system_global_risk_score * (1.0 - upper_tail_uplift)) + (high_risk_band * upper_tail_uplift),
+        )
     if confidence < 0.35:
         system_global_risk_score = max(system_global_risk_score, legacy_score - 6.0)
     system_global_risk_score = _clamp(system_global_risk_score, 0.0, 100.0)

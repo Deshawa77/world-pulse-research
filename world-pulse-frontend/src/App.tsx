@@ -28,14 +28,20 @@ type IntroMode = {
 
 function getIntroMode(): IntroMode {
   try {
+    const pathname = window.location.pathname.toLowerCase();
     const params = new URLSearchParams(window.location.search);
     const intro = (params.get("intro") || "").toLowerCase();
     const forceByQuery = intro === "1" || intro === "true";
-    const forceByPath = window.location.pathname.toLowerCase() === "/intro";
+    const forceByPath = pathname === "/intro";
     const isForced = forceByQuery || forceByPath;
 
     if (isForced) {
       return { shouldShow: true, isForced: true };
+    }
+
+    const allowAmbientIntro = pathname === "/" || pathname === "";
+    if (!allowAmbientIntro) {
+      return { shouldShow: false, isForced: false };
     }
 
     const hasSeen = localStorage.getItem(INTRO_SEEN_KEY) === "1";
