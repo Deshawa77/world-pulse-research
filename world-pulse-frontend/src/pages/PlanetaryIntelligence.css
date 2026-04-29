@@ -1524,6 +1524,15 @@
 }
 
 @media (max-width: 1180px) {
+  .planetary-console__main {
+    max-width: none;
+    padding-inline: 1rem;
+  }
+
+  .planetary-console__hero {
+    grid-template-columns: 1fr;
+  }
+
   .planetary-console__section-grid,
   .planetary-console__section-grid--timeline .planetary-timeline-list,
   .planetary-console__section-grid--runtime .planetary-list,
@@ -1531,8 +1540,48 @@
     grid-template-columns: 1fr;
   }
 
+  .planetary-console__two-column,
+  .planetary-console__three-column,
+  .planetary-console__hero-side-grid,
+  .planetary-console__metric-grid {
+    grid-template-columns: 1fr;
+  }
+
   .planetary-console__hero-copy--brief {
     position: static;
+  }
+
+  .planetary-console__hero-map-header,
+  .planetary-console__hero-map-toolbar,
+  .planetary-console__hero-replay-strip {
+    gap: 0.85rem;
+  }
+
+  .planetary-console__hero-globe-frame {
+    min-height: 34rem;
+  }
+}
+
+@media (max-width: 960px) {
+  .planetary-console__count-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .planetary-console__hero-map-toolbar,
+  .planetary-console__hero-map-toolbar-group,
+  .planetary-console__hero-replay-controls,
+  .planetary-console__hero-replay-strip,
+  .planetary-console__hero-map-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .planetary-console__hero-map-search {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .planetary-console__hero-globe-caption {
+    max-width: none;
   }
 }
 

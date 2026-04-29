@@ -76,6 +76,22 @@ async function waitForVisible(page, selector, timeoutMs = 60000) {
   throw new Error(`timed out waiting for visible selector: ${selector}`);
 }
 
+async function waitForLocatorCount(locator, minimum, timeoutMs = 60000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const count = await locator.count();
+      if (count >= minimum) {
+        return count;
+      }
+    } catch {
+      // Keep polling until the route settles.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  throw new Error(`timed out waiting for locator count >= ${minimum}`);
+}
+
 async function launchBrowser(chromium) {
   try {
     return await chromium.launch({ channel: "msedge", headless, args: ["--window-size=1540,1180"] });
@@ -132,7 +148,7 @@ async function main() {
   ensure(noticeText.toLowerCase().includes("map focus moved"), "map jump notice missing");
 
   const timelineCards = page.locator(".planetary-timeline-card");
-  const timelineCount = await timelineCards.count();
+  const timelineCount = await waitForLocatorCount(timelineCards, 1, 45000);
   ensure(timelineCount >= 1, "expected at least one fusion timeline card");
   await timelineCards.first().click();
   await page.waitForTimeout(350);

@@ -1055,9 +1055,9 @@ export default function PlanetaryIntelligence() {
   const replayFrames = overview?.replay_frames || [];
   const replayFrameItems = mapReplayFrames.slice(0, 36);
   const allCountryFusionSnapshots = countryFusionSnapshots.length ? countryFusionSnapshots : overview?.country_fusion_snapshots || [];
-  const fusedCountries = allCountryFusionSnapshots.slice(0, 8);
+  const fusedCountries = allCountryFusionSnapshots.slice(0, 6);
   const timelineFramesAll = fusionTimeline.length ? fusionTimeline : overview?.fusion_timeline || [];
-  const timelineItems = timelineFramesAll.slice(0, 12);
+  const timelineItems = timelineFramesAll.slice(0, 8);
   const chains = correlationChains.length ? correlationChains : overview?.correlation_chains || [];
   const selectedTimelineFrame = timelineItems.find((item) => item.frame_id === selectedTimelineFrameId) || timelineItems[0] || null;
   const selectedMapReplayFrame = replayFrameItems.find((item) => item.frame_id === selectedMapReplayFrameId)
@@ -1074,10 +1074,10 @@ export default function PlanetaryIntelligence() {
       const haystack = `${item.entity_id} ${item.entity_type} ${item.canonical_name} ${aliases} ${geographyLabel(item)}`.toLowerCase();
       return haystack.includes(deferredEntityQuery);
     })
-    .slice(0, 12);
+    .slice(0, 8);
   const filteredRelationships = allRelationships
     .filter((item) => relationMatchesQuery(item, deferredEntityQuery))
-    .slice(0, 12);
+    .slice(0, 8);
   const entityTypeCounts = allEntities.reduce<Record<string, number>>((acc, item) => {
     const key = item.entity_type || "unknown";
     acc[key] = (acc[key] || 0) + 1;
@@ -1091,8 +1091,8 @@ export default function PlanetaryIntelligence() {
   ].filter((item) => item.value > 0);
   const rankedSignals = [...behaviorSignals]
     .sort((left, right) => safeNumber(right.severity_score) - safeNumber(left.severity_score))
-    .slice(0, 10);
-  const evidenceFeed = [...behaviorSourceEvents].slice(0, 10);
+    .slice(0, 6);
+  const evidenceFeed = [...behaviorSourceEvents].slice(0, 6);
   const queueBreakdown = alertOpsSummary?.queue_breakdown || [];
   const runtimeBootstrapReady = Boolean(runtimeBehaviorSurface || runtimeCommandLayer);
   const canRenderConsole = Boolean(hasRenderableOverviewData(overview) || runtimeBootstrapReady);
@@ -1119,10 +1119,10 @@ export default function PlanetaryIntelligence() {
   const calibrationBehavior = (calibrationReport?.behavior_thresholds || {}) as Record<string, unknown>;
   const calibrationFusion = (calibrationReport?.fusion_scoring || {}) as Record<string, unknown>;
   const calibrationBacktests = (calibrationReport?.backtests || {}) as Record<string, unknown>;
-  const commandTheaters = (commandDeck?.theaters || []).slice(0, 8);
-  const commandWatchlist = (commandDeck?.incident_watchlist || []).slice(0, 8);
-  const graphTopEntities = (graphAnalytics?.top_entities || []).slice(0, 6);
-  const disasterTopRegions = (disasterDeck?.top_regions || []).slice(0, 6);
+  const commandTheaters = (commandDeck?.theaters || []).slice(0, 6);
+  const commandWatchlist = (commandDeck?.incident_watchlist || []).slice(0, 6);
+  const graphTopEntities = (graphAnalytics?.top_entities || []).slice(0, 4);
+  const disasterTopRegions = (disasterDeck?.top_regions || []).slice(0, 4);
   const graphNeighborhoodNodes = filteredEntities.slice(0, 6).map((item, index, collection) => {
     const angle = (Math.PI * 2 * index) / Math.max(collection.length, 1);
     return {
@@ -2375,7 +2375,7 @@ export default function PlanetaryIntelligence() {
                   <span className="planetary-badge">Top {countrySnapshots.length}</span>
                 </div>
                 <div className="planetary-country-grid">
-                  {countrySnapshots.slice(0, 8).map((item: PlanetaryCountrySnapshot) => (
+                  {countrySnapshots.slice(0, 6).map((item: PlanetaryCountrySnapshot) => (
                     <article key={item.country} className={`planetary-country-card planetary-click-card ${toneClassFromRatio(item.raw_risk_score)}`} role="button" tabIndex={0} onClick={() => void openCountryInvestigation(item.country)}>
                       <div className="planetary-country-card__topline">
                         <strong>{item.country}</strong>
