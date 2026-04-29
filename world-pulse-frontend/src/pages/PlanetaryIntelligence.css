@@ -1,0 +1,1560 @@
+.planetary-console {
+  min-height: 100vh;
+  color: #eef7f8;
+  background:
+    radial-gradient(circle at top right, rgba(74, 227, 255, 0.16), transparent 28%),
+    radial-gradient(circle at bottom left, rgba(255, 122, 89, 0.18), transparent 32%),
+    linear-gradient(180deg, #031421 0%, #071b2b 36%, #06131f 100%);
+}
+
+.planetary-console__main {
+  display: grid;
+  gap: 1.2rem;
+  padding: 1.25rem clamp(1rem, 2vw, 2rem) 2rem;
+}
+
+.planetary-console__header-actions,
+.planetary-console__section-meta,
+.planetary-console__count-strip,
+.planetary-console__dimension-strip,
+.planetary-chip-cloud,
+.planetary-list-card__meta,
+.planetary-country-card__meta,
+.planetary-country-card__signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.planetary-console__stamp,
+.planetary-console__count-pill,
+.planetary-console__manifest-card,
+.planetary-console__hero-card,
+.planetary-country-card,
+.planetary-entity-card,
+.planetary-list-card,
+.planetary-metric-card,
+.planetary-panel,
+.planetary-console__error,
+.planetary-console__loading-panel {
+  border: 1px solid rgba(116, 157, 178, 0.18);
+  background: linear-gradient(180deg, rgba(11, 28, 41, 0.92), rgba(7, 20, 30, 0.96));
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
+}
+
+.planetary-console__error,
+.planetary-console__loading-panel {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem 1.1rem;
+  border-radius: 1rem;
+}
+
+.planetary-console__error {
+  color: #ffd7cf;
+  border-color: rgba(255, 122, 89, 0.34);
+}
+
+.planetary-console__loading-orb {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(74, 227, 255, 0.95), rgba(74, 227, 255, 0.16));
+  box-shadow: 0 0 0 0 rgba(74, 227, 255, 0.28);
+  animation: planetary-pulse 1.8s infinite;
+}
+
+@keyframes planetary-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(74, 227, 255, 0.35); }
+  70% { box-shadow: 0 0 0 18px rgba(74, 227, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(74, 227, 255, 0); }
+}
+
+.planetary-console__hero,
+.planetary-console__two-column,
+.planetary-console__three-column,
+.planetary-console__metric-grid,
+.planetary-console__manifest-grid,
+.planetary-country-grid,
+.planetary-entity-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.planetary-console__hero {
+  grid-template-columns: minmax(0, 2.3fr) minmax(18rem, 0.8fr);
+  gap: 1.1rem;
+  padding: 1.3rem;
+  border: 1px solid rgba(74, 227, 255, 0.18);
+  border-radius: 1.4rem;
+  background:
+    linear-gradient(135deg, rgba(7, 31, 45, 0.96), rgba(7, 20, 30, 0.98)),
+    radial-gradient(circle at top right, rgba(74, 227, 255, 0.2), transparent 42%);
+}
+
+.planetary-console__hero-map-panel,
+.planetary-console__hero-side {
+  display: grid;
+  gap: 0.95rem;
+  align-content: start;
+}
+
+.planetary-console__hero-map-panel {
+  min-height: 100%;
+}
+
+.planetary-console__hero-map-header {
+  align-items: center;
+}
+
+.planetary-console__hero-map-toolbar,
+.planetary-console__hero-replay-strip,
+.planetary-console__hero-map-toolbar-group,
+.planetary-console__hero-replay-controls {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.planetary-console__hero-map-toolbar {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  margin-top: 0.15rem;
+}
+
+.planetary-console__hero-map-toolbar-group {
+  align-content: start;
+}
+
+.planetary-console__hero-map-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.7rem;
+  align-items: end;
+}
+
+.planetary-console__toggle {
+  border-radius: 999px;
+  border: 1px solid rgba(100, 152, 174, 0.26);
+  background: rgba(6, 17, 26, 0.8);
+  color: rgba(219, 232, 236, 0.88);
+  padding: 0.65rem 0.9rem;
+  cursor: pointer;
+  transition: border-color 180ms ease, transform 180ms ease, background 180ms ease;
+}
+
+.planetary-console__toggle.is-active {
+  border-color: rgba(74, 227, 255, 0.4);
+  background: rgba(14, 53, 71, 0.92);
+  color: #f5fbfc;
+  box-shadow: 0 10px 24px rgba(10, 35, 48, 0.24);
+}
+
+.planetary-console__toggle:hover,
+.planetary-console__toggle:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(74, 227, 255, 0.34);
+}
+
+.planetary-console__hero-replay-strip {
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.95fr);
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(116, 157, 178, 0.18);
+  border-radius: 1rem;
+  background: rgba(7, 20, 30, 0.72);
+  margin-top: 0.15rem;
+}
+
+.planetary-console__hero-replay-strip strong {
+  display: block;
+  margin-top: 0.3rem;
+}
+
+.planetary-console__hero-replay-strip p {
+  margin: 0.25rem 0 0;
+  color: rgba(206, 225, 231, 0.76);
+}
+
+.planetary-console__hero-replay-controls {
+  align-content: center;
+}
+
+.planetary-console__hero-replay-slider {
+  width: 100%;
+  accent-color: #4ae3ff;
+}
+
+.planetary-console__hero-globe-frame {
+  position: relative;
+  overflow: hidden;
+  min-height: 44rem;
+  border: 1px solid rgba(116, 157, 178, 0.18);
+  border-radius: 1.25rem;
+  background:
+    radial-gradient(circle at 20% 25%, rgba(74, 227, 255, 0.16), transparent 28%),
+    radial-gradient(circle at 78% 22%, rgba(255, 122, 89, 0.1), transparent 22%),
+    linear-gradient(180deg, rgba(8, 24, 36, 0.92), rgba(4, 16, 26, 0.98));
+  box-shadow: inset 0 1px 0 rgba(126, 181, 203, 0.08), 0 18px 40px rgba(0, 0, 0, 0.24);
+}
+
+.planetary-console__hero-globe-caption {
+  position: absolute;
+  right: 1.15rem;
+  bottom: 1.15rem;
+  display: grid;
+  gap: 0.25rem;
+  max-width: 21rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid rgba(116, 157, 178, 0.18);
+  border-radius: 1rem;
+  background: rgba(6, 17, 26, 0.82);
+  backdrop-filter: blur(10px);
+  color: rgba(223, 238, 242, 0.84);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.planetary-console__hero-map-footer,
+.planetary-console__hero-hotspots,
+.planetary-console__hero-theater-strip,
+.planetary-console__hero-side-grid {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.planetary-console__hero-map-footer {
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 0.92fr);
+  align-items: start;
+}
+
+.planetary-console__hero-hotspots {
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+}
+
+.planetary-console__hero-hotspot,
+.planetary-console__hero-theater {
+  border: 1px solid rgba(116, 157, 178, 0.18);
+  border-radius: 1rem;
+  background: linear-gradient(180deg, rgba(11, 28, 41, 0.92), rgba(7, 20, 30, 0.96));
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
+  color: #eef7f8;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.planetary-console__hero-hotspot:hover,
+.planetary-console__hero-hotspot:focus-visible,
+.planetary-console__hero-theater:hover,
+.planetary-console__hero-theater:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(74, 227, 255, 0.34);
+  box-shadow: 0 20px 42px rgba(0, 0, 0, 0.26);
+}
+
+.planetary-console__hero-hotspot {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.9rem 1rem;
+}
+
+.planetary-console__hero-hotspot strong,
+.planetary-console__hero-theater strong {
+  font-size: 0.95rem;
+}
+
+.planetary-console__hero-hotspot span,
+.planetary-console__hero-theater span,
+.planetary-console__hero-theater p {
+  color: rgba(206, 225, 231, 0.76);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.planetary-console__hero-theater-strip {
+  grid-auto-rows: 1fr;
+}
+
+.planetary-console__hero-theater {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.9rem 1rem;
+}
+
+.planetary-console__hero-theater-topline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.planetary-console__hero-theater p {
+  margin: 0;
+}
+
+.planetary-console__hero-copy h2 {
+  margin: 0.2rem 0 0.7rem;
+  font-size: clamp(1.6rem, 3vw, 2.7rem);
+  line-height: 1.05;
+}
+
+.planetary-console__hero-copy p,
+.planetary-list-card p,
+.planetary-country-card p,
+.planetary-entity-card p,
+.planetary-metric-card__detail,
+.planetary-console__manifest-card p,
+.planetary-console__hero-card p {
+  margin: 0;
+  color: rgba(219, 232, 236, 0.76);
+  line-height: 1.45;
+}
+
+.planetary-console__eyebrow,
+.planetary-panel__eyebrow,
+.planetary-metric-card__label,
+.planetary-console__stamp span,
+.planetary-console__count-pill span,
+.planetary-console__hero-card span,
+.planetary-console__manifest-card span,
+.planetary-console__behavior-kpis span,
+.planetary-console__search span {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.73rem;
+  color: rgba(171, 215, 224, 0.72);
+}
+
+.planetary-console__hero-side,
+.planetary-list,
+.planetary-console__behavior-kpis {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.planetary-console__hero-side-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.planetary-console__hero-card {
+  align-content: start;
+}
+
+.planetary-console__hero-card .planetary-chip-cloud {
+  margin-top: 0.75rem;
+}
+
+.planetary-console__hero-card,
+.planetary-console__manifest-card,
+.planetary-country-card,
+.planetary-entity-card,
+.planetary-list-card,
+.planetary-metric-card {
+  border-radius: 1rem;
+  padding: 1rem;
+}
+
+.planetary-console__hero-card strong,
+.planetary-console__manifest-card strong,
+.planetary-country-card__score,
+.planetary-metric-card__value,
+.planetary-console__behavior-kpis strong {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: clamp(1.25rem, 2vw, 2rem);
+}
+
+.planetary-console__count-pill {
+  min-width: 6.4rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 0.9rem;
+}
+
+.planetary-console__count-pill strong {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 1.35rem;
+}
+
+.planetary-console__metric-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.planetary-console__two-column {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.planetary-console__three-column {
+  grid-template-columns: 1.45fr 1.45fr 1fr;
+}
+
+.planetary-panel {
+  padding: 1.05rem;
+  border-radius: 1.1rem;
+}
+
+.planetary-panel--span-two {
+  grid-column: span 2;
+}
+
+.planetary-panel__header,
+.planetary-list-card__topline,
+.planetary-country-card__topline,
+.planetary-entity-card__topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+}
+
+.planetary-panel__header h3 {
+  margin: 0.2rem 0 0;
+  font-size: 1.15rem;
+}
+
+.planetary-list,
+.planetary-country-grid,
+.planetary-entity-grid {
+  margin-top: 0.9rem;
+}
+
+.planetary-country-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.planetary-entity-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.planetary-list-card__topline span,
+.planetary-country-card__topline span,
+.planetary-entity-card__topline span {
+  color: rgba(196, 220, 227, 0.78);
+  font-size: 0.86rem;
+}
+
+.planetary-console__behavior-kpis {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.5rem;
+}
+
+.planetary-console__search {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 16rem;
+}
+
+.planetary-console__search input,
+.planetary-console__refresh {
+  border-radius: 999px;
+  border: 1px solid rgba(100, 152, 174, 0.28);
+}
+
+.planetary-console__search input {
+  padding: 0.65rem 0.95rem;
+  color: #eef7f8;
+  background: rgba(6, 17, 26, 0.78);
+}
+
+.planetary-console__refresh {
+  padding: 0.72rem 1.1rem;
+  color: #06202d;
+  font-weight: 700;
+  background: linear-gradient(135deg, #4ae3ff, #8af0d0);
+  cursor: pointer;
+}
+
+.planetary-console__refresh:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.planetary-console__stamp {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.planetary-console__stamp strong {
+  font-size: 1rem;
+}
+
+.planetary-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(100, 152, 174, 0.22);
+  background: rgba(7, 20, 30, 0.66);
+  color: #dceef2;
+  font-size: 0.78rem;
+}
+
+.is-stable {
+  border-color: rgba(74, 227, 255, 0.24);
+}
+
+.is-guarded {
+  border-color: rgba(255, 208, 102, 0.32);
+}
+
+.is-elevated {
+  border-color: rgba(255, 168, 92, 0.36);
+}
+
+.is-critical {
+  border-color: rgba(255, 122, 89, 0.4);
+}
+
+@media (max-width: 1180px) {
+  .planetary-console__metric-grid,
+  .planetary-console__three-column,
+  .planetary-console__two-column,
+  .planetary-console__hero,
+  .planetary-country-grid,
+  .planetary-entity-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .planetary-panel--span-two {
+    grid-column: auto;
+  }
+
+  .planetary-console__hero-map-footer,
+  .planetary-console__hero-hotspots,
+  .planetary-console__hero-side-grid,
+  .planetary-console__hero-map-toolbar,
+  .planetary-console__hero-replay-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .planetary-console__main {
+    padding-inline: 0.85rem;
+  }
+
+  .planetary-console__header-actions,
+  .planetary-panel__header,
+  .planetary-list-card__topline,
+  .planetary-country-card__topline,
+  .planetary-entity-card__topline {
+    flex-direction: column;
+  }
+
+  .planetary-console__search {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .planetary-console__hero-map-search {
+    grid-template-columns: 1fr;
+  }
+
+  .planetary-console__hero-globe-caption {
+    position: static;
+    max-width: none;
+    margin: 0.75rem;
+  }
+}
+
+.planetary-console__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.9rem;
+  padding: 0.95rem 1.1rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(74, 227, 255, 0.26);
+  background: linear-gradient(135deg, rgba(10, 34, 48, 0.94), rgba(7, 20, 30, 0.98));
+}
+
+.planetary-alert-actions,
+.planetary-fusion-grid,
+.planetary-chain-list,
+.planetary-timeline-list,
+.planetary-bar-list,
+.planetary-console__ops-grid,
+.planetary-overlay-shell {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.planetary-alert-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.9rem;
+}
+
+.planetary-alert-action,
+.planetary-link-button,
+.planetary-chain-button {
+  font: inherit;
+  color: inherit;
+}
+
+.planetary-alert-action,
+.planetary-link-button {
+  border-radius: 999px;
+  border: 1px solid rgba(100, 152, 174, 0.26);
+  background: rgba(6, 17, 26, 0.85);
+  padding: 0.7rem 0.9rem;
+  cursor: pointer;
+}
+
+.planetary-alert-action:disabled,
+.planetary-link-button:disabled {
+  opacity: 0.68;
+  cursor: wait;
+}
+
+.planetary-alert-action.is-danger {
+  border-color: rgba(255, 122, 89, 0.4);
+  color: #ffd7cf;
+}
+
+.planetary-fusion-card,
+.planetary-chain-detail,
+.planetary-timeline-card,
+.planetary-chain-button,
+.planetary-console__empty {
+  border: 1px solid rgba(116, 157, 178, 0.18);
+  border-radius: 1rem;
+  background: linear-gradient(180deg, rgba(11, 28, 41, 0.92), rgba(7, 20, 30, 0.96));
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
+  padding: 1rem;
+}
+
+.planetary-fusion-card__score {
+  margin-top: 0.35rem;
+  font-size: clamp(1.2rem, 1.8vw, 1.9rem);
+  font-weight: 700;
+}
+
+.planetary-chain-button {
+  display: grid;
+  gap: 0.55rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.planetary-chain-button.is-selected {
+  border-color: rgba(74, 227, 255, 0.4);
+  box-shadow: 0 18px 40px rgba(10, 53, 68, 0.26);
+}
+
+.planetary-chain-detail {
+  margin-top: 0.95rem;
+}
+
+.planetary-overlay-shell {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  margin-top: 0.95rem;
+}
+
+.planetary-overlay-chart,
+.planetary-overlay-map,
+.planetary-graph-neighborhood__canvas {
+  border: 1px solid rgba(116, 157, 178, 0.18);
+  border-radius: 1rem;
+  background: linear-gradient(180deg, rgba(11, 28, 41, 0.92), rgba(7, 20, 30, 0.96));
+}
+
+.planetary-overlay-chart {
+  width: 100%;
+  height: 11rem;
+  padding: 0.6rem;
+}
+
+.planetary-overlay-chart__gridline {
+  stroke: rgba(148, 163, 184, 0.18);
+  stroke-width: 1;
+}
+
+.planetary-overlay-chart__gridline.is-mid {
+  stroke-dasharray: 4 6;
+}
+
+.planetary-overlay-chart__line {
+  fill: none;
+  stroke: #4ae3ff;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.planetary-overlay-map,
+.planetary-graph-neighborhood__canvas {
+  position: relative;
+  min-height: 11rem;
+  overflow: hidden;
+}
+
+.planetary-overlay-node,
+.planetary-graph-neighborhood__node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: grid;
+  gap: 0.2rem;
+  border-radius: 0.9rem;
+  border: 1px solid rgba(100, 152, 174, 0.24);
+  background: rgba(8, 22, 33, 0.92);
+  color: #eef7f8;
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.planetary-overlay-node span,
+.planetary-graph-neighborhood__node span {
+  color: rgba(196, 220, 227, 0.78);
+  font-size: 0.78rem;
+}
+
+.planetary-graph-neighborhood {
+  margin-top: 0.95rem;
+}
+
+.planetary-graph-neighborhood__edge {
+  position: absolute;
+  border-radius: 999px;
+  border: 1px dashed rgba(74, 227, 255, 0.2);
+  opacity: 0.7;
+}
+
+.planetary-graph-neighborhood__edge.is-critical {
+  border-color: rgba(255, 122, 89, 0.4);
+}
+
+.planetary-graph-neighborhood__edge.is-elevated {
+  border-color: rgba(255, 168, 92, 0.36);
+}
+
+.planetary-graph-neighborhood__edge.is-guarded {
+  border-color: rgba(255, 208, 102, 0.32);
+}
+
+.planetary-timeline-card {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.planetary-timeline-card.is-selected {
+  border-color: rgba(74, 227, 255, 0.38);
+  box-shadow: 0 0 0 1px rgba(74, 227, 255, 0.18), 0 22px 44px rgba(0, 0, 0, 0.26);
+}
+
+.planetary-console__ops-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 0.9rem;
+}
+
+.planetary-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 2fr) auto;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.planetary-bar-track {
+  position: relative;
+  height: 0.62rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(100, 152, 174, 0.16);
+}
+
+.planetary-bar-track.is-compact {
+  height: 0.46rem;
+}
+
+.planetary-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #4ae3ff, #8af0d0);
+}
+
+.planetary-bar-fill.is-guarded {
+  background: linear-gradient(90deg, #ffd066, #f5e1a4);
+}
+
+.planetary-bar-fill.is-elevated {
+  background: linear-gradient(90deg, #ffb36b, #ffc88b);
+}
+
+.planetary-bar-fill.is-critical {
+  background: linear-gradient(90deg, #ff7a59, #ff9b7a);
+}
+
+.planetary-console__empty {
+  color: rgba(219, 232, 236, 0.76);
+}
+
+@media (max-width: 1180px) {
+  .planetary-console__ops-grid,
+  .planetary-overlay-shell {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .planetary-console__notice,
+  .planetary-alert-actions,
+  .planetary-console__ops-grid,
+  .planetary-bar-row {
+    grid-template-columns: 1fr;
+  }
+
+  .planetary-notice,
+  .planetary-chain-button,
+  .planetary-link-button,
+  .planetary-alert-action {
+    width: 100%;
+  }
+
+  .planetary-overlay-shell {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+.planetary-console--drawer-open .planetary-console__main {
+  padding-right: min(31rem, 38vw);
+}
+
+.planetary-click-card {
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.planetary-click-card:hover,
+.planetary-click-card:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(74, 227, 255, 0.34);
+  box-shadow: 0 22px 48px rgba(6, 17, 26, 0.32);
+}
+
+.planetary-console__manifest-grid--compact {
+  margin-bottom: 0.9rem;
+}
+
+.planetary-console__drawer {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 60;
+  width: min(29rem, calc(100vw - 1.5rem));
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 0.9rem;
+  padding: 1rem;
+  border-radius: 1.4rem;
+  border: 1px solid rgba(100, 152, 174, 0.24);
+  background: linear-gradient(180deg, rgba(8, 22, 33, 0.96), rgba(5, 15, 24, 0.98));
+  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(18px);
+}
+
+.planetary-console__drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.planetary-console__drawer-header h3 {
+  margin: 0.3rem 0 0.4rem;
+}
+
+.planetary-console__drawer-header p {
+  margin: 0;
+  color: rgba(220, 238, 242, 0.76);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.planetary-console__drawer-close {
+  border-radius: 999px;
+  border: 1px solid rgba(100, 152, 174, 0.26);
+  background: rgba(6, 17, 26, 0.9);
+  color: #eef7f8;
+  padding: 0.72rem 0.95rem;
+  cursor: pointer;
+}
+
+.planetary-console__drawer-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.95rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(74, 227, 255, 0.2);
+  background: rgba(10, 31, 44, 0.74);
+}
+
+.planetary-console__drawer-body {
+  overflow-y: auto;
+  padding-right: 0.2rem;
+  display: grid;
+  gap: 0.9rem;
+}
+
+.planetary-console__drawer-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.planetary-console__drawer-section {
+  margin: 0;
+}
+
+@media (max-width: 1280px) {
+  .planetary-console--drawer-open .planetary-console__main {
+    padding-right: 1rem;
+  }
+
+  .planetary-console__drawer {
+    top: auto;
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: 0.75rem;
+    width: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .planetary-console__drawer-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.planetary-console {
+  --planetary-surface-0: rgba(4, 14, 24, 0.96);
+  --planetary-surface-1: rgba(8, 22, 35, 0.94);
+  --planetary-surface-2: rgba(11, 28, 44, 0.92);
+  --planetary-surface-3: rgba(14, 35, 53, 0.88);
+  --planetary-line-soft: rgba(116, 157, 178, 0.14);
+  --planetary-line-strong: rgba(124, 184, 205, 0.28);
+  --planetary-cyan: #4ae3ff;
+  --planetary-mint: #8af0d0;
+  --planetary-amber: #ffd066;
+  --planetary-coral: #ff8d6a;
+  --planetary-text-1: #f3fbfd;
+  --planetary-text-2: rgba(226, 240, 244, 0.84);
+  --planetary-text-3: rgba(183, 212, 221, 0.72);
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Trebuchet MS", sans-serif;
+}
+
+.planetary-console h2,
+.planetary-console h3,
+.planetary-console strong,
+.planetary-console__eyebrow,
+.planetary-panel__eyebrow,
+.planetary-metric-card__label {
+  font-family: "Bahnschrift", "Segoe UI Variable Display", "Arial Narrow", sans-serif;
+}
+
+.planetary-console__main {
+  max-width: min(1860px, calc(100vw - 1.4rem));
+  margin: 0 auto;
+  gap: 1.45rem;
+  padding: 1.35rem clamp(1rem, 2vw, 2.15rem) 2.2rem;
+}
+
+.planetary-console__notice,
+.planetary-console__loading-panel,
+.planetary-console__error,
+.planetary-panel,
+.planetary-console__hero-card,
+.planetary-console__manifest-card,
+.planetary-country-card,
+.planetary-entity-card,
+.planetary-list-card,
+.planetary-metric-card,
+.planetary-fusion-card,
+.planetary-chain-detail,
+.planetary-timeline-card,
+.planetary-chain-button,
+.planetary-console__empty,
+.planetary-console__hero-hotspot,
+.planetary-console__hero-theater {
+  border-color: var(--planetary-line-soft);
+  background:
+    linear-gradient(180deg, rgba(10, 25, 38, 0.96), rgba(6, 17, 27, 0.98)),
+    linear-gradient(145deg, rgba(74, 227, 255, 0.05), rgba(138, 240, 208, 0.02));
+  box-shadow:
+    inset 0 1px 0 rgba(181, 230, 244, 0.06),
+    0 22px 52px rgba(0, 0, 0, 0.3);
+}
+
+.planetary-panel,
+.planetary-console__hero-card,
+.planetary-console__manifest-card,
+.planetary-country-card,
+.planetary-entity-card,
+.planetary-list-card,
+.planetary-metric-card,
+.planetary-fusion-card,
+.planetary-chain-detail,
+.planetary-timeline-card,
+.planetary-chain-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.planetary-panel::before,
+.planetary-console__hero-card::before,
+.planetary-console__manifest-card::before,
+.planetary-country-card::before,
+.planetary-entity-card::before,
+.planetary-list-card::before,
+.planetary-metric-card::before,
+.planetary-fusion-card::before,
+.planetary-chain-detail::before,
+.planetary-timeline-card::before,
+.planetary-chain-button::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(74, 227, 255, 0.42), rgba(255, 141, 106, 0.16), transparent 72%);
+  pointer-events: none;
+}
+
+.planetary-console__hero {
+  grid-template-columns: minmax(0, 1.96fr) minmax(21.5rem, 0.76fr);
+  gap: 1.25rem;
+  padding: 1.5rem;
+  border-radius: 1.75rem;
+  border-color: rgba(74, 227, 255, 0.16);
+  background:
+    radial-gradient(circle at 18% 14%, rgba(74, 227, 255, 0.11), transparent 26%),
+    radial-gradient(circle at 100% 0%, rgba(255, 141, 106, 0.1), transparent 30%),
+    linear-gradient(180deg, rgba(6, 21, 33, 0.98), rgba(4, 15, 24, 1));
+  box-shadow:
+    inset 0 1px 0 rgba(193, 236, 247, 0.06),
+    0 28px 74px rgba(0, 0, 0, 0.36);
+}
+
+.planetary-console__hero-map-panel,
+.planetary-console__hero-side {
+  gap: 1rem;
+}
+
+.planetary-console__hero-map-header {
+  padding: 0 0 0.95rem;
+  border-bottom: 1px solid rgba(110, 161, 181, 0.12);
+  align-items: flex-end;
+}
+
+.planetary-panel__header,
+.planetary-list-card__topline,
+.planetary-country-card__topline,
+.planetary-entity-card__topline {
+  gap: 1rem;
+}
+
+.planetary-panel__header h3,
+.planetary-console__hero-map-header h3 {
+  margin: 0.26rem 0 0;
+  font-size: clamp(1.05rem, 1.5vw, 1.25rem);
+  letter-spacing: -0.02em;
+  color: var(--planetary-text-1);
+}
+
+.planetary-console__hero-map-toolbar {
+  grid-template-columns: minmax(0, 1.48fr) minmax(0, 1.12fr) minmax(18rem, 1fr);
+  padding: 1rem 1.05rem;
+  border: 1px solid rgba(116, 157, 178, 0.12);
+  border-radius: 1.15rem;
+  background: rgba(6, 17, 26, 0.64);
+  backdrop-filter: blur(12px);
+}
+
+.planetary-console__hero-map-toolbar-group,
+.planetary-console__hero-replay-controls,
+.planetary-console__hero-replay-strip {
+  gap: 0.8rem;
+}
+
+.planetary-console__toggle,
+.planetary-link-button,
+.planetary-alert-action,
+.planetary-chain-button,
+.planetary-console__refresh,
+.planetary-console__drawer-close {
+  transition:
+    transform 220ms cubic-bezier(0.21, 1, 0.32, 1),
+    border-color 220ms ease,
+    background 220ms ease,
+    box-shadow 220ms ease,
+    color 220ms ease;
+}
+
+.planetary-console__toggle,
+.planetary-link-button,
+.planetary-alert-action,
+.planetary-console__drawer-close {
+  background: rgba(8, 22, 33, 0.84);
+}
+
+.planetary-console__toggle:hover,
+.planetary-console__toggle:focus-visible,
+.planetary-link-button:hover,
+.planetary-link-button:focus-visible,
+.planetary-alert-action:hover,
+.planetary-alert-action:focus-visible,
+.planetary-chain-button:hover,
+.planetary-chain-button:focus-visible,
+.planetary-console__refresh:hover,
+.planetary-console__refresh:focus-visible,
+.planetary-console__drawer-close:hover,
+.planetary-console__drawer-close:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(74, 227, 255, 0.34);
+  box-shadow: 0 14px 34px rgba(2, 11, 19, 0.32);
+}
+
+.planetary-console__toggle.is-active,
+.planetary-chain-button.is-selected,
+.planetary-timeline-card.is-selected {
+  border-color: rgba(74, 227, 255, 0.44);
+  box-shadow:
+    0 0 0 1px rgba(74, 227, 255, 0.14),
+    0 18px 42px rgba(0, 0, 0, 0.34);
+  background: linear-gradient(180deg, rgba(14, 48, 66, 0.96), rgba(8, 22, 33, 0.98));
+}
+
+.planetary-console__hero-replay-strip {
+  grid-template-columns: minmax(0, 1.1fr) minmax(19rem, 0.95fr);
+  padding: 1rem 1.05rem;
+  border-color: rgba(74, 227, 255, 0.12);
+  background:
+    linear-gradient(90deg, rgba(6, 19, 29, 0.84), rgba(7, 20, 30, 0.68)),
+    radial-gradient(circle at 12% 50%, rgba(74, 227, 255, 0.08), transparent 38%);
+}
+
+.planetary-console__hero-globe-frame {
+  min-height: 48rem;
+  border-color: rgba(93, 151, 175, 0.16);
+  border-radius: 1.45rem;
+  background:
+    radial-gradient(circle at 18% 18%, rgba(74, 227, 255, 0.16), transparent 25%),
+    radial-gradient(circle at 82% 18%, rgba(255, 141, 106, 0.08), transparent 20%),
+    linear-gradient(180deg, rgba(6, 21, 33, 0.92), rgba(2, 13, 22, 0.99));
+}
+
+.planetary-console__hero-globe-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 18%, transparent 78%, rgba(255, 255, 255, 0.02));
+}
+
+.planetary-console__hero-globe-caption {
+  right: 1.25rem;
+  bottom: 1.25rem;
+  max-width: 20rem;
+  padding: 0.95rem 1rem;
+  border-radius: 1.05rem;
+  border-color: rgba(115, 170, 189, 0.16);
+  background: rgba(4, 15, 24, 0.78);
+  color: var(--planetary-text-2);
+}
+
+.planetary-console__hero-map-footer {
+  grid-template-columns: minmax(0, 1.5fr) minmax(17.5rem, 0.9fr);
+  gap: 0.9rem;
+}
+
+.planetary-console__hero-hotspots {
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.75rem;
+}
+
+.planetary-console__hero-hotspot,
+.planetary-console__hero-theater {
+  border-radius: 1.05rem;
+  padding: 0.95rem 1rem;
+}
+
+.planetary-console__hero-hotspot strong,
+.planetary-console__hero-theater strong {
+  font-size: 0.92rem;
+  letter-spacing: -0.015em;
+}
+
+.planetary-console__hero-side {
+  align-content: start;
+  position: relative;
+}
+
+.planetary-console__hero-copy--brief {
+  position: sticky;
+  top: 1rem;
+  padding: 1.2rem 1.2rem 1.15rem;
+  border-radius: 1.45rem;
+  border: 1px solid rgba(115, 170, 189, 0.14);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(74, 227, 255, 0.08), transparent 30%),
+    linear-gradient(180deg, rgba(9, 25, 39, 0.98), rgba(5, 15, 24, 0.98));
+  box-shadow:
+    inset 0 1px 0 rgba(198, 235, 245, 0.05),
+    0 22px 54px rgba(0, 0, 0, 0.34);
+}
+
+.planetary-console__hero-copy--brief h2 {
+  margin: 0.35rem 0 0.85rem;
+  max-width: 11ch;
+  font-size: clamp(2.05rem, 2.9vw, 3.45rem);
+  line-height: 0.98;
+  letter-spacing: -0.045em;
+}
+
+.planetary-console__hero-copy--brief > p {
+  font-size: 0.95rem;
+  color: var(--planetary-text-2);
+}
+
+.planetary-console__hero-brief-list {
+  display: grid;
+  gap: 0.7rem;
+  margin: 1rem 0 1.05rem;
+}
+
+.planetary-console__hero-brief-item {
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.9rem 0.95rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(107, 154, 171, 0.12);
+  background: linear-gradient(180deg, rgba(8, 22, 33, 0.9), rgba(5, 16, 24, 0.88));
+}
+
+.planetary-console__hero-brief-item > span {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.69rem;
+  color: rgba(168, 215, 226, 0.72);
+}
+
+.planetary-console__hero-brief-item > strong {
+  display: block;
+  font-size: 1rem;
+  color: var(--planetary-text-1);
+  letter-spacing: -0.025em;
+}
+
+.planetary-console__hero-brief-item > p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--planetary-text-3);
+  line-height: 1.45;
+}
+
+.planetary-console__count-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin-top: 0.25rem;
+}
+
+.planetary-console__count-pill {
+  min-width: 0;
+  padding: 0.85rem 0.95rem 0.9rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(104, 151, 170, 0.12);
+  background: linear-gradient(180deg, rgba(8, 22, 33, 0.84), rgba(6, 17, 26, 0.74));
+}
+
+.planetary-console__count-pill strong {
+  font-size: clamp(1.45rem, 1.95vw, 1.85rem);
+  letter-spacing: -0.04em;
+}
+
+.planetary-console__dimension-strip {
+  gap: 0.45rem;
+  margin-top: 0.85rem;
+}
+
+.planetary-chip-cloud {
+  gap: 0.45rem;
+}
+
+.planetary-badge {
+  border-color: rgba(100, 152, 174, 0.16);
+  background: rgba(7, 20, 30, 0.72);
+  color: var(--planetary-text-2);
+  font-size: 0.76rem;
+  backdrop-filter: blur(10px);
+}
+
+.planetary-console__hero-side-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.planetary-console__hero-card {
+  min-height: 8.5rem;
+  padding: 1rem 1rem 1.05rem;
+  border-radius: 1.15rem;
+}
+
+.planetary-console__hero-card:last-child {
+  grid-column: 1 / -1;
+}
+
+.planetary-console__hero-card strong,
+.planetary-console__manifest-card strong,
+.planetary-metric-card__value,
+.planetary-console__behavior-kpis strong {
+  font-size: clamp(1.35rem, 1.9vw, 2.1rem);
+  letter-spacing: -0.05em;
+}
+
+.planetary-console__hero-card p,
+.planetary-metric-card__detail,
+.planetary-list-card p,
+.planetary-country-card p,
+.planetary-entity-card p,
+.planetary-console__manifest-card p {
+  color: var(--planetary-text-3);
+}
+
+.planetary-console__metric-grid--brief {
+  gap: 0.85rem;
+  align-items: stretch;
+}
+
+.planetary-metric-card {
+  border-radius: 1.15rem;
+  padding: 0.95rem 1rem 1rem;
+}
+
+.planetary-metric-card__topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.planetary-metric-card__pulse {
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 999px;
+  background: radial-gradient(circle, var(--planetary-cyan), rgba(74, 227, 255, 0.3));
+  box-shadow: 0 0 0 0.34rem rgba(74, 227, 255, 0.08);
+}
+
+.planetary-metric-card.is-guarded .planetary-metric-card__pulse {
+  background: radial-gradient(circle, var(--planetary-amber), rgba(255, 208, 102, 0.36));
+  box-shadow: 0 0 0 0.34rem rgba(255, 208, 102, 0.09);
+}
+
+.planetary-metric-card.is-elevated .planetary-metric-card__pulse {
+  background: radial-gradient(circle, #ffb36b, rgba(255, 179, 107, 0.34));
+  box-shadow: 0 0 0 0.34rem rgba(255, 179, 107, 0.08);
+}
+
+.planetary-metric-card.is-critical .planetary-metric-card__pulse {
+  background: radial-gradient(circle, var(--planetary-coral), rgba(255, 141, 106, 0.34));
+  box-shadow: 0 0 0 0.34rem rgba(255, 141, 106, 0.08);
+}
+
+.planetary-console__section-grid {
+  grid-template-columns: minmax(0, 1.18fr) minmax(20rem, 0.92fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.planetary-panel {
+  border-radius: 1.3rem;
+  padding: 1.12rem;
+}
+
+.planetary-panel__header {
+  margin-bottom: 0.25rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid rgba(116, 157, 178, 0.1);
+}
+
+.planetary-list,
+.planetary-country-grid,
+.planetary-entity-grid,
+.planetary-timeline-list {
+  gap: 0.75rem;
+}
+
+.planetary-list-card,
+.planetary-country-card,
+.planetary-entity-card,
+.planetary-fusion-card,
+.planetary-timeline-card,
+.planetary-chain-button {
+  border-radius: 1.1rem;
+  padding: 0.95rem 1rem 1rem;
+}
+
+.planetary-click-card,
+.planetary-console__hero-hotspot,
+.planetary-console__hero-theater {
+  transition:
+    transform 220ms cubic-bezier(0.21, 1, 0.32, 1),
+    border-color 220ms ease,
+    box-shadow 220ms ease,
+    background 220ms ease;
+}
+
+.planetary-click-card:hover,
+.planetary-click-card:focus-visible,
+.planetary-console__hero-hotspot:hover,
+.planetary-console__hero-hotspot:focus-visible,
+.planetary-console__hero-theater:hover,
+.planetary-console__hero-theater:focus-visible {
+  transform: translateY(-3px);
+  border-color: rgba(74, 227, 255, 0.34);
+  box-shadow: 0 28px 58px rgba(0, 0, 0, 0.36);
+}
+
+.planetary-console__section-grid--timeline .planetary-timeline-list,
+.planetary-console__section-grid--runtime .planetary-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.planetary-console__section-grid--graph .planetary-graph-neighborhood__canvas {
+  min-height: 18rem;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(74, 227, 255, 0.08), transparent 42%),
+    linear-gradient(180deg, rgba(10, 25, 38, 0.94), rgba(6, 17, 27, 0.98));
+}
+
+.planetary-graph-neighborhood__node {
+  min-width: 8rem;
+  max-width: 9.5rem;
+  padding: 0.7rem 0.8rem;
+  border-color: rgba(109, 160, 180, 0.22);
+  background: rgba(7, 20, 30, 0.9);
+  backdrop-filter: blur(12px);
+}
+
+.planetary-graph-neighborhood__node strong {
+  font-size: 0.9rem;
+  letter-spacing: -0.02em;
+}
+
+.planetary-graph-neighborhood__edge {
+  opacity: 0.56;
+}
+
+.planetary-overlay-shell {
+  grid-template-columns: minmax(0, 1.28fr) minmax(0, 0.92fr);
+  gap: 0.9rem;
+}
+
+.planetary-overlay-chart,
+.planetary-overlay-map,
+.planetary-graph-neighborhood__canvas {
+  border-color: rgba(116, 157, 178, 0.12);
+  background:
+    linear-gradient(180deg, rgba(9, 24, 37, 0.94), rgba(6, 16, 26, 0.98)),
+    radial-gradient(circle at 20% 20%, rgba(74, 227, 255, 0.06), transparent 28%);
+}
+
+.planetary-console__manifest-grid {
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+}
+
+.planetary-console__manifest-card {
+  min-height: 8.2rem;
+}
+
+.planetary-console__notice {
+  border-color: rgba(74, 227, 255, 0.18);
+  background:
+    linear-gradient(90deg, rgba(7, 24, 36, 0.94), rgba(7, 20, 30, 0.98)),
+    radial-gradient(circle at 12% 50%, rgba(74, 227, 255, 0.08), transparent 34%);
+}
+
+.planetary-console__search input {
+  border-color: rgba(100, 152, 174, 0.18);
+  background: rgba(5, 15, 24, 0.9);
+}
+
+.planetary-console__search input:focus-visible {
+  outline: none;
+  border-color: rgba(74, 227, 255, 0.42);
+  box-shadow: 0 0 0 3px rgba(74, 227, 255, 0.08);
+}
+
+.planetary-console__refresh {
+  padding: 0.8rem 1.25rem;
+  background: linear-gradient(135deg, var(--planetary-cyan), var(--planetary-mint));
+  box-shadow: 0 18px 32px rgba(74, 227, 255, 0.18);
+}
+
+.planetary-alert-actions {
+  gap: 0.6rem;
+}
+
+.planetary-alert-action {
+  padding: 0.72rem 0.95rem;
+}
+
+.planetary-console__drawer {
+  border-color: rgba(115, 170, 189, 0.2);
+  background:
+    linear-gradient(180deg, rgba(7, 21, 32, 0.98), rgba(4, 13, 22, 0.99)),
+    radial-gradient(circle at top right, rgba(74, 227, 255, 0.08), transparent 26%);
+}
+
+@media (max-width: 1400px) {
+  .planetary-console__hero {
+    grid-template-columns: minmax(0, 1.55fr) minmax(20rem, 0.9fr);
+  }
+
+  .planetary-console__hero-globe-frame {
+    min-height: 42rem;
+  }
+}
+
+@media (max-width: 1180px) {
+  .planetary-console__section-grid,
+  .planetary-console__section-grid--timeline .planetary-timeline-list,
+  .planetary-console__section-grid--runtime .planetary-list,
+  .planetary-overlay-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .planetary-console__hero-copy--brief {
+    position: static;
+  }
+}
+
+@media (max-width: 720px) {
+  .planetary-console__main {
+    max-width: none;
+    padding-inline: 0.85rem;
+  }
+
+  .planetary-console__hero,
+  .planetary-console__count-strip,
+  .planetary-console__hero-side-grid,
+  .planetary-console__metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .planetary-console__hero-globe-frame {
+    min-height: 30rem;
+  }
+
+  .planetary-console__hero-copy--brief h2 {
+    max-width: none;
+    font-size: clamp(1.9rem, 7vw, 2.7rem);
+  }
+}

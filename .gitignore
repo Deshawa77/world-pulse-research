@@ -47,6 +47,7 @@ models/
 # =========================
 *.pem
 *.pfx
+config/runtime-secrets.local.json
 
 # =========================
 # Archives
@@ -72,3 +73,10 @@ build/
 # Temp / Screenshots
 # =========================
 tmp-*
+monitoring/internet_map/collectors/feeds/
+monitoring/internet_map/runtime/
+config/runtime-secrets.json
+config/runtime-secrets.production.json
+config/runtime-secrets.staging.json
+config/internet-map-thresholds.local.json
+deploy/**/*.env

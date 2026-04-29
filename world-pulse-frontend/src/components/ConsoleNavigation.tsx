@@ -12,6 +12,10 @@ const BASE_DASHBOARD_NAV_ITEMS: DashboardNavItem[] = [
   { label: "Dashboard", path: "/dashboard" },
   { label: "Profile", path: "/profile" },
   { label: "Predictions", path: "/trend-prediction" },
+  { label: "Hazard Ops", path: "/hazard-operations" },
+  { label: "Internet Map", path: "/internet-map" },
+  { label: "Behavior Intel", path: "/behavior-intelligence" },
+  { label: "Planetary Ops", path: "/planetary-intelligence" },
   { label: "Historical", path: "/historical-trends" },
   { label: "Scenario Studio", path: "/scenario" },
   { label: "Response Console", path: "/response-console" },
@@ -173,3 +177,4 @@ export default function ConsoleNavigation({
     </>
   );
 }
+

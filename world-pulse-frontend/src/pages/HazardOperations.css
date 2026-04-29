@@ -1,0 +1,1467 @@
+.hazard-ops-shell {
+  --ops-bg: #07111d;
+  --ops-bg-deep: #030812;
+  --ops-surface: rgba(11, 24, 39, 0.84);
+  --ops-surface-strong: rgba(14, 31, 49, 0.95);
+  --ops-border: rgba(97, 191, 255, 0.24);
+  --ops-border-strong: rgba(97, 191, 255, 0.56);
+  --ops-text: #ecf6ff;
+  --ops-muted: #9ab1c4;
+  --ops-cyan: #62c2ff;
+  --ops-amber: #ff9b54;
+  --ops-green: #44d18b;
+  --ops-violet: #ab8fff;
+  --ops-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+  min-height: 100vh;
+  padding: 18px 22px 44px;
+  color: var(--ops-text);
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 12% 20%, rgba(18, 96, 175, 0.28), transparent 28%),
+    radial-gradient(circle at 84% 18%, rgba(80, 215, 170, 0.16), transparent 24%),
+    radial-gradient(circle at 74% 74%, rgba(255, 154, 92, 0.14), transparent 20%),
+    linear-gradient(180deg, var(--ops-bg-deep) 0%, var(--ops-bg) 42%, #091523 100%);
+}
+
+.hazard-ops-backdrop {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(98, 194, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(98, 194, 255, 0.04) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.74), transparent 94%);
+  pointer-events: none;
+}
+
+.hazard-ops-shell > * {
+  position: relative;
+  z-index: 2;
+}
+
+.hazard-ops-topbar,
+.hazard-ops-hero-panel,
+.hazard-ops-summary-panel,
+.hazard-ops-source-card,
+.hazard-ops-map-card,
+.hazard-ops-focus-card,
+.hazard-ops-watchdeck-card,
+.hazard-ops-queue-card,
+.hazard-ops-mover-card,
+.hazard-ops-hotspot-card,
+.hazard-ops-list-card,
+.hazard-ops-list-item,
+.hazard-ops-history-card,
+.hazard-ops-transition-item,
+.hazard-ops-meta-grid div,
+.hazard-ops-focus-stats div,
+.hazard-ops-recommended-action,
+.hazard-ops-action-notice {
+  border: 1px solid var(--ops-border);
+  box-shadow: var(--ops-shadow);
+}
+
+.hazard-ops-topbar {
+  border-radius: 26px;
+  background: linear-gradient(145deg, rgba(9, 21, 35, 0.96), rgba(8, 20, 33, 0.82));
+  padding: 24px;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.9fr);
+  align-items: start;
+}
+
+.hazard-ops-kicker,
+.hazard-ops-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ops-cyan);
+}
+
+.hazard-ops-topbar-copy h1,
+.hazard-ops-hero-panel h2 {
+  margin: 10px 0 0;
+  font-family: "Orbitron", "Rajdhani", sans-serif;
+  line-height: 0.92;
+  text-transform: uppercase;
+}
+
+.hazard-ops-topbar-copy h1 {
+  font-size: clamp(2.4rem, 5vw, 4.4rem);
+}
+
+.hazard-ops-topbar-copy p,
+.hazard-ops-hero-panel p,
+.hazard-ops-card-head p,
+.hazard-ops-focus-card p,
+.hazard-ops-source-card p,
+.hazard-ops-recommended-action p {
+  margin: 12px 0 0;
+  color: var(--ops-muted);
+  line-height: 1.6;
+}
+
+.hazard-ops-header-meta {
+  display: grid;
+  gap: 12px;
+}
+
+.hazard-ops-header-meta > div,
+.hazard-ops-header-meta > button {
+  min-height: 68px;
+  border-radius: 18px;
+  border: 1px solid rgba(98, 194, 255, 0.2);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 14px 16px;
+}
+
+.hazard-ops-header-meta span,
+.hazard-ops-summary-grid span,
+.hazard-ops-ops-summary span,
+.hazard-ops-source-meta span,
+.hazard-ops-focus-stats span,
+.hazard-ops-meta-grid span,
+.hazard-ops-metrics span,
+.hazard-ops-list-select span,
+.hazard-ops-queue-stats span {
+  display: block;
+  color: var(--ops-muted);
+  font-size: 0.82rem;
+}
+
+.hazard-ops-header-meta strong,
+.hazard-ops-summary-grid strong,
+.hazard-ops-ops-summary strong,
+.hazard-ops-focus-stats strong,
+.hazard-ops-meta-grid strong {
+  display: block;
+  margin-top: 6px;
+}
+
+.hazard-ops-header-meta button {
+  color: var(--ops-text);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.hazard-ops-header-meta button:hover {
+  transform: translateY(-1px);
+  border-color: var(--ops-border-strong);
+  background: rgba(13, 29, 46, 0.92);
+}
+
+.hazard-ops-mini-nav {
+  margin: 12px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hazard-ops-mini-nav button,
+.hazard-ops-chip-row button,
+.hazard-ops-source-card,
+.hazard-ops-action-button,
+.hazard-ops-inline-button {
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.hazard-ops-mini-nav button,
+.hazard-ops-chip-row button {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(98, 194, 255, 0.28);
+  background: rgba(10, 23, 37, 0.78);
+  color: #def2ff;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+
+.hazard-ops-mini-nav button:hover,
+.hazard-ops-chip-row button:hover,
+.hazard-ops-source-card:hover,
+.hazard-ops-action-button:hover,
+.hazard-ops-inline-button:hover {
+  transform: translateY(-1px);
+  border-color: var(--ops-border-strong);
+}
+
+.hazard-ops-hero-grid {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 0.95fr);
+  gap: 14px;
+}
+
+.hazard-ops-hero-panel,
+.hazard-ops-summary-panel,
+.hazard-ops-source-card {
+  border-radius: 24px;
+  padding: 22px;
+  background: linear-gradient(150deg, rgba(10, 22, 36, 0.94), rgba(7, 17, 28, 0.84));
+}
+
+.hazard-ops-hero-panel h2 {
+  font-size: clamp(2rem, 4.5vw, 4rem);
+  max-width: 14ch;
+}
+
+.hazard-ops-chip-stack {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.hazard-ops-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hazard-ops-chip-row button.is-active {
+  border-color: rgba(98, 194, 255, 0.72);
+  background: linear-gradient(135deg, rgba(98, 194, 255, 0.2), rgba(68, 209, 139, 0.18));
+  color: white;
+}
+
+.hazard-ops-chip-row.is-window-row button.is-active {
+  background: linear-gradient(135deg, rgba(255, 155, 84, 0.22), rgba(98, 194, 255, 0.2));
+}
+
+.hazard-ops-summary-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.hazard-ops-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.hazard-ops-summary-grid > div,
+.hazard-ops-ops-summary > div {
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(98, 194, 255, 0.16);
+  padding: 14px;
+}
+
+.hazard-ops-ops-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.hazard-ops-ops-summary > span {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ops-cyan);
+}
+
+.hazard-ops-source-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.hazard-ops-source-card {
+  text-align: left;
+}
+
+.hazard-ops-source-card.is-active {
+  border-color: rgba(98, 194, 255, 0.7);
+  background: linear-gradient(150deg, rgba(13, 30, 48, 0.98), rgba(8, 21, 35, 0.9));
+}
+
+.hazard-ops-source-topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.hazard-ops-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(98, 194, 255, 0.2);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+.hazard-ops-status-pill.is-up,
+.hazard-ops-band-pill.is-monitor,
+.hazard-ops-source-card.status-up .hazard-ops-status-pill {
+  color: #baf4d2;
+  background: rgba(68, 209, 139, 0.14);
+  border-color: rgba(68, 209, 139, 0.32);
+}
+
+.hazard-ops-status-pill.is-degraded,
+.hazard-ops-status-pill.is-stale,
+.hazard-ops-band-pill.is-active {
+  color: #ffd8b9;
+  background: rgba(255, 155, 84, 0.14);
+  border-color: rgba(255, 155, 84, 0.32);
+}
+
+.hazard-ops-status-pill.is-down,
+.hazard-ops-band-pill.is-critical {
+  color: #ffc1c1;
+  background: rgba(248, 113, 113, 0.14);
+  border-color: rgba(248, 113, 113, 0.32);
+}
+
+.hazard-ops-band-pill.is-guarded {
+  color: #cfe2f1;
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.28);
+}
+
+.hazard-ops-source-meta,
+.hazard-ops-source-components,
+.hazard-ops-card-head,
+.hazard-ops-history-head,
+.hazard-ops-hotspot-head,
+.hazard-ops-list-topline,
+.hazard-ops-queue-stats,
+.hazard-ops-inline-actions,
+.hazard-ops-action-row,
+.hazard-ops-pill-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hazard-ops-source-meta,
+.hazard-ops-source-components {
+  margin-top: 12px;
+}
+
+.hazard-ops-source-components span,
+.hazard-ops-source-pill,
+.hazard-ops-signal-pill,
+.hazard-ops-count-pill,
+.hazard-ops-band-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0 10px;
+  letter-spacing: 0.1em;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.hazard-ops-source-components span,
+.hazard-ops-source-pill {
+  border: 1px solid rgba(98, 194, 255, 0.22);
+  background: rgba(98, 194, 255, 0.1);
+  color: #dff4ff;
+}
+
+.hazard-ops-signal-pill {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #d3e7f6;
+  text-transform: none;
+  letter-spacing: 0.04em;
+}
+
+.hazard-ops-source-pill.is-muted,
+.hazard-ops-signal-pill.is-muted {
+  opacity: 0.72;
+}
+
+.hazard-ops-count-pill {
+  border: 1px solid rgba(98, 194, 255, 0.34);
+  background: rgba(98, 194, 255, 0.13);
+}
+
+.hazard-ops-main-grid {
+  margin-top: 16px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1.36fr) minmax(340px, 0.88fr);
+  grid-template-areas:
+    "map focus"
+    "watch queue"
+    "watch movers";
+  align-items: start;
+}
+
+.hazard-ops-map-card,
+.hazard-ops-focus-card,
+.hazard-ops-watchdeck-card,
+.hazard-ops-queue-card,
+.hazard-ops-mover-card {
+  border-radius: 24px;
+  padding: 18px;
+  background: linear-gradient(150deg, rgba(10, 23, 37, 0.96), rgba(7, 17, 28, 0.9));
+}
+
+.hazard-ops-map-card { grid-area: map; overflow: hidden; }
+.hazard-ops-focus-card { grid-area: focus; }
+.hazard-ops-watchdeck-card { grid-area: watch; }
+.hazard-ops-queue-card { grid-area: queue; }
+.hazard-ops-movers-stack { grid-area: movers; display: grid; gap: 14px; }
+
+.hazard-ops-card-head {
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.hazard-ops-card-head.compact {
+  margin-bottom: 12px;
+}
+
+.hazard-ops-card-head strong,
+.hazard-ops-map-note strong,
+.hazard-ops-hotspot-head strong,
+.hazard-ops-list-item strong,
+.hazard-ops-list-topline strong {
+  display: block;
+  font-size: 1.05rem;
+}
+
+.hazard-ops-legend-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.hazard-ops-legend-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #ddf2ff;
+}
+
+.hazard-ops-legend-row i {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+
+.hazard-ops-map-stage-wrap,
+.hazard-ops-map-stage,
+.hazard-ops-map-canvas,
+.hazard-ops-map-stage .js-plotly-plot,
+.hazard-ops-map-stage .plot-container,
+.hazard-ops-map-stage .svg-container {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden !important;
+}
+
+.hazard-ops-map-stage {
+  min-height: 560px;
+  border-radius: 20px;
+  border: 1px solid rgba(98, 194, 255, 0.18);
+  background: linear-gradient(180deg, rgba(4, 12, 21, 0.98), rgba(6, 14, 24, 0.94));
+}
+
+.hazard-ops-map-canvas,
+.hazard-ops-map-stage .js-plotly-plot,
+.hazard-ops-map-stage .plot-container,
+.hazard-ops-map-stage .svg-container {
+  min-height: 560px;
+  height: 100%;
+}
+
+.hazard-ops-map-note {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  max-width: min(360px, calc(100% - 36px));
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(7, 18, 30, 0.92);
+  border: 1px solid rgba(98, 194, 255, 0.22);
+  backdrop-filter: blur(10px);
+}
+
+.hazard-ops-focus-core,
+.hazard-ops-watchdeck-grid,
+.hazard-ops-list,
+.hazard-ops-transition-list {
+  display: grid;
+  gap: 10px;
+}
+
+.hazard-ops-focus-stats,
+.hazard-ops-meta-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hazard-ops-focus-stats div,
+.hazard-ops-meta-grid div,
+.hazard-ops-recommended-action,
+.hazard-ops-history-card {
+  border-radius: 16px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.hazard-ops-action-row {
+  margin-top: 2px;
+}
+
+.hazard-ops-action-button,
+.hazard-ops-inline-button {
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(98, 194, 255, 0.2);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ops-text);
+}
+
+.hazard-ops-action-button.action-escalate,
+.hazard-ops-inline-button.action-escalate {
+  border-color: rgba(255, 155, 84, 0.34);
+  background: rgba(255, 155, 84, 0.12);
+}
+
+.hazard-ops-action-button.action-false_positive,
+.hazard-ops-inline-button.action-false_positive {
+  border-color: rgba(248, 113, 113, 0.34);
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.hazard-ops-action-button:disabled,
+.hazard-ops-inline-button:disabled {
+  cursor: wait;
+  opacity: 0.75;
+}
+
+.hazard-ops-action-notice {
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(98, 194, 255, 0.08);
+  color: #dff5ff;
+}
+
+.hazard-ops-history-card svg,
+.hazard-ops-sparkline svg {
+  width: 100%;
+  height: 44px;
+  display: block;
+}
+
+.hazard-ops-history-card path,
+.hazard-ops-sparkline path {
+  fill: none;
+  stroke: #6bcfff;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hazard-ops-transition-list,
+.hazard-ops-list {
+  max-height: 420px;
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(98, 194, 255, 0.34) transparent;
+}
+
+.hazard-ops-transition-list::-webkit-scrollbar,
+.hazard-ops-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.hazard-ops-transition-list::-webkit-scrollbar-thumb,
+.hazard-ops-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(98, 194, 255, 0.34);
+}
+.hazard-ops-transition-item,
+.hazard-ops-list-card,
+.hazard-ops-hotspot-card,
+.hazard-ops-list-item {
+  border-radius: 16px;
+  padding: 13px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ops-text);
+}
+
+.hazard-ops-list-card,
+.hazard-ops-list-item,
+.hazard-ops-hotspot-card {
+  text-align: left;
+}
+
+.hazard-ops-list-select {
+  display: grid;
+  gap: 5px;
+  outline: none;
+}
+
+.hazard-ops-list-select:focus-visible {
+  border-radius: 12px;
+  box-shadow: 0 0 0 2px rgba(98, 194, 255, 0.36);
+}
+
+.hazard-ops-list-meta,
+.hazard-ops-inline-actions {
+  margin-top: 10px;
+}
+
+.hazard-ops-inline-button {
+  min-height: 32px;
+  font-size: 12px;
+}
+
+.hazard-ops-queue-stats {
+  justify-content: space-between;
+}
+
+.hazard-ops-watchdeck-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hazard-ops-hotspot-card,
+.hazard-ops-list-item {
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.hazard-ops-hotspot-card:hover,
+.hazard-ops-list-item:hover,
+.hazard-ops-list-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--ops-border-strong);
+}
+
+.hazard-ops-hotspot-card.is-selected {
+  border-color: var(--ops-border-strong);
+  background: rgba(15, 34, 53, 0.96);
+}
+
+.hazard-ops-hotspot-head small,
+.hazard-ops-sparkline span,
+.hazard-ops-list-item span + span,
+.hazard-ops-transition-item span + span {
+  margin-top: 4px;
+}
+
+.hazard-ops-hotspot-head span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hazard-ops-sparkline {
+  border-radius: 14px;
+  border: 1px solid rgba(98, 194, 255, 0.14);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px;
+}
+
+.hazard-ops-delta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+.hazard-ops-delta.is-up {
+  color: #bcf4d3;
+  background: rgba(68, 209, 139, 0.12);
+}
+
+.hazard-ops-delta.is-down {
+  color: #ffcbcb;
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.hazard-ops-delta.is-flat {
+  color: #d8efff;
+  background: rgba(98, 194, 255, 0.12);
+}
+
+.hazard-ops-metrics {
+  margin-top: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.hazard-ops-empty {
+  border-radius: 16px;
+  border: 1px dashed rgba(98, 194, 255, 0.28);
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--ops-muted);
+}
+
+.hazard-ops-empty.compact {
+  padding: 10px 12px;
+}
+
+.compact-list {
+  max-height: 260px;
+}
+
+.hazard-earthquake { border-left: 3px solid #38bdf8; }
+.hazard-wildfire { border-left: 3px solid #fb923c; }
+.hazard-flood { border-left: 3px solid #22c55e; }
+.hazard-cyclone { border-left: 3px solid #a78bfa; }
+
+.hazard-ops-map-stage-wrap {
+  position: relative;
+  display: grid;
+  gap: 12px;
+}
+
+.hazard-ops-thermal-head-side {
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+}
+
+.hazard-ops-thermal-scale {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #dff4ff;
+}
+
+.hazard-ops-thermal-scale-bar {
+  width: 180px;
+  max-width: 32vw;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(90deg, #041126 0%, #0c7bdc 22%, #1fd3e1 38%, #8ff35a 56%, #ffe45c 72%, #ff7d2f 86%, #f31245 100%);
+  box-shadow: inset 0 0 18px rgba(255, 255, 255, 0.08);
+}
+
+.hazard-ops-clear-button {
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ops-text);
+}
+
+.hazard-ops-map-note .hazard-ops-pill-group {
+  margin-top: 10px;
+}
+
+.hazard-ops-thermal-detail {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.hazard-ops-thermal-summary-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.hazard-ops-thermal-summary-card,
+.hazard-ops-thermal-sector-card {
+  border-radius: 16px;
+  border: 1px solid rgba(98, 194, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.hazard-ops-thermal-summary-card {
+  padding: 14px;
+}
+
+.hazard-ops-thermal-summary-card span,
+.hazard-ops-thermal-metrics span,
+.hazard-ops-thermal-sector-head small {
+  color: var(--ops-muted);
+}
+
+.hazard-ops-thermal-summary-card strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 1.15rem;
+}
+
+.hazard-ops-thermal-sector-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hazard-ops-thermal-sector-card {
+  padding: 14px;
+  text-align: left;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.hazard-ops-thermal-sector-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--ops-border-strong);
+}
+
+.hazard-ops-thermal-sector-card.is-selected {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(11, 28, 43, 0.92);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.hazard-ops-thermal-sector-head,
+.hazard-ops-thermal-reading {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.hazard-ops-thermal-sector-head small {
+  display: block;
+  margin-top: 6px;
+}
+
+.hazard-ops-thermal-sector-head span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hazard-ops-thermal-reading {
+  margin-top: 12px;
+  align-items: baseline;
+}
+
+.hazard-ops-thermal-reading strong {
+  font-size: 1.45rem;
+}
+
+.hazard-ops-thermal-bar {
+  height: 10px;
+  margin-top: 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.hazard-ops-thermal-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #12b5ff 0%, #1fd3e1 25%, #8ff35a 52%, #ffe45c 74%, #ff7d2f 88%, #f31245 100%);
+}
+
+.hazard-ops-thermal-metrics {
+  margin-top: 12px;
+  display: grid;
+  gap: 6px 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  font-size: 12px;
+}
+
+.hazard-ops-source-confidence {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hazard-ops-source-confidence-bar {
+  flex: 1;
+  height: 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.hazard-ops-source-confidence-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #38bdf8 0%, #22c55e 60%, #facc15 100%);
+}
+
+.hazard-ops-pipeline-ribbon,
+.hazard-ops-forecast-board {
+  margin-top: 14px;
+  display: grid;
+  gap: 14px;
+}
+
+.hazard-ops-pipeline-ribbon {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.hazard-ops-pipeline-stage,
+.hazard-ops-forecast-card,
+.hazard-ops-playback-card,
+.hazard-ops-district-panel,
+.hazard-ops-explainability-card,
+.hazard-ops-corroboration-note,
+.hazard-ops-quality-row {
+  border-radius: 20px;
+  border: 1px solid var(--ops-border);
+  background: linear-gradient(150deg, rgba(10, 22, 36, 0.94), rgba(7, 17, 28, 0.84));
+  box-shadow: var(--ops-shadow);
+}
+
+.hazard-ops-pipeline-stage {
+  padding: 16px;
+}
+
+.hazard-ops-pipeline-stage small {
+  display: block;
+  margin-top: 10px;
+  color: #dff4ff;
+  font-size: 0.82rem;
+}
+
+.hazard-ops-pipeline-meter,
+.hazard-ops-forecast-action,
+.hazard-ops-district-metric-grid > div,
+.hazard-ops-quality-summary-grid > div {
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.hazard-ops-pipeline-meter {
+  margin-top: 12px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.hazard-ops-pipeline-meter span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #62c2ff 0%, #44d18b 62%, #ff9b54 100%);
+}
+
+.hazard-ops-forecast-board {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hazard-ops-forecast-card {
+  padding: 18px;
+}
+
+.hazard-ops-forecast-card.is-active {
+  border-color: rgba(98, 194, 255, 0.64);
+}
+
+.hazard-ops-forecast-focus,
+.hazard-ops-map-mode-row button,
+.hazard-ops-playback-labels button {
+  border-radius: 14px;
+  border: 1px solid rgba(98, 194, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ops-text);
+}
+
+.hazard-ops-forecast-focus {
+  min-height: 40px;
+  padding: 0 14px;
+}
+
+.hazard-ops-forecast-window-grid,
+.hazard-ops-district-metric-grid,
+.hazard-ops-quality-summary-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.hazard-ops-forecast-window-grid {
+  margin-top: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.hazard-ops-forecast-window-grid button {
+  text-align: left;
+  min-height: 112px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(98, 194, 255, 0.16);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ops-text);
+}
+
+.hazard-ops-forecast-window-grid button.is-active {
+  border-color: rgba(98, 194, 255, 0.68);
+  background: linear-gradient(135deg, rgba(98, 194, 255, 0.18), rgba(68, 209, 139, 0.12));
+}
+
+.hazard-ops-forecast-window-grid span,
+.hazard-ops-forecast-window-grid small {
+  display: block;
+  margin-top: 6px;
+  color: var(--ops-muted);
+}
+
+.hazard-ops-forecast-window-grid strong {
+  display: block;
+  margin-top: 10px;
+  font-size: 1.2rem;
+}
+
+.hazard-ops-forecast-metrics,
+.hazard-ops-quality-list {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.hazard-ops-quality-spotlight-grid,
+.hazard-ops-quality-calibration-grid {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.hazard-ops-forecast-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.hazard-ops-forecast-metrics > div,
+.hazard-ops-quality-row,
+.hazard-ops-quality-card {
+  padding: 12px;
+}
+
+.hazard-ops-forecast-metrics span,
+.hazard-ops-quality-row span,
+.hazard-ops-district-metric-grid span,
+.hazard-ops-explainability-card span {
+  display: block;
+  color: var(--ops-muted);
+  font-size: 0.82rem;
+}
+
+.hazard-ops-forecast-action {
+  margin-top: 14px;
+  padding: 14px;
+  color: #def4ff;
+  line-height: 1.5;
+}
+
+.hazard-ops-map-mode-row {
+  margin-bottom: 14px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.hazard-ops-map-mode-row button {
+  min-height: 72px;
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.hazard-ops-map-mode-row button.is-active {
+  border-color: rgba(98, 194, 255, 0.7);
+  background: linear-gradient(135deg, rgba(98, 194, 255, 0.18), rgba(68, 209, 139, 0.16));
+}
+
+.hazard-ops-map-mode-row button strong,
+.hazard-ops-playback-labels button strong {
+  display: block;
+}
+
+.hazard-ops-map-mode-row button span,
+.hazard-ops-playback-labels button span {
+  display: block;
+  margin-top: 6px;
+  color: var(--ops-muted);
+  font-size: 0.82rem;
+}
+
+.hazard-ops-playback-card {
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.hazard-ops-playback-slider {
+  width: 100%;
+  margin-top: 8px;
+  accent-color: #62c2ff;
+}
+
+.hazard-ops-playback-labels {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.hazard-ops-playback-labels button {
+  min-height: 74px;
+  padding: 10px;
+  text-align: left;
+}
+
+.hazard-ops-playback-labels button.is-active {
+  border-color: rgba(98, 194, 255, 0.72);
+  background: rgba(98, 194, 255, 0.1);
+}
+
+.hazard-ops-district-panel {
+  padding: 16px;
+}
+
+.hazard-ops-district-metric-grid,
+.hazard-ops-quality-summary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.hazard-ops-district-metric-grid > div,
+.hazard-ops-quality-summary-grid > div {
+  padding: 14px;
+}
+
+.hazard-ops-explainability-grid {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hazard-ops-explainability-card {
+  padding: 14px;
+}
+
+.hazard-ops-explainability-card p,
+.hazard-ops-corroboration-note p {
+  margin: 10px 0 0;
+  color: var(--ops-muted);
+  line-height: 1.55;
+}
+
+.hazard-ops-corroboration-note {
+  padding: 14px;
+}
+
+.hazard-ops-alert-ladder {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.hazard-ops-alert-step {
+  border-radius: 14px;
+  padding: 12px;
+  border: 1px solid rgba(98, 194, 255, 0.14);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.hazard-ops-alert-step span {
+  display: block;
+  color: var(--ops-muted);
+  font-size: 0.82rem;
+}
+
+.hazard-ops-alert-step strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 1.18rem;
+}
+
+.hazard-ops-alert-step.is-active {
+  border-color: rgba(98, 194, 255, 0.72);
+  box-shadow: 0 0 0 1px rgba(98, 194, 255, 0.18);
+}
+
+.hazard-ops-alert-step.is-monitor { background: rgba(98, 194, 255, 0.07); }
+.hazard-ops-alert-step.is-watch { background: rgba(250, 204, 21, 0.08); }
+.hazard-ops-alert-step.is-active { background: rgba(255, 155, 84, 0.1); }
+.hazard-ops-alert-step.is-critical { background: rgba(248, 113, 113, 0.12); }
+
+.hazard-ops-quality-list {
+  margin-top: 14px;
+}
+
+.hazard-ops-quality-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1.1fr repeat(4, minmax(0, 1fr));
+  align-items: center;
+}
+
+.hazard-ops-quality-card {
+  border-radius: 18px;
+  border: 1px solid var(--ops-border);
+  background: linear-gradient(150deg, rgba(10, 22, 36, 0.94), rgba(7, 17, 28, 0.84));
+  box-shadow: var(--ops-shadow);
+}
+
+.hazard-ops-quality-card span {
+  display: block;
+  color: var(--ops-muted);
+  font-size: 0.82rem;
+}
+
+.hazard-ops-quality-card p {
+  margin: 10px 0 0;
+  color: var(--ops-muted);
+  line-height: 1.5;
+}
+
+.hazard-ops-quality-card__topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hazard-ops-quality-card.is-warning {
+  border-color: rgba(251, 191, 36, 0.32);
+}
+
+.hazard-ops-quality-card.is-stable {
+  border-color: rgba(34, 197, 94, 0.28);
+}
+
+.hazard-ops-quality-card.is-guarded {
+  border-color: rgba(56, 189, 248, 0.28);
+}
+
+.hazard-ops-quality-card.is-critical {
+  border-color: rgba(248, 113, 113, 0.28);
+}
+
+@media (max-width: 1480px) {
+  .hazard-ops-source-grid,
+  .hazard-ops-pipeline-ribbon {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .hazard-ops-forecast-board,
+  .hazard-ops-map-mode-row,
+  .hazard-ops-quality-spotlight-grid,
+  .hazard-ops-quality-calibration-grid,
+  .hazard-ops-playback-labels {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hazard-ops-main-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "map"
+      "focus"
+      "watch"
+      "queue"
+      "movers";
+  }
+}
+
+@media (max-width: 1080px) {
+  .hazard-ops-shell {
+    padding: 16px 14px 34px;
+  }
+
+  .hazard-ops-topbar,
+  .hazard-ops-hero-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hazard-ops-source-grid,
+  .hazard-ops-watchdeck-grid,
+  .hazard-ops-focus-stats,
+  .hazard-ops-meta-grid,
+  .hazard-ops-summary-grid,
+  .hazard-ops-ops-summary,
+  .hazard-ops-thermal-summary-grid,
+  .hazard-ops-thermal-sector-grid,
+  .hazard-ops-pipeline-ribbon,
+  .hazard-ops-forecast-board,
+  .hazard-ops-forecast-window-grid,
+  .hazard-ops-forecast-metrics,
+  .hazard-ops-map-mode-row,
+  .hazard-ops-playback-labels,
+  .hazard-ops-district-metric-grid,
+  .hazard-ops-explainability-grid,
+  .hazard-ops-alert-ladder,
+  .hazard-ops-quality-summary-grid,
+  .hazard-ops-quality-spotlight-grid,
+  .hazard-ops-quality-calibration-grid,
+  .hazard-ops-quality-row {
+    grid-template-columns: 1fr;
+  }
+
+  .hazard-ops-thermal-head-side {
+    justify-items: start;
+  }
+
+  .hazard-ops-map-stage,
+  .hazard-ops-map-canvas,
+  .hazard-ops-map-stage .js-plotly-plot,
+  .hazard-ops-map-stage .plot-container,
+  .hazard-ops-map-stage .svg-container {
+    min-height: 420px;
+  }
+
+  .hazard-ops-map-note {
+    position: static;
+    margin-top: 12px;
+    max-width: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .hazard-ops-topbar,
+  .hazard-ops-hero-panel,
+  .hazard-ops-summary-panel,
+  .hazard-ops-source-card,
+  .hazard-ops-map-card,
+  .hazard-ops-focus-card,
+  .hazard-ops-watchdeck-card,
+  .hazard-ops-queue-card,
+  .hazard-ops-mover-card {
+    padding: 16px;
+    border-radius: 20px;
+  }
+
+  .hazard-ops-topbar-copy h1 {
+    font-size: clamp(2rem, 14vw, 3.2rem);
+  }
+
+  .hazard-ops-hero-panel h2 {
+    max-width: none;
+    font-size: clamp(1.8rem, 12vw, 2.8rem);
+  }
+
+  .hazard-ops-list,
+  .hazard-ops-transition-list {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+}
+
+
+.hazard-ops-deck-card {
+  margin-top: 14px;
+  border-radius: 24px;
+  padding: 20px;
+  border: 1px solid var(--ops-border);
+  box-shadow: var(--ops-shadow);
+  background: linear-gradient(150deg, rgba(10, 22, 36, 0.94), rgba(7, 17, 28, 0.84));
+}
+
+.hazard-ops-deck-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.hazard-ops-deck-tabs button {
+  min-height: 42px;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(98, 194, 255, 0.24);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--ops-text);
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.hazard-ops-deck-tabs button:hover {
+  transform: translateY(-1px);
+  border-color: var(--ops-border-strong);
+}
+
+.hazard-ops-deck-tabs button.is-active {
+  border-color: rgba(98, 194, 255, 0.72);
+  background: linear-gradient(135deg, rgba(98, 194, 255, 0.18), rgba(68, 209, 139, 0.16));
+}
+
+.hazard-ops-source-grid.is-embedded,
+.hazard-ops-pipeline-ribbon.is-embedded,
+.hazard-ops-forecast-board.is-embedded {
+  margin-top: 0;
+}
+
+.hazard-ops-main-grid {
+  grid-template-columns: minmax(0, 1.42fr) minmax(340px, 0.82fr);
+  grid-template-areas: "map focus";
+}
+
+.hazard-ops-focus-card {
+  position: sticky;
+  top: 18px;
+  align-self: start;
+}
+
+.hazard-ops-operations-board,
+.hazard-ops-ops-deck-body {
+  display: grid;
+  gap: 14px;
+}
+
+.hazard-ops-movers-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hazard-ops-operations-board .hazard-ops-list {
+  max-height: 560px;
+}
+
+@media (max-width: 1480px) {
+  .hazard-ops-main-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "map"
+      "focus";
+  }
+
+  .hazard-ops-focus-card {
+    position: static;
+  }
+
+  .hazard-ops-movers-grid {
+    grid-template-columns: 1fr;
+  }
+}

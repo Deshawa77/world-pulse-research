@@ -18,6 +18,10 @@ import IntroSplash from "./components/IntroSplash";
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const TrendPrediction = lazy(() => import("./pages/TrendPrediction"));
 const ResponseConsole = lazy(() => import("./pages/ResponseConsole"));
+const HazardOperations = lazy(() => import("./pages/HazardOperations"));
+const InternetMap = lazy(() => import("./pages/InternetMap"));
+const BehaviorIntelligence = lazy(() => import("./pages/BehaviorIntelligence"));
+const PlanetaryIntelligence = lazy(() => import("./pages/PlanetaryIntelligence"));
 
 const INTRO_SEEN_KEY = "wp_intro_seen_v3";
 
@@ -180,6 +184,72 @@ function App() {
         />
 
         <Route path="/historical-trends" element={<ProtectedRoute><HistoricalTrends /></ProtectedRoute>} />
+        <Route
+          path="/hazard-operations"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<main className="wp-loading"><section className="wp-loading-card"><div className="wp-loading-spinner" /><p>Loading hazard operations...</p></section></main>}>
+                <HazardOperations />
+              </Suspense>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/internet-map"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<main className="wp-loading"><section className="wp-loading-card"><div className="wp-loading-spinner" /><p>Loading internet map...</p></section></main>}>
+                <InternetMap />
+              </Suspense>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/behavior-intelligence"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<main className="wp-loading"><section className="wp-loading-card"><div className="wp-loading-spinner" /><p>Loading behavior intelligence console...</p></section></main>}>
+                <BehaviorIntelligence />
+              </Suspense>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/behavior-intelligence"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<main className="wp-loading"><section className="wp-loading-card"><div className="wp-loading-spinner" /><p>Loading behavior intelligence console...</p></section></main>}>
+                <BehaviorIntelligence />
+              </Suspense>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/planetary-intelligence"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<main className="wp-loading"><section className="wp-loading-card"><div className="wp-loading-spinner" /><p>Loading planetary intelligence console...</p></section></main>}>
+                <PlanetaryIntelligence />
+              </Suspense>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/planetary-intelligence"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<main className="wp-loading"><section className="wp-loading-card"><div className="wp-loading-spinner" /><p>Loading planetary intelligence console...</p></section></main>}>
+                <PlanetaryIntelligence />
+              </Suspense>
+            </ProtectedRoute>
+          }
+        />
+
         <Route path="/scenario" element={<ProtectedRoute><ScenarioStudio /></ProtectedRoute>} />
         <Route
           path="/response-console"
@@ -202,5 +272,6 @@ function App() {
 }
 
 export default App;
+
 
 

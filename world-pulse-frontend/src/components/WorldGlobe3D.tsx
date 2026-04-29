@@ -23,15 +23,50 @@ export interface GlobeEventMarker {
   kind?: EventKind;
 }
 
+export interface GlobeFlowArc {
+  id: string;
+  fromCountry?: string;
+  toCountry?: string;
+  fromLat: number;
+  fromLng: number;
+  toLat: number;
+  toLng: number;
+  intensity?: number;
+  label?: string;
+  category?: string;
+  color?: string;
+}
+
+export interface GlobeCountryDetail {
+  label?: string;
+  riskBand?: string;
+  confidence?: number;
+  alerts?: number;
+  hazards?: number;
+  corridors?: number;
+  trend?: string;
+  advisory?: string;
+  pressure?: number;
+}
+
 interface WorldGlobe3DProps {
   data: CountryRisk[];
   onCountryClick?: (country: CountryRisk) => void;
+  onCountryHover?: (country: CountryRisk | null) => void;
+  onFlowArcClick?: (arc: GlobeFlowArc) => void;
   autoRotate?: boolean;
   rotationSpeed?: number;
   height?: CSSProperties["height"];
   showActivityDots?: boolean;
   eventMarkers?: GlobeEventMarker[];
+  flowArcs?: GlobeFlowArc[];
+  countryDetails?: Record<string, GlobeCountryDetail>;
+  labeledCountryCodes?: string[];
+  showRiskLegend?: boolean;
   visualPreset?: "default" | "introCinematic";
+  projectionType?: "orthographic" | "natural earth" | "equirectangular";
+  projectionScale?: number;
+  fillCountriesByRisk?: boolean;
 }
 
 type PulseTrace = {
@@ -93,27 +128,58 @@ function markerSymbolForKind(kind: EventKind): string {
   return "circle";
 }
 
-function buildMissilePath(fromLat: number, fromLng: number, toLat: number, toLng: number, steps = 42) {
+function buildArcPath(fromLat: number, fromLng: number, toLat: number, toLng: number, steps = 42, arcLift = 8) {
   const pathLat: number[] = [];
   const pathLon: number[] = [];
   for (let i = 0; i < steps; i++) {
     const t = i / (steps - 1);
-    const arcHeight = Math.sin(Math.PI * t) * 8;
+    const arcHeight = Math.sin(Math.PI * t) * arcLift;
     pathLat.push(fromLat + (toLat - fromLat) * t + arcHeight);
     pathLon.push(fromLng + (toLng - fromLng) * t);
   }
   return { pathLat, pathLon };
 }
 
+function buildMissilePath(fromLat: number, fromLng: number, toLat: number, toLng: number, steps = 42) {
+  return buildArcPath(fromLat, fromLng, toLat, toLng, steps, 8);
+}
+
+function getArcColor(intensity: number): string {
+  if (intensity >= 80) return "rgba(255, 126, 95, 0.88)";
+  if (intensity >= 60) return "rgba(255, 193, 85, 0.82)";
+  if (intensity >= 40) return "rgba(74, 227, 255, 0.72)";
+  return "rgba(114, 241, 210, 0.58)";
+}
+
+function textPositionForCountry(country: CountryRisk, index: number): string {
+  const positions = ["top left", "top right", "bottom left", "bottom right", "top center", "bottom center"];
+  const eastBias = country.lng > 60 ? 1 : country.lng < -60 ? 0 : index % positions.length;
+  return positions[eastBias];
+}
+
+function formatMaybePercent(value: number | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  return `${Math.round(value)}%`;
+}
+
 export default function WorldGlobe3D({
   data,
   onCountryClick,
+  onCountryHover,
+  onFlowArcClick,
   autoRotate = true,
   rotationSpeed = 0.25,
   height = 500,
   showActivityDots = true,
   eventMarkers = [],
+  flowArcs = [],
+  countryDetails,
+  labeledCountryCodes = [],
+  showRiskLegend = false,
   visualPreset = "default",
+  projectionType = "orthographic",
+  projectionScale,
+  fillCountriesByRisk = false,
 }: WorldGlobe3DProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const plotlyRef = useRef<any>(null);
@@ -149,6 +215,34 @@ export default function WorldGlobe3D({
     });
   }, [eventMarkers]);
 
+  const normalizedFlowArcs = useMemo(() => {
+    return flowArcs
+      .map((item) => ({
+        ...item,
+        intensity: clamp(Number(item.intensity) || 0, 0, 100),
+      }))
+      .filter((item) => (
+        Number.isFinite(item.fromLat)
+        && Number.isFinite(item.fromLng)
+        && Number.isFinite(item.toLat)
+        && Number.isFinite(item.toLng)
+      ));
+  }, [flowArcs]);
+
+  const labelCountries = useMemo(() => {
+    if (!labeledCountryCodes.length) return [];
+    const wanted = new Set(labeledCountryCodes.map((item) => item.toUpperCase()));
+    return plotted.filter((item) => wanted.has(item.countryCode)).slice(0, 8);
+  }, [labeledCountryCodes, plotted]);
+
+  const interactiveCountries = showActivityDots || fillCountriesByRisk;
+  const interactiveArcs = normalizedFlowArcs.length > 0 && typeof onFlowArcClick === "function";
+  const computedProjectionScale = projectionScale ?? (projectionType === "equirectangular" ? 1.12 : projectionType === "natural earth" ? 1.28 : 1);
+
+  useEffect(() => {
+    onCountryHover?.(hoveredCountry);
+  }, [hoveredCountry, onCountryHover]);
+
   useEffect(() => {
     let stopped = false;
 
@@ -179,6 +273,34 @@ export default function WorldGlobe3D({
           // Keep the intro globe clean: only the globe itself, coastlines, and atmosphere.
         }
 
+        if (fillCountriesByRisk && plotted.length) {
+          traces.push({
+            type: "choropleth",
+            locationmode: "ISO-3",
+            locations: plotted.map((p) => p.countryCode),
+            z: plotted.map((p) => p.risk),
+            zmin: 0,
+            zmax: 100,
+            text: plotted.map((p) => `${p.countryCode} | Risk ${p.risk.toFixed(1)}`),
+            customdata: plotted,
+            hovertemplate: "%{customdata.countryCode}<br/>Risk %{z:.1f}<extra></extra>",
+            colorscale: [
+              [0, "#0f3d33"],
+              [0.25, "#22c55e"],
+              [0.5, "#facc15"],
+              [0.75, "#fb923c"],
+              [1, "#ef4444"],
+            ],
+            showscale: false,
+            marker: {
+              line: {
+                color: visualPreset === "introCinematic" ? "rgba(125, 182, 245, 0.28)" : "rgba(158, 211, 255, 0.48)",
+                width: visualPreset === "introCinematic" ? 0.45 : 0.7,
+              },
+            },
+          });
+        }
+
         if (showActivityDots) {
           traces.push({
             type: "scattergeo",
@@ -189,13 +311,72 @@ export default function WorldGlobe3D({
             customdata: plotted,
             hovertemplate: "%{text}<extra></extra>",
             marker: {
-              size: plotted.map((p) => 3 + (p.risk / 100) * 8),
+              size: plotted.map((p) => (fillCountriesByRisk ? 2 + (p.risk / 100) * 4 : 3 + (p.risk / 100) * 8)),
               sizemode: "diameter",
               color: plotted.map((p) => getRiskColor(p.risk)),
-              opacity: 0.85,
+              opacity: fillCountriesByRisk ? 0.62 : 0.85,
               line: { color: "rgba(0,0,0,0.35)", width: 1 },
             },
             showlegend: false,
+          });
+        }
+
+        if (normalizedFlowArcs.length) {
+          normalizedFlowArcs.slice(0, 12).forEach((arc, index) => {
+            const lift = 2.8 + (arc.intensity / 100) * 3.8;
+            const width = 1 + (arc.intensity / 100) * 3.2;
+            const { pathLat, pathLon } = buildArcPath(arc.fromLat, arc.fromLng, arc.toLat, arc.toLng, 34, lift);
+            const arcCustomData = pathLat.map(() => arc);
+            traces.push({
+              type: "scattergeo",
+              mode: "lines",
+              lat: pathLat,
+              lon: pathLon,
+              customdata: arcCustomData,
+              text: arc.label || `${arc.fromCountry || "?"} -> ${arc.toCountry || "?"}`,
+              hovertemplate: "%{text}<br/>Flow intensity: " + arc.intensity.toFixed(0) + "%<extra></extra>",
+              line: {
+                color: arc.color || getArcColor(arc.intensity),
+                width,
+              },
+              opacity: projectionType === "orthographic" ? 0.72 : 0.84,
+              showlegend: false,
+            });
+
+            const midpointIndex = Math.floor(pathLat.length / 2);
+            traces.push({
+              type: "scattergeo",
+              mode: "markers",
+              lat: [pathLat[midpointIndex]],
+              lon: [pathLon[midpointIndex]],
+              customdata: [arc],
+              text: [arc.label || `${arc.fromCountry || "?"} -> ${arc.toCountry || "?"}`],
+              hovertemplate: "%{text}<br/>Flow intensity: " + arc.intensity.toFixed(0) + "%<extra></extra>",
+              marker: {
+                size: 3 + (arc.intensity / 100) * 5,
+                color: arc.color || getArcColor(arc.intensity),
+                opacity: 0.78,
+                line: { color: "rgba(255,255,255,0.22)", width: 0.6 },
+              },
+              showlegend: false,
+            });
+
+            if (index < 6 && projectionType !== "orthographic") {
+              traces.push({
+                type: "scattergeo",
+                mode: "text",
+                lat: [pathLat[midpointIndex] + (index % 2 === 0 ? 1.4 : -1.4)],
+                lon: [pathLon[midpointIndex]],
+                customdata: [arc],
+                text: [arc.fromCountry && arc.toCountry ? `${arc.fromCountry}-${arc.toCountry}` : arc.label || "Flow"],
+                textfont: {
+                  size: 10,
+                  color: "rgba(216, 237, 245, 0.76)",
+                },
+                hoverinfo: "skip",
+                showlegend: false,
+              });
+            }
           });
         }
 
@@ -364,6 +545,23 @@ export default function WorldGlobe3D({
           });
         }
 
+        if (labelCountries.length && projectionType !== "orthographic") {
+          traces.push({
+            type: "scattergeo",
+            mode: "text",
+            lat: labelCountries.map((item) => item.lat),
+            lon: labelCountries.map((item) => item.lng),
+            text: labelCountries.map((item) => item.countryCode),
+            textposition: labelCountries.map((item, index) => textPositionForCountry(item, index)),
+            textfont: {
+              size: 10,
+              color: "rgba(231, 244, 248, 0.86)",
+            },
+            hoverinfo: "skip",
+            showlegend: false,
+          });
+        }
+
         await Plotly.react(
           containerRef.current,
           traces as any,
@@ -372,9 +570,11 @@ export default function WorldGlobe3D({
             paper_bgcolor: "rgba(0,0,0,0)",
             plot_bgcolor: "rgba(0,0,0,0)",
             geo: {
-              projection: { type: "orthographic", rotation: { lon: rotationLonRef.current, lat: 0, roll: 0 } },
+              projection: projectionType === "orthographic"
+                ? { type: projectionType, rotation: { lon: rotationLonRef.current, lat: 0, roll: 0 } }
+                : { type: projectionType, scale: computedProjectionScale },
               showland: true,
-              landcolor: visualPreset === "introCinematic" ? "#080f1f" : "#1f3559",
+              landcolor: fillCountriesByRisk ? "#16324d" : visualPreset === "introCinematic" ? "#080f1f" : "#1f3559",
               showocean: true,
               oceancolor: visualPreset === "introCinematic" ? "#020714" : "#091321",
               showcountries: true,
@@ -384,6 +584,8 @@ export default function WorldGlobe3D({
               coastlinewidth: visualPreset === "introCinematic" ? 1.1 : 1,
               bgcolor: "rgba(0,0,0,0)",
               showframe: false,
+              lataxis: projectionType === "orthographic" ? undefined : { range: [-58, 84] },
+              lonaxis: projectionType === "orthographic" ? undefined : { range: [-180, 180] },
             },
           } as any,
           { displayModeBar: false, responsive: true, scrollZoom: false, staticPlot: false }
@@ -395,21 +597,27 @@ export default function WorldGlobe3D({
         plotEl.removeAllListeners?.("plotly_unhover");
         plotEl.removeAllListeners?.("plotly_click");
 
-        if (showActivityDots) {
-          plotEl.on?.("plotly_hover", (evt: any) => {
-            const point = evt?.points?.[0];
-            if (!point?.customdata || !point?.customdata?.countryCode) return;
-            setHoveredCountry(point.customdata as CountryRisk);
-          });
-
+        if (interactiveCountries || interactiveArcs) {
+          if (interactiveCountries) {
+            plotEl.on?.("plotly_hover", (evt: any) => {
+              const point = evt?.points?.[0];
+              if (!point?.customdata || !point?.customdata?.countryCode) return;
+              setHoveredCountry(point.customdata as CountryRisk);
+            });
+          }
           plotEl.on?.("plotly_unhover", () => {
             setHoveredCountry(null);
           });
-
           plotEl.on?.("plotly_click", (evt: any) => {
             const point = evt?.points?.[0];
-            if (!point?.customdata || !onCountryClick || !point?.customdata?.countryCode) return;
-            onCountryClick(point.customdata as CountryRisk);
+            const customdata = point?.customdata;
+            if (customdata?.countryCode && onCountryClick) {
+              onCountryClick(customdata as CountryRisk);
+              return;
+            }
+            if (customdata?.id && customdata?.fromLat !== undefined && customdata?.toLat !== undefined && onFlowArcClick) {
+              onFlowArcClick(customdata as GlobeFlowArc);
+            }
           });
         } else {
           setHoveredCountry(null);
@@ -431,13 +639,13 @@ export default function WorldGlobe3D({
         plotEl.removeAllListeners?.("plotly_click");
       }
     };
-  }, [plotted, normalizedEvents, onCountryClick, showActivityDots, visualPreset]);
+  }, [plotted, normalizedEvents, normalizedFlowArcs, labelCountries, onCountryClick, onFlowArcClick, showActivityDots, visualPreset, projectionType, computedProjectionScale, fillCountriesByRisk, interactiveCountries, interactiveArcs]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (!plotlyRef.current || !containerRef.current) return;
 
-      if (autoRotate) {
+      if (autoRotate && projectionType === "orthographic") {
         rotationLonRef.current += rotationSpeed;
         try {
           void plotlyRef.current.relayout(containerRef.current, {
@@ -497,25 +705,76 @@ export default function WorldGlobe3D({
         }
       }
     };
-  }, [autoRotate, rotationSpeed]);
+  }, [autoRotate, rotationSpeed, projectionType]);
 
   return (
     <div style={{ position: "relative", width: "100%", height }}>
-      {visualPreset === "introCinematic" ? (
+      {visualPreset === "introCinematic" || projectionType !== "orthographic" ? (
         <div
           style={{
             position: "absolute",
-            inset: "10% 10% 14% 10%",
-            borderRadius: "50%",
+            inset: projectionType === "orthographic" ? "10% 10% 14% 10%" : "8% 4% 10% 4%",
+            borderRadius: projectionType === "orthographic" ? "50%" : "1.2rem",
             pointerEvents: "none",
             background:
-              "radial-gradient(circle at 22% 38%, rgba(93, 193, 255, 0.6), rgba(45, 114, 213, 0.22) 34%, rgba(5, 12, 28, 0) 62%)",
+              projectionType === "orthographic"
+                ? "radial-gradient(circle at 22% 38%, rgba(93, 193, 255, 0.6), rgba(45, 114, 213, 0.22) 34%, rgba(5, 12, 28, 0) 62%)"
+                : "radial-gradient(circle at 12% 18%, rgba(76, 201, 240, 0.26), rgba(76, 201, 240, 0) 28%), radial-gradient(circle at 82% 16%, rgba(255, 159, 67, 0.14), rgba(255, 159, 67, 0) 22%), linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.08))",
             filter: "blur(12px)",
             mixBlendMode: "screen",
           }}
         />
       ) : null}
+      {projectionType !== "orthographic" ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: "none",
+            background: "linear-gradient(180deg, rgba(4, 18, 31, 0.12), rgba(4, 18, 31, 0) 14%, rgba(4, 18, 31, 0) 74%, rgba(4, 18, 31, 0.18) 100%)",
+          }}
+        />
+      ) : null}
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+
+      {showRiskLegend ? (
+        <div
+          style={{
+            position: "absolute",
+            left: 12,
+            bottom: 12,
+            display: "grid",
+            gap: 8,
+            padding: "10px 12px",
+            borderRadius: 12,
+            border: "1px solid rgba(116, 157, 178, 0.18)",
+            background: "rgba(6, 17, 26, 0.84)",
+            color: "rgba(228, 241, 246, 0.88)",
+            fontSize: 11,
+            backdropFilter: "blur(10px)",
+            zIndex: 9,
+          }}
+        >
+          <div style={{ textTransform: "uppercase", letterSpacing: "0.12em", color: "rgba(171, 215, 224, 0.72)" }}>
+            Country risk legend
+          </div>
+          <div
+            style={{
+              width: 168,
+              height: 8,
+              borderRadius: 999,
+              background: "linear-gradient(90deg, #22c55e 0%, #facc15 45%, #fb923c 72%, #ef4444 100%)",
+              boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08)",
+            }}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, color: "rgba(206, 225, 231, 0.74)" }}>
+            <span>Stable</span>
+            <span>Guarded</span>
+            <span>Elevated</span>
+            <span>Critical</span>
+          </div>
+        </div>
+      ) : null}
 
       {renderError ? (
         <div
@@ -536,7 +795,7 @@ export default function WorldGlobe3D({
         </div>
       ) : null}
 
-      {!renderError && plotted.length === 0 && showActivityDots && !normalizedEvents.length ? (
+      {!renderError && plotted.length === 0 && !normalizedEvents.length ? (
         <div
           style={{
             position: "absolute",
@@ -554,24 +813,44 @@ export default function WorldGlobe3D({
         </div>
       ) : null}
 
-      {showActivityDots && hoveredCountry ? (
+      {interactiveCountries && hoveredCountry ? (
         <div
           style={{
             position: "absolute",
             top: 10,
             left: 10,
-            background: "rgba(0, 0, 0, 0.8)",
+            minWidth: 220,
+            background: "rgba(0, 0, 0, 0.82)",
             border: `1px solid ${getRiskColor(hoveredCountry.risk)}`,
-            borderRadius: 8,
-            padding: 10,
+            borderRadius: 12,
+            padding: 12,
             color: "#fff",
             fontSize: 12,
             zIndex: 10,
             backdropFilter: "blur(8px)",
+            boxShadow: "0 18px 40px rgba(0, 0, 0, 0.28)",
           }}
         >
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>{hoveredCountry.country}</div>
-          <div>Risk: {hoveredCountry.risk.toFixed(1)}</div>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+            <div style={{ fontWeight: 700, marginBottom: 2 }}>{countryDetails?.[hoveredCountry.countryCode]?.label || hoveredCountry.countryCode}</div>
+            <div style={{ color: getRiskColor(hoveredCountry.risk), fontWeight: 700 }}>{Math.round(hoveredCountry.risk)}%</div>
+          </div>
+          <div style={{ color: "rgba(214, 231, 238, 0.78)", marginBottom: 8 }}>
+            {countryDetails?.[hoveredCountry.countryCode]?.riskBand || "Country risk"} / {countryDetails?.[hoveredCountry.countryCode]?.trend || "monitoring"}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6 }}>
+            <div>Confidence {formatMaybePercent(countryDetails?.[hoveredCountry.countryCode]?.confidence)}</div>
+            <div>Pressure {formatMaybePercent(countryDetails?.[hoveredCountry.countryCode]?.pressure)}</div>
+            <div>Alerts {countryDetails?.[hoveredCountry.countryCode]?.alerts ?? 0}</div>
+            <div>Hazards {countryDetails?.[hoveredCountry.countryCode]?.hazards ?? 0}</div>
+            <div>Corridors {countryDetails?.[hoveredCountry.countryCode]?.corridors ?? 0}</div>
+            <div>Risk {hoveredCountry.risk.toFixed(1)}</div>
+          </div>
+          {countryDetails?.[hoveredCountry.countryCode]?.advisory ? (
+            <div style={{ marginTop: 8, color: "rgba(225, 239, 244, 0.84)", lineHeight: 1.4 }}>
+              {countryDetails[hoveredCountry.countryCode]?.advisory}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

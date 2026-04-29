@@ -1,0 +1,34 @@
+{
+  "flow_signals": {
+    "attack_index": 60.0,
+    "hijack_suspect_score": 0.22,
+    "control_plane_incident_score": 0.2,
+    "dns_error_ratio": 0.14,
+    "edge_error_rate": 0.16,
+    "reroute_factor": 1.12
+  },
+  "shutdown_signals": {
+    "shutdown_risk": 62.0,
+    "subscriber_availability_ratio": 0.8,
+    "fixed_reachability_ratio": 0.82,
+    "mobile_reachability_ratio": 0.8,
+    "throughput_drop_pct": 22.0,
+    "control_plane_incident_score": 0.18
+  },
+  "alert_filters": {
+    "min_attack_signals": 2,
+    "attack_index_gate": 66.0,
+    "attack_hijack_gate": 0.26,
+    "attack_active_index": 74.0,
+    "attack_active_signals": 4,
+    "attack_investigate_signals": 3,
+    "min_shutdown_signals": 2,
+    "shutdown_risk_gate": 64.0,
+    "shutdown_availability_gate": 0.78,
+    "shutdown_active_risk": 74.0,
+    "shutdown_active_availability": 0.68,
+    "shutdown_reason_availability": 0.65,
+    "shutdown_active_signals": 4,
+    "shutdown_reason_control_plane": 0.18
+  }
+}

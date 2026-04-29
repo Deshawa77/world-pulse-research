@@ -6,6 +6,7 @@ import ConsoleNavigation from "../components/ConsoleNavigation";
 import {
   buildWebSocketAuthUrl,
   getCountryDrilldown,
+  getDisasterEarlyWarning,
   getLiveCommandFeed,
   getLatestGlobalFeatures,
   getRiskMap,
@@ -13,6 +14,7 @@ import {
   getTrustReliability,
   refreshRiskMapBatch,
   type CountryDrilldownData,
+  type DisasterEarlyWarningResponse,
   type LiveCommandFeed,
   type IntelligenceFeedItem,
   type RiskMapCoverage,
@@ -526,6 +528,8 @@ function DeferredPanelPlaceholder({ label }: { label: string }) {
 }
 
 export default function Dashboard() {
+
+
   const [currentSnapshot, setCurrentSnapshot] = useState<Snapshot | null>(null);
   const [history, setHistory] = useState<Snapshot[]>([]);
   const [liveFeed, setLiveFeed] = useState<LiveCommandFeed>({
@@ -534,6 +538,7 @@ export default function Dashboard() {
     modelDrift: 0,
     lastUpdated: new Date().toISOString(),
   });
+  const [disasterForecast, setDisasterForecast] = useState<DisasterEarlyWarningResponse | null>(null);
   const [riskMap, setRiskMap] = useState<RiskMapPoint[]>([]);
   const [riskCoverage, setRiskCoverage] = useState<RiskMapCoverage>({ total: 0, verified: 0, no_data: 0, stale: 0, remaining: 0, coverage_pct: 0 });
   const [trustSnapshot, setTrustSnapshot] = useState<TrustReliabilitySnapshot | null>(null);
@@ -620,12 +625,14 @@ export default function Dashboard() {
 
   const cacheRef = useRef<{
     liveFeed: { data: LiveCommandFeed | null; timestamp: number; ttl: number };
+    disasterWarning: { data: DisasterEarlyWarningResponse | null; timestamp: number; ttl: number };
     riskMap: { data: RiskMapPoint[] | null; timestamp: number; ttl: number };
     riskCoverage: { data: RiskMapCoverage | null; timestamp: number; ttl: number };
     global: { data: any | null; timestamp: number; ttl: number };
     trust: { data: TrustReliabilitySnapshot | null; timestamp: number; ttl: number };
   }>({
     liveFeed: { data: null, timestamp: 0, ttl: 3000 },
+    disasterWarning: { data: null, timestamp: 0, ttl: 8000 },
     riskMap: { data: null, timestamp: 0, ttl: 5000 },
     riskCoverage: { data: null, timestamp: 0, ttl: 5000 },
     global: { data: null, timestamp: 0, ttl: 5000 },
@@ -1060,6 +1067,7 @@ export default function Dashboard() {
     
     const STALE_SNAPSHOT_TOLERANCE_MS: Record<keyof typeof cacheRef.current, number> = {
       liveFeed: 30000,
+      disasterWarning: 60000,
       riskMap: 45000,
       riskCoverage: 45000,
       global: 45000,
@@ -1182,6 +1190,15 @@ export default function Dashboard() {
           })
           .catch(() => null);
 
+        void getCachedOrFetch("disasterWarning", () => getDisasterEarlyWarning())
+          .then((warning) => {
+            if (!stop) {
+              setDisasterForecast(warning);
+            }
+            return warning;
+          })
+          .catch(() => null);
+
         const [liveResult, mapRowsResult, coverageResult, globalResult] = await Promise.allSettled([
           livePromise,
           mapPromise,
@@ -1237,6 +1254,7 @@ export default function Dashboard() {
         
         if (e?.response?.status === 429) {
           cacheRef.current.liveFeed.timestamp = 0;
+          cacheRef.current.disasterWarning.timestamp = 0;
           cacheRef.current.riskMap.timestamp = 0;
           cacheRef.current.riskCoverage.timestamp = 0;
           cacheRef.current.global.timestamp = 0;
@@ -2068,6 +2086,7 @@ export default function Dashboard() {
     }
   };
 
+
   const navigate = useNavigate();
 
   return (
@@ -2193,17 +2212,37 @@ export default function Dashboard() {
         </div>
       </section>
 
+            <section className="wp-ops-strip wp-ops-strip-flat dashboard-reveal">
+        <div className="wp-ops-inline-block">
+          <span className="wp-ops-label">Hazard Ops</span>
+          <div className="wp-ops-status-line">
+            <span>Dedicated multi-hazard map and alert workflow moved off the dashboard</span>
+            <span>Earthquake {disasterForecast?.summary.top_seismic_region_name ?? "pending"}</span>
+            <span>Wildfire {disasterForecast?.summary.top_wildfire_region_name ?? "pending"}</span>
+            <span>Flood {disasterForecast?.summary.top_flood_region_name ?? "pending"}</span>
+            <span>Cyclone {disasterForecast?.summary.top_cyclone_region_name ?? "pending"}</span>
+          </div>
+        </div>
+        <div className="wp-ops-inline-block">
+          <span className="wp-ops-label">Operations</span>
+          <div className="wp-command-row">
+            <button onClick={() => navigate("/hazard-operations")}>Open Hazard Operations</button>
+          </div>
+        </div>
+      </section>
+
       {/* Unified Intelligence Panel - Map + Global Intelligence (left) | Sentinel Core (right) */}
       <section id="dashboard-global-behavior" className={`dashboard-layout ${fpsLow ? "" : "dashboard-reveal"}`}>
         <div ref={leftColumnRef} className="left-column">
           <article className={`wp-card panel-frame map-intelligence-panel advanced-cyber-frame ${fpsLow ? "" : "panel-animated dashboard-reveal"}`}>
             <div className="panel-head">
               <h3>Global Behavior Map</h3>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <button onClick={triggerMapRefresh} disabled={refreshingMap}>{refreshingMap ? "Refreshing..." : "Refresh Next 120"}</button>
                 {selectedCountry ? (
                   <button onClick={() => setSelectedCountry(null)}>Clear Country Focus</button>
                 ) : null}
+                <button onClick={() => navigate("/hazard-operations")}>Open Hazard Ops</button>
               </div>
             </div>
             {panelStale.map ? <div className="panel-stale">stale</div> : null}
@@ -2619,3 +2658,8 @@ export default function Dashboard() {
     </main>
   );
 }
+
+
+
+
+

@@ -1,6 +1,7 @@
 import sys
 import os
 import logging
+import warnings
 from datetime import datetime, timezone
 import re
 import asyncio
@@ -23,7 +24,7 @@ from typing import Literal, Any, Optional
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, Query, Header, Depends, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from backend.kafka_client import get_consumer
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -56,6 +57,36 @@ DASHBOARD_ROUTE_CACHE_TTLS = {
     "feed": 4.0,
     "trust": 30.0,
     "global_quality": 20.0,
+    "disaster_warning": 20.0,
+    "hotspot_history": 20.0,
+    "hotspot_movers": 20.0,
+    "hotspot_alerts": 20.0,
+    "internet_map": 12.0,
+    "planetary_overview": 15.0,
+    "planetary_contracts": 300.0,
+    "planetary_source_events": 8.0,
+    "planetary_normalized_signals": 8.0,
+    "planetary_behavior_bundle": 12.0,
+    "planetary_graph_entities": 30.0,
+    "planetary_graph_relationships": 30.0,
+    "planetary_fusion_countries": 12.0,
+    "planetary_fusion_timeline": 12.0,
+    "planetary_fusion_correlations": 12.0,
+    "planetary_fusion_country_detail": 12.0,
+    "planetary_fusion_correlation_detail": 12.0,
+    "planetary_alert_detail": 12.0,
+    "planetary_entity_profile": 20.0,
+    "planetary_graph_neighborhood": 20.0,
+    "planetary_calibration": 60.0,
+    "planetary_alert_ops": 8.0,
+    "planetary_behavior_surface": 12.0,
+    "planetary_behavior_replay": 12.0,
+    "planetary_graph_summary": 20.0,
+    "planetary_graph_search": 12.0,
+    "planetary_disaster_command": 20.0,
+    "planetary_disaster_backtests": 60.0,
+    "planetary_command_layer": 15.0,
+    "planetary_runtime_status": 10.0,
 }
 KAFKA_UNAVAILABLE_RETRY_SECONDS = 60.0
 LIVE_CONSUMER_UNAVAILABLE_UNTIL: dict[str, float] = defaultdict(float)
@@ -65,6 +96,26 @@ COUNTRY_REFRESH_BATCH_SIZE = 10
 COUNTRY_REFRESH_MAX_RECORDS = 4
 COUNTRY_REFRESH_LOCK = threading.Lock()
 COUNTRY_REFRESH_STARTED_AT = 0.0
+PLANETARY_RUNTIME_LOCK = threading.Lock()
+PLANETARY_RUNTIME_STOP_EVENT = threading.Event()
+PLANETARY_RUNTIME_THREAD: threading.Thread | None = None
+PLANETARY_RUNTIME_STATUS_LOCK = threading.Lock()
+PLANETARY_RUNTIME_STATUS: dict[str, Any] = {
+    "status": "idle",
+    "enabled": True,
+    "interval_seconds": 0,
+    "source_refresh_interval_seconds": 0,
+    "backtest_interval_seconds": 0,
+    "last_started_at": None,
+    "last_completed_at": None,
+    "last_error_at": None,
+    "last_error": None,
+    "last_reason": None,
+    "last_run_id": None,
+    "last_refresh_sources": False,
+    "last_run_backtests": False,
+    "cycle_count": 0,
+}
 
 
 def _dashboard_cache_get(namespace: str, cache_key: str) -> Any | None:
@@ -89,6 +140,14 @@ def _dashboard_cache_set(namespace: str, cache_key: str, value: Any) -> Any:
             "value": value,
         }
     return value
+
+def _dashboard_cache_clear(*namespaces: str) -> None:
+    with DASHBOARD_ROUTE_CACHE_LOCK:
+        if namespaces:
+            for namespace in namespaces:
+                DASHBOARD_ROUTE_CACHE.pop(namespace, None)
+            return
+        DASHBOARD_ROUTE_CACHE.clear()
 
 
 def _mark_consumer_unavailable(stream_name: str) -> None:
@@ -153,6 +212,9 @@ from processing.spillover_graph import load_country_spillover_map
 from collectors.country_news import get_country_catalog
 from processing.country_catalog import COUNTRY_NAMES
 from processing.sentinel_analysis import compute_sentinel_analysis, get_sentinel_history
+from processing.disaster_early_warning import compute_disaster_early_warning
+from processing.disaster_backtests import latest_disaster_backtest, run_disaster_backtests
+from processing.disaster_hotspot_regions import HOTSPOT_ALERT_BANDS, HOTSPOT_TREND_WINDOWS, iso_now
 from processing.causal_risk_navigator import build_causal_explanation
 from processing.counterfactual_engine import run_counterfactual
 from processing.action_recommender import build_action_plan
@@ -189,27 +251,117 @@ from backend.observability import (
     record_prediction,
     build_monitoring_summary,
 )
+from backend.hotspot_history import (
+    build_alert_queue,
+    build_alert_transitions,
+    build_region_history_payload,
+    build_top_movers,
+    ensure_hotspot_indexes,
+    load_recent_history_lookup,
+    persist_hotspot_snapshots,
+    prune_history,
+    summarize_history,
+)
+from backend.disaster_alert_ops import (
+    build_disaster_alert_operation_doc,
+    enrich_disaster_payload_with_ops,
+)
+from backend.disaster_streaming import (
+    build_disaster_stream_status,
+    load_disaster_stream_snapshot,
+    run_disaster_stream_cycle,
+)
+from backend.disaster_thermal_map import build_disaster_thermal_map
+from backend.internet_map_ops import build_internet_alert_audit_report, build_internet_alert_operation_doc
+from backend.planetary_alert_ops import build_planetary_alert_operation_doc, enrich_planetary_alerts_with_ops
+from backend.internet_map_runtime import InternetMapRuntime
+from backend.internet_map_streaming import (
+    build_internet_map_stream_status,
+    load_internet_map_history_payload,
+    load_internet_map_playback_frames,
+    load_internet_map_stream_snapshot,
+    run_internet_map_stream_cycle,
+)
+from backend.runtime_config import bootstrap_runtime_environment, runtime_secret_sources
+from processing.internet_map_backtests import latest_internet_map_backtest, run_internet_map_backtest
+from processing.internet_map_maintenance import build_internet_retention_policy, run_internet_map_maintenance
+from backend.planetary_behavior import BEHAVIOR_SUBSYSTEM, materialize_behavior_payload
+from backend.planetary_contracts import build_contract_catalog_payload
+from backend.planetary_intelligence import build_planetary_overview_payload
+from processing.planetary_behavior_surface import build_behavior_operator_surface
+from processing.planetary_calibration import build_planetary_calibration_report
+from processing.planetary_command_layer import build_planetary_command_layer
+from processing.planetary_disaster_command import build_planetary_disaster_command_surface
+from processing.planetary_evidence import (
+    build_alert_detail,
+    build_corridor_detail,
+    build_correlation_chain_detail,
+    build_country_fusion_detail,
+    load_planetary_operator_history,
+)
+from processing.planetary_fusion import (
+    load_recent_correlation_chains,
+    load_recent_country_fusion_snapshots,
+    load_recent_fusion_timeline,
+    seed_planetary_fusion_snapshot,
+)
+from processing.planetary_graph import (
+    build_planetary_entity_neighborhood,
+    build_planetary_entity_profile,
+    load_recent_planetary_world_entities,
+    load_recent_planetary_world_relationships,
+    seed_planetary_graph_snapshot,
+)
+from processing.planetary_graph_analytics import build_planetary_graph_summary, search_planetary_graph_entities
+from processing.planetary_map_replay import build_planetary_map_replay_frame
+from processing.planetary_runtime_store import (
+    load_latest_planetary_behavior_surface,
+    load_latest_planetary_command_layer,
+    load_latest_planetary_map_replay_frame,
+    load_recent_planetary_map_replay_frames,
+    load_latest_planetary_runtime_manifest,
+    persist_planetary_runtime_batch,
+)
+from processing.planetary_signal_store import load_recent_platform_normalized_signals, load_recent_platform_source_events
 
 # =====================================================
 # Load environment variables for security
 # =====================================================
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
-load_dotenv(dotenv_path=ENV_PATH, override=True)
+RUNTIME_SECRET_STATE = bootstrap_runtime_environment(PROJECT_ROOT)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(float(os.environ.get(name) or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = str(os.environ.get(name) or ("true" if default else "false")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
 
 # =====================================================
 # JWT CONFIGURATION
 # =====================================================
 
-JWT_SECRET = (os.environ.get("JWT_SECRET") or "world_pulse_secret_key")
+JWT_SECRET = (os.environ.get("JWT_SECRET") or "").strip().strip('"').strip("'")
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(
-    os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES") or 60
-)
+ACCESS_TOKEN_EXPIRE_MINUTES = _env_int("ACCESS_TOKEN_EXPIRE_MINUTES", 60)
+RUNTIME_ENVIRONMENT = str(RUNTIME_SECRET_STATE.get("environment") or "development")
+INTERNET_MAP_RUNTIME_ENABLED = _env_bool("INTERNET_MAP_RUNTIME_ENABLED", True)
+INTERNET_MAP_RUNTIME_STARTUP_WARM = _env_bool("INTERNET_MAP_RUNTIME_STARTUP_WARM", True)
+PLANETARY_RUNTIME_ENABLED = _env_bool("PLANETARY_RUNTIME_ENABLED", True)
+PLANETARY_RUNTIME_STARTUP_WARM = _env_bool("PLANETARY_RUNTIME_STARTUP_WARM", True)
+PLANETARY_RUNTIME_INTERVAL_SECONDS = max(60, _env_int("PLANETARY_RUNTIME_INTERVAL_SECONDS", 300))
+PLANETARY_RUNTIME_SOURCE_REFRESH_INTERVAL_SECONDS = max(300, _env_int("PLANETARY_RUNTIME_SOURCE_REFRESH_INTERVAL_SECONDS", 900))
+PLANETARY_RUNTIME_BACKTEST_INTERVAL_SECONDS = max(900, _env_int("PLANETARY_RUNTIME_BACKTEST_INTERVAL_SECONDS", 21600))
 
 API_KEY = (os.environ.get("API_KEY") or "").strip().strip('"').strip("'")
 ADMIN_KEY = (os.environ.get("ADMIN_KEY") or "").strip().strip('"').strip("'")
-LEGACY_DEV_API_KEY = (os.environ.get("LEGACY_DEV_API_KEY") or "super_secure_api_key").strip().strip('"').strip("'")
+LEGACY_DEV_API_KEY = (os.environ.get("LEGACY_DEV_API_KEY") or "").strip().strip('"').strip("'")
 USER_API_KEYS = {
     k.strip().strip('"').strip("'")
     for k in (os.environ.get("USER_API_KEYS") or "").split(",")
@@ -238,6 +390,15 @@ ROLE_USER = "user"
 DEFAULT_USER_TYPE = "researcher"
 VALID_ROLES = {ROLE_ADMIN, ROLE_USER}
 VALID_USER_TYPES = {"researcher", "policy", "student", "developer"}
+
+if not JWT_SECRET:
+    raise RuntimeError("Missing JWT_SECRET. Set it in deployment environment variables or WORLD_PULSE_SECRETS_FILE.")
+
+INTERNET_MAP_RUNTIME = InternetMapRuntime(
+    cycle_interval_sec=max(10, _env_int("INTERNET_MAP_RUNTIME_CYCLE_SEC", 45)),
+    backtest_interval_sec=max(300, _env_int("INTERNET_MAP_RUNTIME_BACKTEST_SEC", 900)),
+    maintenance_interval_sec=max(900, _env_int("INTERNET_MAP_RUNTIME_MAINTENANCE_SEC", 21600)),
+)
 LEGACY_USER_TYPE_MAP = {
     "researcher": "researcher",
     "analyst": "researcher",
@@ -264,7 +425,7 @@ FAILED_LOGIN_SUSPICIOUS_THRESHOLD = 5
 JWT_FAILURE_SUSPICIOUS_THRESHOLD = 8
 
 if not USER_API_KEYS and not ADMIN_API_KEYS:
-    raise RuntimeError("Missing API keys. Set API_KEY/ADMIN_KEY (or USER_API_KEYS/ADMIN_API_KEYS) in .env.")
+    raise RuntimeError("Missing API keys. Set API_KEY/ADMIN_KEY or USER_API_KEYS/ADMIN_API_KEYS in deployment env or WORLD_PULSE_SECRETS_FILE.")
 
 # ---------------- CORS Middleware -----------------
 from fastapi.middleware.cors import CORSMiddleware
@@ -402,6 +563,14 @@ causal_explanations_collection = db["causal_explanations"]
 counterfactual_runs_collection = db["counterfactual_runs"]
 policy_replays_collection = db["policy_replays"]
 action_recommendations_collection = db["action_recommendations"]
+hotspot_history_collection = db["hotspot_history"]
+hotspot_summary_collection = db["hotspot_history_summary"]
+internet_raw_events_collection = db["internet_raw_events"]
+internet_normalized_events_collection = db["internet_normalized_events"]
+internet_country_snapshots_collection = db["internet_country_snapshots"]
+internet_flow_snapshots_collection = db["internet_flow_snapshots"]
+internet_alerts_collection = db["internet_alerts"]
+internet_source_health_collection = db["internet_source_health"]
 # Create indexes for scalable queries (run once)
 prediction_collection.create_index([("timestamp", DESCENDING)])
 prediction_collection.create_index([("model_version", ASCENDING)])
@@ -414,6 +583,8 @@ users_collection.create_index([("active", ASCENDING)])
 operator_events_collection.create_index([("timestamp", DESCENDING)])
 sentinel_feedback_collection.create_index([("timestamp", DESCENDING)])
 operator_events_collection.create_index([("country", ASCENDING), ("timestamp", DESCENDING)])
+operator_events_collection.create_index([("alert_scope", ASCENDING), ("hazard", ASCENDING), ("region", ASCENDING), ("timestamp", DESCENDING)])
+operator_events_collection.create_index([("alert_scope", ASCENDING), ("dedupe_key", ASCENDING), ("timestamp", DESCENDING)])
 country_features_collection.create_index([("mode", ASCENDING), ("timestamp", DESCENDING)])
 country_features_collection.create_index([("country", ASCENDING), ("mode", ASCENDING), ("timestamp", DESCENDING)])
 global_features_collection.create_index([("mode", ASCENDING), ("timestamp", DESCENDING)])
@@ -433,6 +604,22 @@ counterfactual_runs_collection.create_index([("country", ASCENDING), ("timestamp
 policy_replays_collection.create_index([("country", ASCENDING), ("timestamp", DESCENDING)])
 action_recommendations_collection.create_index([("country", ASCENDING), ("timestamp", DESCENDING)])
 security_events_collection.create_index([("client_ip", ASCENDING), ("timestamp", DESCENDING)])
+ensure_hotspot_indexes(hotspot_history_collection, hotspot_summary_collection)
+internet_raw_events_collection.create_index([("captured_at", DESCENDING)])
+internet_raw_events_collection.create_index([("source_family", ASCENDING), ("country", ASCENDING), ("timestamp", DESCENDING)])
+internet_raw_events_collection.create_index([("run_id", ASCENDING)])
+internet_normalized_events_collection.create_index([("captured_at", DESCENDING)])
+internet_normalized_events_collection.create_index([("source_family", ASCENDING), ("metric_name", ASCENDING), ("timestamp", DESCENDING)])
+internet_normalized_events_collection.create_index([("run_id", ASCENDING)])
+internet_country_snapshots_collection.create_index([("country", ASCENDING), ("captured_at", DESCENDING)])
+internet_country_snapshots_collection.create_index([("run_id", ASCENDING)])
+internet_flow_snapshots_collection.create_index([("origin", ASCENDING), ("destination", ASCENDING), ("captured_at", DESCENDING)])
+internet_flow_snapshots_collection.create_index([("run_id", ASCENDING)])
+internet_alerts_collection.create_index([("alert_type", ASCENDING), ("captured_at", DESCENDING)])
+internet_alerts_collection.create_index([("dedupe_key", ASCENDING), ("captured_at", DESCENDING)])
+internet_alerts_collection.create_index([("country", ASCENDING), ("captured_at", DESCENDING)])
+internet_source_health_collection.create_index([("scope", ASCENDING), ("source", ASCENDING), ("updated_at", DESCENDING)])
+internet_source_health_collection.create_index([("source_family", ASCENDING), ("updated_at", DESCENDING)])
 # =====================================================
 # Model Cache
 # =====================================================
@@ -1313,14 +1500,25 @@ def get_country_risk_dependency_health(mode: str = "online"):
     return status
 
 
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {
+            str(key): _json_safe_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_value(item) for item in value]
+    value_type = type(value)
+    if value_type.__name__ == "ObjectId" or str(value_type.__module__ or "").startswith("bson"):
+        return str(value)
+    return value
+
+
 def serialize_doc(doc: dict) -> dict:
-    doc = doc.copy()
-    if "_id" in doc:
-        doc["_id"] = str(doc["_id"])
-    for key, value in doc.items():
-        if isinstance(value, datetime):
-            doc[key] = value.isoformat()
-    return doc
+    serialized = _json_safe_value(doc.copy())
+    return serialized if isinstance(serialized, dict) else {}
 
 def load_production_model_bundle() -> tuple[Any | None, str | None, list[str], str]:
     model_path = get_production_model()
@@ -2271,6 +2469,58 @@ class AlertActionRequest(BaseModel):
     action: str
     owner: str | None = None
     comment: str | None = None
+
+
+class DisasterAlertActionRequest(BaseModel):
+    hazard: str
+    region: str
+    country: str | None = None
+    action: str
+    owner: str | None = None
+    comment: str | None = None
+    alert_id: str | None = None
+    dedupe_key: str | None = None
+    snooze_hours: int | None = 6
+    false_positive_reason: str | None = None
+
+
+class InternetMapAlertActionRequest(BaseModel):
+    alert_type: str
+    country: str | None = None
+    flow_id: str | None = None
+    action: str
+    owner: str | None = None
+    assignee: str | None = None
+    assignment_reason: str | None = None
+    team_queue: str | None = None
+    escalation_destination: str | None = None
+    escalation_level: int | None = None
+    sla_hours: int | None = None
+    comment: str | None = None
+    alert_id: str | None = None
+    dedupe_key: str | None = None
+    severity: str | None = None
+    snooze_hours: int | None = 6
+    false_positive_reason: str | None = None
+
+
+class PlanetaryAlertActionRequest(BaseModel):
+    alert_type: str
+    action: str
+    alert_id: str | None = None
+    dedupe_key: str | None = None
+    country: str | None = None
+    region: str | None = None
+    severity: str | None = None
+    owner: str | None = None
+    assignee: str | None = None
+    assignment_reason: str | None = None
+    team_queue: str | None = None
+    sla_hours: int | None = None
+    comment: str | None = None
+    snooze_hours: int | None = 6
+    false_positive_reason: str | None = None
+    chain_id: str | None = None
 
 
 class ScenarioStep(BaseModel):
@@ -3469,6 +3719,232 @@ def dashboard_risk_map_coverage(request: Request, role: str = Depends(check_role
     }
     return _dashboard_cache_set("coverage", cache_key, payload)
 
+@app.get("/dashboard/internet-map")
+@limiter.limit("30/minute")
+def dashboard_internet_map(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Run a fresh internet-map cycle before responding"),
+    refresh_sources: bool = Query(True, description="Refresh collector scaffolds during the cycle"),
+):
+    cache_key = f"mode={mode}|refresh_sources={int(refresh_sources)}"
+    if not refresh:
+        cached = _dashboard_cache_get("internet_map", cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+    _, payload = _internet_map_payload(request=request, role=role, mode=mode, refresh=refresh, refresh_sources=refresh_sources)
+    if refresh:
+        _dashboard_cache_clear("internet_map")
+        return payload
+    return _dashboard_cache_set("internet_map", cache_key, payload)
+
+
+@app.get("/dashboard/internet-map/history")
+@limiter.limit("30/minute")
+def dashboard_internet_map_history(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(24, ge=1, le=96),
+):
+    return _internet_map_history_response(limit=limit)
+
+
+@app.get("/dashboard/internet-map/playback")
+@limiter.limit("30/minute")
+def dashboard_internet_map_playback(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(36, ge=1, le=120),
+):
+    return _internet_map_playback_response(limit=limit)
+
+@app.get("/dashboard/internet-map/backtest")
+@limiter.limit("20/minute")
+def dashboard_internet_map_backtest(
+    request: Request,
+    role: str = Depends(check_role),
+):
+    return latest_internet_map_backtest()
+
+
+@app.get("/api/internet-map/stream/status")
+@limiter.limit("20/minute")
+def internet_map_stream_status(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Queue a fresh stream cycle before returning status"),
+    refresh_sources: bool = Query(False),
+):
+    snapshot, payload = _internet_map_payload(request=request, role=role, mode=mode, refresh=refresh, refresh_sources=refresh_sources)
+    return {
+        "run_id": snapshot.get("run_id"),
+        "status": snapshot.get("status"),
+        "captured_at": snapshot.get("captured_at"),
+        "collector_summary": snapshot.get("collector_summary") or {},
+        "stream_status": build_internet_map_stream_status(snapshot),
+        "runtime_status": payload.get("runtime_status") or INTERNET_MAP_RUNTIME.status(),
+        "history": payload.get("history") or [],
+    }
+
+
+@app.post("/api/internet-map/stream/run-cycle")
+@limiter.limit("10/minute")
+def internet_map_stream_run_cycle(
+    request: Request,
+    role: str = Depends(require_admin),
+    mode: str = Query("online"),
+    refresh_sources: bool = Query(True),
+    wait: bool = Query(True),
+):
+    _ensure_internet_map_runtime_started()
+    INTERNET_MAP_RUNTIME.request_cycle(mode=mode, refresh_sources=refresh_sources, reason="admin_run_cycle", block=wait, timeout_sec=25.0)
+    snapshot = INTERNET_MAP_RUNTIME.latest_snapshot() or _run_internet_map_cycle(request, role, mode, refresh_sources=refresh_sources, reason="admin_fallback")
+    _dashboard_cache_clear("internet_map")
+    payload = dict(snapshot.get("payload") or {})
+    payload["runtime_status"] = INTERNET_MAP_RUNTIME.status()
+    snapshot["payload"] = payload
+    return snapshot
+
+
+@app.get("/api/internet-map/runtime/status")
+@limiter.limit("20/minute")
+def internet_map_runtime_status(
+    request: Request,
+    role: str = Depends(check_role),
+):
+    _ensure_internet_map_runtime_started()
+    return INTERNET_MAP_RUNTIME.status()
+
+
+@app.post("/api/internet-map/runtime/queue-refresh")
+@limiter.limit("10/minute")
+def internet_map_runtime_queue_refresh(
+    request: Request,
+    role: str = Depends(require_admin),
+    mode: str = Query("online"),
+    refresh_sources: bool = Query(True),
+    wait: bool = Query(False),
+):
+    _ensure_internet_map_runtime_started()
+    status = INTERNET_MAP_RUNTIME.request_cycle(mode=mode, refresh_sources=refresh_sources, reason="queued_refresh", block=wait, timeout_sec=20.0)
+    _dashboard_cache_clear("internet_map")
+    return {"ok": True, "runtime_status": status}
+
+
+@app.post("/api/internet-map/backtests/run")
+@limiter.limit("5/minute")
+def internet_map_backtest_run(
+    request: Request,
+    role: str = Depends(require_admin),
+    days: int = Query(30, ge=1, le=180),
+):
+    return run_internet_map_backtest(days=days, persist=True)
+
+
+@app.post("/api/internet-map/maintenance/prune")
+@limiter.limit("5/minute")
+def internet_map_maintenance_prune(
+    request: Request,
+    role: str = Depends(require_admin),
+    retention_days: int = Query(30, ge=1, le=365),
+    stream_retention_days: int = Query(30, ge=1, le=365),
+    backtest_retention_days: int = Query(90, ge=1, le=730),
+    collector_retention_days: int = Query(30, ge=1, le=365),
+):
+    return run_internet_map_maintenance(
+        retention_days=retention_days,
+        stream_retention_days=stream_retention_days,
+        backtest_retention_days=backtest_retention_days,
+        collector_retention_days=collector_retention_days,
+    )
+
+
+@app.get("/api/internet-map/alerts/stream")
+@limiter.limit("20/minute")
+async def internet_map_alerts_stream(
+    request: Request,
+    poll_seconds: float = Query(12.0, ge=2.0, le=60.0),
+    mode: str = Query("live", description="Use batch or live persisted internet-map stream mode"),
+    data_mode: str = Query("online"),
+    run_collectors: bool = Query(False, description="Refresh collectors during each live stream poll"),
+    x_api_key: str | None = Header(None),
+    authorization: str | None = Header(None),
+    api_key: str | None = Query(None),
+    token: str | None = Query(None),
+):
+    identity = _identity_from_ws_credentials(x_api_key=x_api_key, api_key=api_key, authorization=authorization, token=token)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key / bearer token")
+    async def event_generator():
+        last_version = None
+        live_mode = str(mode or "live").strip().lower() == "live"
+        role_value = str(identity.get("role") or ROLE_USER)
+        while True:
+            if await request.is_disconnected():
+                break
+            if live_mode:
+                _ensure_internet_map_runtime_started()
+                if run_collectors:
+                    INTERNET_MAP_RUNTIME.request_cycle(mode=data_mode, refresh_sources=True, reason="sse_refresh", block=False)
+                snapshot = INTERNET_MAP_RUNTIME.latest_snapshot() or load_internet_map_stream_snapshot()
+                if not snapshot:
+                    snapshot = _run_internet_map_cycle(request, role_value, data_mode, refresh_sources=False, reason="sse_bootstrap")
+                payload = dict(snapshot.get("payload") or {})
+                payload["stream_status"] = snapshot.get("stream_status") or build_internet_map_stream_status(snapshot)
+                payload["history"] = payload.get("history") or load_internet_map_history_payload(limit=12)
+                payload["runtime_status"] = INTERNET_MAP_RUNTIME.status()
+                version = str(((payload.get("stream_status") or {}).get("run_id")) or payload.get("generated_at") or snapshot.get("captured_at") or iso_now())
+                if version != last_version:
+                    yield f"event: internet_map\ndata: {json.dumps(payload, default=str)}\n\n"
+                    last_version = version
+                else:
+                    yield f"event: heartbeat\ndata: {json.dumps({'scope': 'internet_map', 'timestamp': iso_now()}, default=str)}\n\n"
+            else:
+                _, payload = _internet_map_payload(request=request, role=role_value, mode=data_mode, refresh=False, refresh_sources=False)
+                yield f"event: internet_map\ndata: {json.dumps(payload, default=str)}\n\n"
+            await asyncio.sleep(float(poll_seconds))
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/internet-map/alerts/action")
+@limiter.limit("30/minute")
+def internet_map_alert_action(
+    request: Request,
+    payload: InternetMapAlertActionRequest,
+    role: str = Depends(check_role),
+):
+    allowed_actions = {"acknowledge", "assign", "snooze", "escalate", "false_positive"}
+    allowed_types = {"attack", "shutdown"}
+    action = str(payload.action or "").strip().lower()
+    alert_type = str(payload.alert_type or "").strip().lower()
+    if action not in allowed_actions:
+        raise HTTPException(status_code=400, detail={"message": "Unsupported internet-map alert action"})
+    if alert_type not in allowed_types:
+        raise HTTPException(status_code=400, detail={"message": "Unsupported internet-map alert type"})
+
+    doc = build_internet_alert_operation_doc(payload.model_dump(), actor=payload.owner or role)
+    if alert_type == "shutdown" and not str(doc.get("country") or "").strip():
+        raise HTTPException(status_code=400, detail={"message": "Country is required for shutdown alert actions"})
+    if alert_type == "attack" and not (str(doc.get("flow_id") or "").strip() or str(doc.get("alert_id") or "").strip()):
+        raise HTTPException(status_code=400, detail={"message": "Flow id or alert id is required for attack alert actions"})
+
+    operator_events_collection.insert_one(doc)
+    _dashboard_cache_clear("internet_map")
+    return {
+        "ok": True,
+        "action": doc.get("action"),
+        "dedupe_key": doc.get("dedupe_key"),
+        "assignee": doc.get("assignee"),
+        "team_queue": doc.get("team_queue"),
+        "escalation_destination": doc.get("escalation_destination"),
+        "snoozed_until": doc.get("snoozed_until"),
+        "sla_due_at": doc.get("sla_due_at"),
+    }
+
 
 @app.post("/dashboard/risk-map/refresh")
 @limiter.limit("10/minute")
@@ -3537,6 +4013,1735 @@ def _infer_affected_country_code(*parts: str, fallback: str = 'UNK') -> str:
                     best_length = len(alias)
                 break
     return convert_country_code(best_code)
+
+
+def _planetary_runtime_request(path: str = "/internal/planetary/runtime-cycle") -> Request:
+    return Request({
+        "type": "http",
+        "method": "GET",
+        "path": path,
+        "headers": [],
+        "query_string": b"",
+        "client": ("127.0.0.1", 0),
+        "server": ("127.0.0.1", 8000),
+        "scheme": "http",
+    })
+
+
+def _planetary_runtime_cache_names() -> tuple[str, ...]:
+    return (
+        "planetary_overview",
+        "planetary_behavior_bundle",
+        "planetary_source_events",
+        "planetary_normalized_signals",
+        "planetary_graph_entities",
+        "planetary_graph_relationships",
+        "planetary_fusion_countries",
+        "planetary_fusion_timeline",
+        "planetary_fusion_correlations",
+        "planetary_fusion_country_detail",
+        "planetary_fusion_correlation_detail",
+        "planetary_alert_detail",
+        "planetary_entity_profile",
+        "planetary_graph_neighborhood",
+        "planetary_calibration",
+        "planetary_alert_ops",
+        "planetary_behavior_surface",
+        "planetary_behavior_replay",
+        "planetary_graph_summary",
+        "planetary_graph_search",
+        "planetary_disaster_command",
+        "planetary_disaster_backtests",
+        "planetary_command_layer",
+        "planetary_runtime_status",
+    )
+
+
+def _clear_planetary_runtime_caches() -> None:
+    _dashboard_cache_clear(*_planetary_runtime_cache_names())
+
+
+def _update_planetary_runtime_status(**updates: Any) -> dict[str, Any]:
+    with PLANETARY_RUNTIME_STATUS_LOCK:
+        PLANETARY_RUNTIME_STATUS.update(updates)
+        PLANETARY_RUNTIME_STATUS["enabled"] = PLANETARY_RUNTIME_ENABLED
+        PLANETARY_RUNTIME_STATUS["interval_seconds"] = PLANETARY_RUNTIME_INTERVAL_SECONDS
+        PLANETARY_RUNTIME_STATUS["source_refresh_interval_seconds"] = PLANETARY_RUNTIME_SOURCE_REFRESH_INTERVAL_SECONDS
+        PLANETARY_RUNTIME_STATUS["backtest_interval_seconds"] = PLANETARY_RUNTIME_BACKTEST_INTERVAL_SECONDS
+        return dict(PLANETARY_RUNTIME_STATUS)
+
+
+def _planetary_runtime_status_payload() -> dict[str, Any]:
+    with PLANETARY_RUNTIME_STATUS_LOCK:
+        payload = dict(PLANETARY_RUNTIME_STATUS)
+    payload["enabled"] = PLANETARY_RUNTIME_ENABLED
+    payload["interval_seconds"] = PLANETARY_RUNTIME_INTERVAL_SECONDS
+    payload["source_refresh_interval_seconds"] = PLANETARY_RUNTIME_SOURCE_REFRESH_INTERVAL_SECONDS
+    payload["backtest_interval_seconds"] = PLANETARY_RUNTIME_BACKTEST_INTERVAL_SECONDS
+    payload["manifest"] = load_latest_planetary_runtime_manifest()
+    payload["behavior_surface"] = load_latest_planetary_behavior_surface()
+    payload["command_layer"] = load_latest_planetary_command_layer()
+    payload["map_replay_latest_frame"] = load_latest_planetary_map_replay_frame()
+    return payload
+
+
+def _materialize_planetary_runtime_snapshot(
+    *,
+    mode: str = "online",
+    refresh_sources: bool = False,
+    run_backtests: bool = False,
+    reason: str = "scheduled",
+) -> dict[str, Any]:
+    runtime_request = _planetary_runtime_request()
+    _clear_planetary_runtime_caches()
+    overview = planetary_intelligence_overview(
+        request=runtime_request,
+        role=ROLE_ADMIN,
+        mode=mode,
+        refresh=False,
+        refresh_sources=refresh_sources,
+        country_limit=14,
+        corridor_limit=10,
+        hazard_limit=10,
+        replay_limit=12,
+    )
+    command_context = _build_planetary_command_context(
+        request=runtime_request,
+        role=ROLE_ADMIN,
+        mode=mode,
+        refresh=False,
+        country_limit=18,
+        corridor_limit=10,
+        hazard_limit=10,
+        replay_limit=12,
+        run_backtests=run_backtests,
+    )
+    captured_at = str(overview.get("generated_at") or datetime.now(timezone.utc).isoformat())
+    run_id = f"planetary_runtime_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+    runtime_summary = {
+        "status": "ok",
+        "reason": reason,
+        "refresh_sources": bool(refresh_sources),
+        "run_backtests": bool(run_backtests),
+        "country_snapshot_count": len(overview.get("country_snapshots") or []),
+        "country_fusion_count": len(overview.get("country_fusion_snapshots") or []),
+        "correlation_chain_count": len(overview.get("correlation_chains") or []),
+        "world_entity_count": len(overview.get("world_entities") or []),
+        "world_relationship_count": len(overview.get("world_relationships") or []),
+        "runtime_status_count": len(overview.get("runtime_status") or []),
+    }
+    map_replay_frame = build_planetary_map_replay_frame(
+        overview=overview,
+        command_layer=command_context.get("command_layer") or {},
+        behavior_surface=command_context.get("behavior_surface") or {},
+        calibration_report=command_context.get("calibration_report") or {},
+        run_id=run_id,
+        captured_at=captured_at,
+        mode=mode,
+    )
+    runtime_manifest = persist_planetary_runtime_batch(
+        behavior_surface=command_context.get("behavior_surface") or {},
+        command_layer=command_context.get("command_layer") or {},
+        map_replay_frame=map_replay_frame,
+        runtime_status=runtime_summary,
+        run_id=run_id,
+        captured_at=captured_at,
+        mode=mode,
+    )
+    return {
+        "run_id": run_id,
+        "captured_at": captured_at,
+        "overview": overview,
+        "behavior_surface": command_context.get("behavior_surface") or {},
+        "graph_summary": command_context.get("graph_summary") or {},
+        "disaster_surface": command_context.get("disaster_surface") or {},
+        "command_layer": command_context.get("command_layer") or {},
+        "calibration_report": command_context.get("calibration_report") or {},
+        "map_replay_frame": map_replay_frame,
+        "runtime_manifest": runtime_manifest,
+    }
+
+
+def _planetary_runtime_loop() -> None:
+    last_source_refresh_at = 0.0
+    last_backtest_at = 0.0
+    if not PLANETARY_RUNTIME_STARTUP_WARM and PLANETARY_RUNTIME_STOP_EVENT.wait(PLANETARY_RUNTIME_INTERVAL_SECONDS):
+        return
+    while not PLANETARY_RUNTIME_STOP_EVENT.is_set():
+        refresh_sources = (time.monotonic() - last_source_refresh_at) >= PLANETARY_RUNTIME_SOURCE_REFRESH_INTERVAL_SECONDS
+        run_backtests = (time.monotonic() - last_backtest_at) >= PLANETARY_RUNTIME_BACKTEST_INTERVAL_SECONDS
+        started_at = datetime.now(timezone.utc).isoformat()
+        _update_planetary_runtime_status(
+            status="running",
+            last_started_at=started_at,
+            last_reason="scheduled",
+            last_refresh_sources=refresh_sources,
+            last_run_backtests=run_backtests,
+            last_error=None,
+        )
+        try:
+            snapshot = _materialize_planetary_runtime_snapshot(
+                mode="online",
+                refresh_sources=refresh_sources,
+                run_backtests=run_backtests,
+                reason="scheduled",
+            )
+            if refresh_sources:
+                last_source_refresh_at = time.monotonic()
+            if run_backtests:
+                last_backtest_at = time.monotonic()
+            _update_planetary_runtime_status(
+                status="idle",
+                last_completed_at=datetime.now(timezone.utc).isoformat(),
+                last_run_id=snapshot.get("run_id"),
+                cycle_count=int(PLANETARY_RUNTIME_STATUS.get("cycle_count") or 0) + 1,
+            )
+        except Exception as exc:
+            logger.exception("planetary_runtime_cycle_failed")
+            _update_planetary_runtime_status(
+                status="error",
+                last_error_at=datetime.now(timezone.utc).isoformat(),
+                last_error=str(exc),
+            )
+        if PLANETARY_RUNTIME_STOP_EVENT.wait(PLANETARY_RUNTIME_INTERVAL_SECONDS):
+            break
+
+
+def _ensure_planetary_runtime_started() -> None:
+    global PLANETARY_RUNTIME_THREAD
+    if not PLANETARY_RUNTIME_ENABLED:
+        _update_planetary_runtime_status(status="disabled", enabled=False)
+        return
+    with PLANETARY_RUNTIME_LOCK:
+        if PLANETARY_RUNTIME_THREAD and PLANETARY_RUNTIME_THREAD.is_alive():
+            return
+        PLANETARY_RUNTIME_STOP_EVENT.clear()
+        PLANETARY_RUNTIME_THREAD = threading.Thread(
+            target=_planetary_runtime_loop,
+            name="planetary-runtime",
+            daemon=True,
+        )
+        PLANETARY_RUNTIME_THREAD.start()
+        _update_planetary_runtime_status(status="idle")
+
+
+def _stop_planetary_runtime() -> None:
+    global PLANETARY_RUNTIME_THREAD
+    PLANETARY_RUNTIME_STOP_EVENT.set()
+    with PLANETARY_RUNTIME_LOCK:
+        thread = PLANETARY_RUNTIME_THREAD
+        PLANETARY_RUNTIME_THREAD = None
+    if thread and thread.is_alive():
+        thread.join(timeout=2.0)
+    _update_planetary_runtime_status(status="stopped")
+
+
+def _planetary_behavior_bundle(
+    request: Request,
+    role: str,
+    *,
+    mode: str = "online",
+    country_limit: int = 14,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    cache_key = f"mode={mode}|country_limit={country_limit}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_behavior_bundle", cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+    country_rows = dashboard_risk_map(request=request, role=role, mode=mode, verified_only=False)
+    global_context = _country_intelligence_global_context(mode=mode)
+    global_doc = get_latest_global_doc(mode)
+    now_utc = datetime.now(timezone.utc)
+    payload = materialize_behavior_payload(
+        country_rows,
+        global_context,
+        global_doc,
+        mode=mode,
+        run_id=f"planetary_behavior_{now_utc.strftime('%Y%m%dT%H%M%S%fZ')}",
+        captured_at=now_utc.isoformat(),
+        country_limit=country_limit,
+        persist=True,
+    )
+    if refresh:
+        _dashboard_cache_clear("planetary_behavior_bundle")
+        return payload
+    return _dashboard_cache_set("planetary_behavior_bundle", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/contracts")
+@limiter.limit("20/minute")
+def planetary_intelligence_contracts(
+    request: Request,
+    role: str = Depends(check_role),
+):
+    cache_key = "default"
+    cached = _dashboard_cache_get("planetary_contracts", cache_key)
+    if isinstance(cached, dict):
+        return cached
+    payload = build_contract_catalog_payload()
+    return _dashboard_cache_set("planetary_contracts", cache_key, payload)
+
+
+@app.get("/dashboard/planetary-intelligence")
+@app.get("/api/planetary-intelligence/overview")
+@limiter.limit("20/minute")
+def planetary_intelligence_overview(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Refresh the internet-map runtime slice before composing the planetary overview"),
+    refresh_sources: bool = Query(False, description="Refresh internet collectors during overview refresh"),
+    country_limit: int = Query(10, ge=3, le=25),
+    corridor_limit: int = Query(8, ge=3, le=20),
+    hazard_limit: int = Query(8, ge=3, le=16),
+    replay_limit: int = Query(8, ge=3, le=24),
+):
+    cache_key = (
+        f"mode={mode}|refresh_sources={int(refresh_sources)}|country_limit={country_limit}|"
+        f"corridor_limit={corridor_limit}|hazard_limit={hazard_limit}|replay_limit={replay_limit}"
+    )
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_overview", cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+    country_rows = dashboard_risk_map(request=request, role=role, mode=mode, verified_only=False)
+    _, internet_payload = _internet_map_payload(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        refresh_sources=refresh_sources,
+    )
+    disaster_payload = _disaster_forecast_cached(limit=max(6, hazard_limit))
+    playback_frames = load_internet_map_playback_frames(limit=replay_limit)
+    global_context = _country_intelligence_global_context(mode=mode)
+    global_doc = get_latest_global_doc(mode)
+    disaster_snapshot = load_disaster_stream_snapshot()
+    disaster_status = build_disaster_stream_status(disaster_snapshot)
+
+    payload = build_planetary_overview_payload(
+        mode=mode,
+        country_rows=country_rows,
+        internet_payload=internet_payload,
+        disaster_payload=disaster_payload,
+        playback_frames=playback_frames,
+        global_context=global_context,
+        global_doc=global_doc,
+        disaster_stream_status=disaster_status,
+        country_limit=country_limit,
+        corridor_limit=corridor_limit,
+        hazard_limit=hazard_limit,
+        replay_limit=replay_limit,
+    )
+    behavior_bundle = _planetary_behavior_bundle(
+        request=request,
+        role=role,
+        mode=mode,
+        country_limit=country_limit,
+        refresh=refresh,
+    )
+    payload["country_snapshots"] = list(behavior_bundle.get("country_snapshots") or payload.get("country_snapshots") or [])
+    payload["behavior_global_snapshot"] = behavior_bundle.get("global_behavior_snapshot")
+    payload["behavior_signal_store"] = behavior_bundle.get("persistence")
+
+    enriched_alerts, alert_ops_summary = enrich_planetary_alerts_with_ops(
+        payload.get("alert_events") or [],
+        operator_events_collection,
+    )
+    payload["alert_events"] = enriched_alerts
+    payload["alert_ops_summary"] = alert_ops_summary
+
+    fusion_signals = load_recent_platform_normalized_signals(
+        limit=max(240, country_limit * 18),
+    )
+    fusion_snapshot = seed_planetary_fusion_snapshot(
+        payload.get("country_snapshots") or [],
+        payload.get("corridor_snapshots") or [],
+        payload.get("hazard_forecasts") or [],
+        payload.get("alert_events") or [],
+        payload.get("replay_frames") or [],
+        payload.get("global_summary") or {},
+        fusion_signals,
+        run_id=f"planetary_fusion_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}",
+        captured_at=str(payload.get("generated_at") or datetime.now(timezone.utc).isoformat()),
+        mode=mode,
+        country_limit=max(16, country_limit * 2),
+        timeline_limit=max(18, replay_limit * 3),
+        chain_limit=max(12, corridor_limit + hazard_limit),
+    )
+    payload["country_fusion_snapshots"] = list(fusion_snapshot.get("country_fusion_snapshots") or [])
+    payload["fusion_timeline"] = list(fusion_snapshot.get("fusion_timeline") or [])
+    payload["correlation_chains"] = list(fusion_snapshot.get("correlation_chains") or [])
+    payload["fusion_store"] = {
+        key: value
+        for key, value in fusion_snapshot.items()
+        if key not in {"country_fusion_snapshots", "fusion_timeline", "correlation_chains"}
+    }
+
+    graph_snapshot = seed_planetary_graph_snapshot(
+        payload.get("country_snapshots") or [],
+        payload.get("corridor_snapshots") or [],
+        payload.get("hazard_forecasts") or [],
+        alert_events=payload.get("alert_events") or [],
+        run_id=f"planetary_graph_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}",
+        captured_at=str(payload.get("generated_at") or datetime.now(timezone.utc).isoformat()),
+        mode=mode,
+        entity_limit=max(36, len(payload.get("world_entities") or []) + len(payload.get("correlation_chains") or [])),
+        relationship_limit=max(48, len(payload.get("world_relationships") or [])),
+    )
+    payload["world_entities"] = list(graph_snapshot.get("world_entities") or payload.get("world_entities") or [])
+    payload["world_relationships"] = list(graph_snapshot.get("world_relationships") or payload.get("world_relationships") or [])
+    payload["graph_snapshot"] = {
+        key: value
+        for key, value in graph_snapshot.items()
+        if key not in {"world_entities", "world_relationships"}
+    }
+    payload = _json_safe_value(payload)
+    if not isinstance(payload, dict):
+        payload = {}
+    if refresh:
+        _dashboard_cache_clear(
+            "planetary_overview",
+            "planetary_behavior_bundle",
+            "planetary_graph_entities",
+            "planetary_graph_relationships",
+            "planetary_fusion_countries",
+            "planetary_fusion_timeline",
+            "planetary_fusion_correlations",
+            "planetary_fusion_country_detail",
+            "planetary_fusion_correlation_detail",
+            "planetary_alert_detail",
+            "planetary_entity_profile",
+            "planetary_graph_neighborhood",
+            "planetary_calibration",
+            "planetary_alert_ops",
+            "planetary_behavior_surface",
+            "planetary_behavior_replay",
+            "planetary_graph_summary",
+            "planetary_graph_search",
+            "planetary_disaster_command",
+            "planetary_disaster_backtests",
+            "planetary_command_layer",
+        )
+        return payload
+    return _dashboard_cache_set("planetary_overview", cache_key, payload)
+
+
+def _load_planetary_investigation_context(
+    request: Request,
+    role: str,
+    *,
+    mode: str = "online",
+    refresh: bool = False,
+    country_limit: int = 16,
+    corridor_limit: int = 10,
+    hazard_limit: int = 10,
+    replay_limit: int = 12,
+) -> dict[str, Any]:
+    overview = planetary_intelligence_overview(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        refresh_sources=False,
+        country_limit=max(10, min(country_limit, 25)),
+        corridor_limit=max(8, min(corridor_limit, 20)),
+        hazard_limit=max(8, min(hazard_limit, 16)),
+        replay_limit=max(8, min(replay_limit, 24)),
+    )
+    country_rows = list(overview.get("country_snapshots") or [])
+    corridor_rows = list(overview.get("corridor_snapshots") or [])
+    hazard_rows = list(overview.get("hazard_forecasts") or [])
+    alert_rows = list(overview.get("alert_events") or [])
+    replay_rows = list(overview.get("replay_frames") or [])
+    source_events = load_recent_platform_source_events(limit=max(180, country_limit * 18))
+    normalized_signals = load_recent_platform_normalized_signals(limit=max(180, country_limit * 18))
+    country_fusion_rows = load_recent_country_fusion_snapshots(limit=max(48, country_limit * 3)) or list(overview.get("country_fusion_snapshots") or [])
+    timeline_rows = load_recent_fusion_timeline(limit=max(48, replay_limit * 4)) or list(overview.get("fusion_timeline") or [])
+    correlation_rows = load_recent_correlation_chains(limit=max(40, corridor_limit + hazard_limit + 12)) or list(overview.get("correlation_chains") or [])
+    world_entities = load_recent_planetary_world_entities(limit=160) or list(overview.get("world_entities") or [])
+    world_relationships = load_recent_planetary_world_relationships(limit=220) or list(overview.get("world_relationships") or [])
+    return {
+        "overview": overview,
+        "country_snapshots": country_rows,
+        "corridor_snapshots": corridor_rows,
+        "hazard_forecasts": hazard_rows,
+        "alert_events": alert_rows,
+        "replay_frames": replay_rows,
+        "country_fusion_snapshots": country_fusion_rows,
+        "fusion_timeline": timeline_rows,
+        "correlation_chains": correlation_rows,
+        "world_entities": world_entities,
+        "world_relationships": world_relationships,
+        "source_events": source_events,
+        "normalized_signals": normalized_signals,
+    }
+
+
+def _build_planetary_command_context(
+    request: Request,
+    role: str,
+    *,
+    mode: str = "online",
+    refresh: bool = False,
+    country_limit: int = 18,
+    corridor_limit: int = 10,
+    hazard_limit: int = 10,
+    replay_limit: int = 12,
+    run_backtests: bool = False,
+) -> dict[str, Any]:
+    context = _load_planetary_investigation_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=country_limit,
+        corridor_limit=corridor_limit,
+        hazard_limit=hazard_limit,
+        replay_limit=replay_limit,
+    )
+    behavior_bundle = _planetary_behavior_bundle(
+        request=request,
+        role=role,
+        mode=mode,
+        country_limit=country_limit,
+        refresh=refresh,
+    )
+    behavior_signals = [
+        row for row in context["normalized_signals"]
+        if str(row.get("subsystem") or "").strip() == BEHAVIOR_SUBSYSTEM
+    ]
+    behavior_source_events = [
+        row for row in context["source_events"]
+        if str(row.get("subsystem") or "").strip() == BEHAVIOR_SUBSYSTEM
+    ]
+    behavior_surface = build_behavior_operator_surface(
+        behavior_bundle,
+        normalized_signals=behavior_signals,
+        source_events=behavior_source_events,
+        limit=max(10, country_limit),
+    )
+    graph_summary = build_planetary_graph_summary(
+        world_entities=context["world_entities"],
+        world_relationships=context["world_relationships"],
+        limit=max(10, country_limit),
+    )
+    disaster_payload = _disaster_forecast_cached(limit=max(8, hazard_limit))
+    disaster_stream_status = build_disaster_stream_status(load_disaster_stream_snapshot())
+    disaster_backtest = run_disaster_backtests(days=30, persist=True) if run_backtests else latest_disaster_backtest()
+    disaster_surface = build_planetary_disaster_command_surface(
+        disaster_payload,
+        backtest_summary=disaster_backtest,
+        stream_status=disaster_stream_status,
+        limit=max(8, hazard_limit),
+    )
+    calibration_report = build_planetary_calibration_report(
+        country_snapshots=context["country_snapshots"],
+        country_fusion_snapshots=context["country_fusion_snapshots"],
+        hazard_forecasts=context["hazard_forecasts"],
+        correlation_chains=context["correlation_chains"],
+        normalized_signals=context["normalized_signals"],
+    )
+    command_layer = build_planetary_command_layer(
+        context["overview"],
+        behavior_surface=behavior_surface,
+        graph_summary=graph_summary,
+        disaster_surface=disaster_surface,
+        calibration_report=calibration_report,
+        limit=max(8, country_limit),
+    )
+    context["behavior_surface"] = behavior_surface
+    context["graph_summary"] = graph_summary
+    context["disaster_surface"] = disaster_surface
+    context["disaster_backtest"] = disaster_backtest
+    context["calibration_report"] = calibration_report
+    context["command_layer"] = command_layer
+    return context
+
+
+@app.get("/api/planetary-intelligence/source-events")
+@limiter.limit("30/minute")
+def planetary_intelligence_source_events(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(120, ge=1, le=500),
+    source_family: str | None = Query(None),
+    subsystem: str | None = Query(None),
+    event_type: str | None = Query(None),
+    refresh: bool = Query(False, description="Bypass cache and reload recent source events from planetary storage"),
+):
+    cache_key = f"limit={limit}|source_family={source_family or '*'}|subsystem={subsystem or '*'}|event_type={event_type or '*'}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_source_events", cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+    rows = load_recent_platform_source_events(
+        limit=limit,
+        source_family=source_family,
+        subsystem=subsystem,
+        event_type=event_type,
+    )
+    payload = {
+        "contract_version": "phase-0.2",
+        "contract_family": "source_event",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "filters": {
+            "limit": limit,
+            "source_family": source_family,
+            "subsystem": subsystem,
+            "event_type": event_type,
+        },
+        "count": len(rows),
+        "source_events": rows,
+    }
+    if refresh:
+        _dashboard_cache_clear("planetary_source_events")
+        return payload
+    return _dashboard_cache_set("planetary_source_events", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/normalized-signals")
+@limiter.limit("30/minute")
+def planetary_intelligence_normalized_signals(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(120, ge=1, le=500),
+    source_family: str | None = Query(None),
+    subsystem: str | None = Query(None),
+    signal_type: str | None = Query(None),
+    refresh: bool = Query(False, description="Bypass cache and reload recent normalized signals from planetary storage"),
+):
+    cache_key = f"limit={limit}|source_family={source_family or '*'}|subsystem={subsystem or '*'}|signal_type={signal_type or '*'}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_normalized_signals", cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+    rows = load_recent_platform_normalized_signals(
+        limit=limit,
+        source_family=source_family,
+        subsystem=subsystem,
+        signal_type=signal_type,
+    )
+    payload = {
+        "contract_version": "phase-0.2",
+        "contract_family": "normalized_signal",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "filters": {
+            "limit": limit,
+            "source_family": source_family,
+            "subsystem": subsystem,
+            "signal_type": signal_type,
+        },
+        "count": len(rows),
+        "normalized_signals": rows,
+    }
+    if refresh:
+        _dashboard_cache_clear("planetary_normalized_signals")
+        return payload
+    return _dashboard_cache_set("planetary_normalized_signals", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/behavior/country-snapshots")
+@limiter.limit("30/minute")
+def planetary_behavior_country_snapshots(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    limit: int = Query(14, ge=3, le=40),
+    refresh: bool = Query(False, description="Materialize a fresh behavior snapshot before returning country-level planetary behavior data"),
+):
+    payload = _planetary_behavior_bundle(request=request, role=role, mode=mode, country_limit=limit, refresh=refresh)
+    return {
+        "contract_version": payload.get("contract_version"),
+        "generated_at": payload.get("generated_at"),
+        "mode": payload.get("mode"),
+        "count": len(payload.get("country_snapshots") or []),
+        "country_snapshots": payload.get("country_snapshots") or [],
+        "global_behavior_snapshot": payload.get("global_behavior_snapshot") or {},
+        "persistence": payload.get("persistence") or {},
+        "counts": payload.get("counts") or {},
+    }
+
+
+@app.get("/api/planetary-intelligence/behavior/global-snapshot")
+@limiter.limit("30/minute")
+def planetary_behavior_global_snapshot(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    country_limit: int = Query(14, ge=3, le=40),
+    refresh: bool = Query(False, description="Materialize a fresh behavior snapshot before returning the global behavior view"),
+):
+    payload = _planetary_behavior_bundle(request=request, role=role, mode=mode, country_limit=country_limit, refresh=refresh)
+    return {
+        "contract_version": payload.get("contract_version"),
+        "generated_at": payload.get("generated_at"),
+        "mode": payload.get("mode"),
+        "global_behavior_snapshot": payload.get("global_behavior_snapshot") or {},
+        "persistence": payload.get("persistence") or {},
+        "counts": payload.get("counts") or {},
+    }
+
+
+@app.get("/api/planetary-intelligence/behavior/source-events")
+@limiter.limit("30/minute")
+def planetary_behavior_source_events(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(120, ge=1, le=500),
+    source_family: str | None = Query(None),
+    event_type: str | None = Query(None),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Materialize a fresh behavior snapshot before loading source events"),
+):
+    if refresh:
+        _planetary_behavior_bundle(request=request, role=role, mode=mode, country_limit=max(14, min(limit, 40)), refresh=True)
+    rows = load_recent_platform_source_events(
+        limit=limit,
+        source_family=source_family,
+        subsystem=BEHAVIOR_SUBSYSTEM,
+        event_type=event_type,
+    )
+    return {
+        "contract_version": "phase-0.2",
+        "contract_family": "source_event",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "subsystem": BEHAVIOR_SUBSYSTEM,
+        "filters": {
+            "limit": limit,
+            "source_family": source_family,
+            "event_type": event_type,
+        },
+        "count": len(rows),
+        "source_events": rows,
+    }
+
+
+@app.get("/api/planetary-intelligence/behavior/normalized-signals")
+@limiter.limit("30/minute")
+def planetary_behavior_normalized_signals(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(120, ge=1, le=500),
+    source_family: str | None = Query(None),
+    signal_type: str | None = Query(None),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Materialize a fresh behavior snapshot before loading normalized signals"),
+):
+    if refresh:
+        _planetary_behavior_bundle(request=request, role=role, mode=mode, country_limit=max(14, min(limit, 40)), refresh=True)
+    rows = load_recent_platform_normalized_signals(
+        limit=limit,
+        source_family=source_family,
+        subsystem=BEHAVIOR_SUBSYSTEM,
+        signal_type=signal_type,
+    )
+    return {
+        "contract_version": "phase-0.2",
+        "contract_family": "normalized_signal",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "subsystem": BEHAVIOR_SUBSYSTEM,
+        "filters": {
+            "limit": limit,
+            "source_family": source_family,
+            "signal_type": signal_type,
+        },
+        "count": len(rows),
+        "normalized_signals": rows,
+    }
+
+
+@app.get("/api/planetary-intelligence/behavior/operator-surface")
+@limiter.limit("30/minute")
+def planetary_behavior_operator_surface(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    country_limit: int = Query(14, ge=3, le=40),
+    limit: int = Query(12, ge=4, le=32),
+    refresh: bool = Query(False, description="Materialize a fresh behavior snapshot before returning the dedicated operator surface"),
+):
+    cache_key = f"mode={mode}|country_limit={country_limit}|limit={limit}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_behavior_surface", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    behavior_bundle = _planetary_behavior_bundle(
+        request=request,
+        role=role,
+        mode=mode,
+        country_limit=max(country_limit, limit),
+        refresh=refresh,
+    )
+    behavior_signals = load_recent_platform_normalized_signals(
+        limit=max(120, limit * 12),
+        subsystem=BEHAVIOR_SUBSYSTEM,
+    )
+    behavior_events = load_recent_platform_source_events(
+        limit=max(120, limit * 12),
+        subsystem=BEHAVIOR_SUBSYSTEM,
+    )
+    payload = build_behavior_operator_surface(
+        behavior_bundle,
+        normalized_signals=behavior_signals,
+        source_events=behavior_events,
+        limit=limit,
+    )
+    if refresh:
+        _dashboard_cache_clear("planetary_behavior_surface")
+        return payload
+    return _dashboard_cache_set("planetary_behavior_surface", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/behavior/replay")
+@limiter.limit("30/minute")
+def planetary_behavior_replay(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    limit: int = Query(16, ge=4, le=48),
+    refresh: bool = Query(False, description="Materialize a fresh behavior snapshot before returning behavior replay frames"),
+):
+    cache_key = f"mode={mode}|limit={limit}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_behavior_replay", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    behavior_bundle = _planetary_behavior_bundle(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+    )
+    behavior_signals = load_recent_platform_normalized_signals(
+        limit=max(120, limit * 12),
+        subsystem=BEHAVIOR_SUBSYSTEM,
+    )
+    behavior_events = load_recent_platform_source_events(
+        limit=max(120, limit * 12),
+        subsystem=BEHAVIOR_SUBSYSTEM,
+    )
+    surface = build_behavior_operator_surface(
+        behavior_bundle,
+        normalized_signals=behavior_signals,
+        source_events=behavior_events,
+        limit=max(8, min(limit, 32)),
+    )
+    payload = {
+        "contract_version": surface.get("contract_version"),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "subsystem": BEHAVIOR_SUBSYSTEM,
+        "count": len(surface.get("replay_frames") or []),
+        "replay_frames": surface.get("replay_frames") or [],
+    }
+    if refresh:
+        _dashboard_cache_clear("planetary_behavior_replay")
+        return payload
+    return _dashboard_cache_set("planetary_behavior_replay", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/graph/entities")
+@limiter.limit("30/minute")
+def planetary_graph_entities(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(80, ge=1, le=300),
+    entity_type: str | None = Query(None),
+    search: str | None = Query(None),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary graph snapshot before loading entities"),
+):
+    cache_key = f"limit={limit}|entity_type={entity_type or '*'}|search={search or '*'}"
+    if refresh:
+        planetary_intelligence_overview(
+            request=request,
+            role=role,
+            mode=mode,
+            refresh=True,
+            refresh_sources=False,
+            country_limit=max(10, min(limit, 25)),
+            corridor_limit=8,
+            hazard_limit=8,
+            replay_limit=8,
+        )
+    else:
+        cached = _dashboard_cache_get("planetary_graph_entities", cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+    rows = load_recent_planetary_world_entities(limit=limit, entity_type=entity_type, search=search)
+    payload = {
+        "contract_version": "phase-0.2",
+        "contract_family": "world_entity",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "filters": {
+            "limit": limit,
+            "entity_type": entity_type,
+            "search": search,
+        },
+        "count": len(rows),
+        "world_entities": rows,
+    }
+    if refresh:
+        _dashboard_cache_clear("planetary_graph_entities")
+        return payload
+    return _dashboard_cache_set("planetary_graph_entities", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/graph/relationships")
+@limiter.limit("30/minute")
+def planetary_graph_relationships(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(120, ge=1, le=400),
+    relationship_type: str | None = Query(None),
+    entity_id: str | None = Query(None),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary graph snapshot before loading relationships"),
+):
+    cache_key = f"limit={limit}|relationship_type={relationship_type or '*'}|entity_id={entity_id or '*'}"
+    if refresh:
+        planetary_intelligence_overview(
+            request=request,
+            role=role,
+            mode=mode,
+            refresh=True,
+            refresh_sources=False,
+            country_limit=12,
+            corridor_limit=8,
+            hazard_limit=8,
+            replay_limit=8,
+        )
+    else:
+        cached = _dashboard_cache_get("planetary_graph_relationships", cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+    rows = load_recent_planetary_world_relationships(
+        limit=limit,
+        relationship_type=relationship_type,
+        entity_id=entity_id,
+    )
+    payload = {
+        "contract_version": "phase-0.2",
+        "contract_family": "world_relationship",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "filters": {
+            "limit": limit,
+            "relationship_type": relationship_type,
+            "entity_id": entity_id,
+        },
+        "count": len(rows),
+        "world_relationships": rows,
+    }
+    if refresh:
+        _dashboard_cache_clear("planetary_graph_relationships")
+        return payload
+    return _dashboard_cache_set("planetary_graph_relationships", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/fusion/country-snapshots")
+@limiter.limit("30/minute")
+def planetary_fusion_country_snapshots(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(24, ge=1, le=80),
+    country: str | None = Query(None),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary fusion snapshot before loading fused country states"),
+):
+    cache_key = f"limit={limit}|country={country or '*'}"
+    if refresh:
+        planetary_intelligence_overview(
+            request=request,
+            role=role,
+            mode=mode,
+            refresh=True,
+            refresh_sources=False,
+            country_limit=max(10, min(limit, 25)),
+            corridor_limit=8,
+            hazard_limit=8,
+            replay_limit=8,
+        )
+    else:
+        cached = _dashboard_cache_get("planetary_fusion_countries", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    rows = load_recent_country_fusion_snapshots(limit=limit, country=country)
+    if not rows:
+        planetary_intelligence_overview(
+            request=request,
+            role=role,
+            mode=mode,
+            refresh=True,
+            refresh_sources=False,
+            country_limit=max(10, min(limit, 25)),
+            corridor_limit=8,
+            hazard_limit=8,
+            replay_limit=8,
+        )
+        rows = load_recent_country_fusion_snapshots(limit=limit, country=country)
+    payload = {
+        "contract_version": "phase-0.3",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "filters": {"limit": limit, "country": country},
+        "count": len(rows),
+        "country_fusion_snapshots": rows,
+    }
+    if refresh:
+        _dashboard_cache_clear("planetary_fusion_countries")
+        return payload
+    return _dashboard_cache_set("planetary_fusion_countries", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/fusion/timeline")
+@limiter.limit("30/minute")
+def planetary_fusion_timeline(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(28, ge=1, le=100),
+    country: str | None = Query(None),
+    frame_type: str | None = Query(None),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary fusion snapshot before loading the fusion timeline"),
+):
+    cache_key = f"limit={limit}|country={country or '*'}|frame_type={frame_type or '*'}"
+    if refresh:
+        planetary_intelligence_overview(
+            request=request,
+            role=role,
+            mode=mode,
+            refresh=True,
+            refresh_sources=False,
+            country_limit=12,
+            corridor_limit=8,
+            hazard_limit=8,
+            replay_limit=max(8, min(limit, 24)),
+        )
+    else:
+        cached = _dashboard_cache_get("planetary_fusion_timeline", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    rows = load_recent_fusion_timeline(limit=limit, country=country, frame_type=frame_type)
+    if not rows:
+        planetary_intelligence_overview(
+            request=request,
+            role=role,
+            mode=mode,
+            refresh=True,
+            refresh_sources=False,
+            country_limit=12,
+            corridor_limit=8,
+            hazard_limit=8,
+            replay_limit=max(8, min(limit, 24)),
+        )
+        rows = load_recent_fusion_timeline(limit=limit, country=country, frame_type=frame_type)
+    payload = {
+        "contract_version": "phase-0.3",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "filters": {"limit": limit, "country": country, "frame_type": frame_type},
+        "count": len(rows),
+        "fusion_timeline": rows,
+    }
+    if refresh:
+        _dashboard_cache_clear("planetary_fusion_timeline")
+        return payload
+    return _dashboard_cache_set("planetary_fusion_timeline", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/fusion/correlation-chains")
+@limiter.limit("30/minute")
+def planetary_fusion_correlation_chains(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(18, ge=1, le=60),
+    country: str | None = Query(None),
+    chain_type: str | None = Query(None),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary fusion snapshot before loading cross-system correlation chains"),
+):
+    cache_key = f"limit={limit}|country={country or '*'}|chain_type={chain_type or '*'}"
+    if refresh:
+        planetary_intelligence_overview(
+            request=request,
+            role=role,
+            mode=mode,
+            refresh=True,
+            refresh_sources=False,
+            country_limit=12,
+            corridor_limit=8,
+            hazard_limit=8,
+            replay_limit=8,
+        )
+    else:
+        cached = _dashboard_cache_get("planetary_fusion_correlations", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    rows = load_recent_correlation_chains(limit=limit, country=country, chain_type=chain_type)
+    if not rows:
+        planetary_intelligence_overview(
+            request=request,
+            role=role,
+            mode=mode,
+            refresh=True,
+            refresh_sources=False,
+            country_limit=12,
+            corridor_limit=8,
+            hazard_limit=8,
+            replay_limit=8,
+        )
+        rows = load_recent_correlation_chains(limit=limit, country=country, chain_type=chain_type)
+    payload = {
+        "contract_version": "phase-0.3",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "filters": {"limit": limit, "country": country, "chain_type": chain_type},
+        "count": len(rows),
+        "correlation_chains": rows,
+    }
+    if refresh:
+        _dashboard_cache_clear("planetary_fusion_correlations")
+        return payload
+    return _dashboard_cache_set("planetary_fusion_correlations", cache_key, payload)
+
+
+
+@app.get("/api/planetary-intelligence/fusion/country-detail")
+@limiter.limit("30/minute")
+def planetary_fusion_country_detail(
+    request: Request,
+    role: str = Depends(check_role),
+    country: str = Query(..., min_length=2, max_length=16),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary overview before loading fusion evidence for a country"),
+):
+    country_code = str(country or "").strip().upper()
+    cache_key = f"country={country_code}|mode={mode}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_fusion_country_detail", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    context = _load_planetary_investigation_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=18,
+        corridor_limit=10,
+        hazard_limit=10,
+        replay_limit=12,
+    )
+    payload = build_country_fusion_detail(
+        country_code,
+        country_snapshots=context["country_snapshots"],
+        country_fusion_snapshots=context["country_fusion_snapshots"],
+        correlation_chains=context["correlation_chains"],
+        fusion_timeline=context["fusion_timeline"],
+        corridor_snapshots=context["corridor_snapshots"],
+        hazard_forecasts=context["hazard_forecasts"],
+        alert_events=context["alert_events"],
+        world_entities=context["world_entities"],
+        world_relationships=context["world_relationships"],
+        normalized_signals=context["normalized_signals"],
+        source_events=context["source_events"],
+        operator_events_collection=operator_events_collection,
+    )
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=404, detail={"message": f"No fusion evidence found for country {country_code}"})
+    if refresh:
+        _dashboard_cache_clear("planetary_fusion_country_detail")
+        return payload
+    return _dashboard_cache_set("planetary_fusion_country_detail", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/fusion/correlation-detail")
+@limiter.limit("30/minute")
+def planetary_fusion_correlation_detail(
+    request: Request,
+    role: str = Depends(check_role),
+    chain_id: str = Query(..., min_length=3, max_length=128),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary overview before loading correlation-chain evidence"),
+):
+    normalized_chain_id = str(chain_id or "").strip()
+    cache_key = f"chain_id={normalized_chain_id}|mode={mode}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_fusion_correlation_detail", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    context = _load_planetary_investigation_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=18,
+        corridor_limit=10,
+        hazard_limit=10,
+        replay_limit=12,
+    )
+    payload = build_correlation_chain_detail(
+        normalized_chain_id,
+        country_snapshots=context["country_snapshots"],
+        country_fusion_snapshots=context["country_fusion_snapshots"],
+        correlation_chains=context["correlation_chains"],
+        fusion_timeline=context["fusion_timeline"],
+        corridor_snapshots=context["corridor_snapshots"],
+        hazard_forecasts=context["hazard_forecasts"],
+        alert_events=context["alert_events"],
+        world_entities=context["world_entities"],
+        world_relationships=context["world_relationships"],
+        normalized_signals=context["normalized_signals"],
+        source_events=context["source_events"],
+        operator_events_collection=operator_events_collection,
+    )
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=404, detail={"message": f"No correlation-chain evidence found for {normalized_chain_id}"})
+    if refresh:
+        _dashboard_cache_clear("planetary_fusion_correlation_detail")
+        return payload
+    return _dashboard_cache_set("planetary_fusion_correlation_detail", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/corridors/detail")
+@limiter.limit("30/minute")
+def planetary_corridor_detail(
+    request: Request,
+    role: str = Depends(check_role),
+    corridor_id: str = Query(..., min_length=3, max_length=128),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary overview before loading corridor evidence"),
+):
+    normalized_corridor_id = str(corridor_id or "").strip()
+    cache_key = f"corridor_id={normalized_corridor_id}|mode={mode}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_corridor_detail", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    context = _load_planetary_investigation_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=18,
+        corridor_limit=12,
+        hazard_limit=10,
+        replay_limit=12,
+    )
+    payload = build_corridor_detail(
+        normalized_corridor_id,
+        country_snapshots=context["country_snapshots"],
+        country_fusion_snapshots=context["country_fusion_snapshots"],
+        correlation_chains=context["correlation_chains"],
+        fusion_timeline=context["fusion_timeline"],
+        corridor_snapshots=context["corridor_snapshots"],
+        hazard_forecasts=context["hazard_forecasts"],
+        alert_events=context["alert_events"],
+        world_entities=context["world_entities"],
+        world_relationships=context["world_relationships"],
+        normalized_signals=context["normalized_signals"],
+        source_events=context["source_events"],
+        operator_events_collection=operator_events_collection,
+    )
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=404, detail={"message": f"No corridor evidence found for {normalized_corridor_id}"})
+    if refresh:
+        _dashboard_cache_clear("planetary_corridor_detail")
+        return payload
+    return _dashboard_cache_set("planetary_corridor_detail", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/alerts/detail")
+@limiter.limit("30/minute")
+def planetary_alert_detail(
+    request: Request,
+    role: str = Depends(check_role),
+    alert_id: str = Query(..., min_length=3, max_length=128),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary overview before loading alert evidence"),
+):
+    normalized_alert_id = str(alert_id or "").strip()
+    cache_key = f"alert_id={normalized_alert_id}|mode={mode}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_alert_detail", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    context = _load_planetary_investigation_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=18,
+        corridor_limit=10,
+        hazard_limit=10,
+        replay_limit=12,
+    )
+    payload = build_alert_detail(
+        normalized_alert_id,
+        country_snapshots=context["country_snapshots"],
+        country_fusion_snapshots=context["country_fusion_snapshots"],
+        correlation_chains=context["correlation_chains"],
+        fusion_timeline=context["fusion_timeline"],
+        corridor_snapshots=context["corridor_snapshots"],
+        hazard_forecasts=context["hazard_forecasts"],
+        alert_events=context["alert_events"],
+        world_entities=context["world_entities"],
+        world_relationships=context["world_relationships"],
+        normalized_signals=context["normalized_signals"],
+        source_events=context["source_events"],
+        operator_events_collection=operator_events_collection,
+    )
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=404, detail={"message": f"No alert evidence found for {normalized_alert_id}"})
+    if refresh:
+        _dashboard_cache_clear("planetary_alert_detail")
+        return payload
+    return _dashboard_cache_set("planetary_alert_detail", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/graph/entity-profile")
+@limiter.limit("30/minute")
+def planetary_graph_entity_profile(
+    request: Request,
+    role: str = Depends(check_role),
+    entity_query: str = Query(..., min_length=2, max_length=128),
+    entity_type: str | None = Query(None),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary overview before loading an entity evidence profile"),
+):
+    normalized_query = str(entity_query or "").strip()
+    cache_key = f"entity_query={normalized_query}|entity_type={entity_type or '*'}|mode={mode}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_entity_profile", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    context = _load_planetary_investigation_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=18,
+        corridor_limit=10,
+        hazard_limit=10,
+        replay_limit=12,
+    )
+    payload = build_planetary_entity_profile(
+        normalized_query,
+        world_entities=context["world_entities"],
+        world_relationships=context["world_relationships"],
+        country_fusion_snapshots=context["country_fusion_snapshots"],
+        correlation_chains=context["correlation_chains"],
+        alert_events=context["alert_events"],
+        hazard_forecasts=context["hazard_forecasts"],
+        corridor_snapshots=context["corridor_snapshots"],
+        fusion_timeline=context["fusion_timeline"],
+        operator_history=[],
+        entity_type=entity_type,
+        limit=18,
+    )
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=404, detail={"message": f"No entity profile found for {normalized_query}"})
+    related_alert_ids = [
+        str(item.get("alert_id") or "").strip()
+        for item in (payload.get("related_alerts") or [])
+        if str(item.get("alert_id") or "").strip()
+    ]
+    country_scope = [str(item or "").strip().upper() for item in (payload.get("country_scope") or []) if str(item or "").strip()]
+    payload["operator_history"] = load_planetary_operator_history(
+        operator_events_collection,
+        country=country_scope[0] if country_scope else None,
+        alert_ids=related_alert_ids,
+        limit=18,
+    ) if operator_events_collection is not None else []
+    if isinstance(payload.get("evidence_summary"), dict):
+        payload["evidence_summary"]["operator_history_count"] = len(payload.get("operator_history") or [])
+    if refresh:
+        _dashboard_cache_clear("planetary_entity_profile")
+        return payload
+    return _dashboard_cache_set("planetary_entity_profile", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/graph/neighborhood")
+@limiter.limit("30/minute")
+def planetary_graph_neighborhood(
+    request: Request,
+    role: str = Depends(check_role),
+    entity_query: str = Query(..., min_length=2, max_length=128),
+    entity_type: str | None = Query(None),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary overview before loading a graph neighborhood"),
+):
+    normalized_query = str(entity_query or "").strip()
+    cache_key = f"entity_query={normalized_query}|entity_type={entity_type or '*'}|mode={mode}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_graph_neighborhood", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    context = _load_planetary_investigation_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=18,
+        corridor_limit=10,
+        hazard_limit=10,
+        replay_limit=12,
+    )
+    payload = build_planetary_entity_neighborhood(
+        normalized_query,
+        world_entities=context["world_entities"],
+        world_relationships=context["world_relationships"],
+        entity_type=entity_type,
+        limit=20,
+    )
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=404, detail={"message": f"No graph neighborhood found for {normalized_query}"})
+    if refresh:
+        _dashboard_cache_clear("planetary_graph_neighborhood")
+        return payload
+    return _dashboard_cache_set("planetary_graph_neighborhood", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/graph/summary")
+@limiter.limit("30/minute")
+def planetary_graph_summary(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    limit: int = Query(12, ge=4, le=40),
+    refresh: bool = Query(False, description="Seed a fresh planetary overview before returning graph analytics"),
+):
+    cache_key = f"mode={mode}|limit={limit}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_graph_summary", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    context = _build_planetary_command_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=max(16, limit),
+        corridor_limit=10,
+        hazard_limit=10,
+        replay_limit=12,
+        run_backtests=False,
+    )
+    payload = context["graph_summary"]
+    if refresh:
+        _dashboard_cache_clear("planetary_graph_summary")
+        return payload
+    return _dashboard_cache_set("planetary_graph_summary", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/graph/search")
+@limiter.limit("30/minute")
+def planetary_graph_search(
+    request: Request,
+    role: str = Depends(check_role),
+    query: str = Query(..., min_length=2, max_length=128),
+    entity_type: str | None = Query(None),
+    limit: int = Query(12, ge=3, le=40),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary overview before searching the graph"),
+):
+    cache_key = f"query={query.strip().lower()}|entity_type={entity_type or '*'}|limit={limit}|mode={mode}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_graph_search", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    context = _load_planetary_investigation_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=max(16, min(limit, 24)),
+        corridor_limit=10,
+        hazard_limit=10,
+        replay_limit=12,
+    )
+    payload = search_planetary_graph_entities(
+        query,
+        world_entities=context["world_entities"],
+        world_relationships=context["world_relationships"],
+        entity_type=entity_type,
+        limit=limit,
+    )
+    if refresh:
+        _dashboard_cache_clear("planetary_graph_search")
+        return payload
+    return _dashboard_cache_set("planetary_graph_search", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/calibration/report")
+@limiter.limit("20/minute")
+def planetary_calibration_report(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    refresh: bool = Query(False, description="Seed a fresh planetary overview before building the calibration report"),
+):
+    cache_key = f"mode={mode}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_calibration", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    context = _load_planetary_investigation_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=20,
+        corridor_limit=10,
+        hazard_limit=10,
+        replay_limit=12,
+    )
+    payload = build_planetary_calibration_report(
+        country_snapshots=context["country_snapshots"],
+        country_fusion_snapshots=context["country_fusion_snapshots"],
+        hazard_forecasts=context["hazard_forecasts"],
+        correlation_chains=context["correlation_chains"],
+        normalized_signals=context["normalized_signals"],
+    )
+    payload["generated_at"] = datetime.now(timezone.utc).isoformat()
+    if refresh:
+        _dashboard_cache_clear("planetary_calibration")
+        return payload
+    return _dashboard_cache_set("planetary_calibration", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/disaster/command")
+@limiter.limit("20/minute")
+def planetary_disaster_command(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    hazard_limit: int = Query(12, ge=4, le=24),
+    refresh: bool = Query(False, description="Refresh the disaster command surface from the latest forecast and backtest state"),
+    run_backtests: bool = Query(False, description="Run disaster backtests before composing the command surface"),
+):
+    cache_key = f"mode={mode}|hazard_limit={hazard_limit}|run_backtests={int(run_backtests)}"
+    if not refresh and not run_backtests:
+        cached = _dashboard_cache_get("planetary_disaster_command", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    disaster_payload = _disaster_forecast_cached(limit=max(8, hazard_limit))
+    backtest_summary = run_disaster_backtests(days=30, persist=True) if run_backtests else latest_disaster_backtest()
+    payload = build_planetary_disaster_command_surface(
+        disaster_payload,
+        backtest_summary=backtest_summary,
+        stream_status=build_disaster_stream_status(load_disaster_stream_snapshot()),
+        limit=hazard_limit,
+    )
+    if refresh or run_backtests:
+        _dashboard_cache_clear("planetary_disaster_command", "planetary_disaster_backtests")
+        return payload
+    return _dashboard_cache_set("planetary_disaster_command", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/disaster/backtests")
+@limiter.limit("20/minute")
+def planetary_disaster_backtests(
+    request: Request,
+    role: str = Depends(check_role),
+    run: bool = Query(False, description="Run disaster backtests instead of returning the latest persisted snapshot"),
+):
+    cache_key = f"run={int(run)}"
+    if not run:
+        cached = _dashboard_cache_get("planetary_disaster_backtests", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    payload = run_disaster_backtests(days=30, persist=True) if run else latest_disaster_backtest()
+    payload["generated_at"] = payload.get("generated_at") or datetime.now(timezone.utc).isoformat()
+    payload["contract_version"] = "phase-0.6"
+    if run:
+        _dashboard_cache_clear("planetary_disaster_backtests", "planetary_disaster_command")
+        return payload
+    return _dashboard_cache_set("planetary_disaster_backtests", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/command-layer")
+@limiter.limit("20/minute")
+def planetary_command_layer(
+    request: Request,
+    role: str = Depends(check_role),
+    mode: str = Query("online"),
+    country_limit: int = Query(18, ge=8, le=40),
+    hazard_limit: int = Query(10, ge=4, le=24),
+    replay_limit: int = Query(12, ge=8, le=32),
+    refresh: bool = Query(False, description="Seed a fresh cross-system command snapshot before returning the command layer"),
+    run_backtests: bool = Query(False, description="Run disaster backtests before composing the command layer"),
+):
+    cache_key = (
+        f"mode={mode}|country_limit={country_limit}|hazard_limit={hazard_limit}|"
+        f"replay_limit={replay_limit}|run_backtests={int(run_backtests)}"
+    )
+    if not refresh and not run_backtests:
+        cached = _dashboard_cache_get("planetary_command_layer", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    context = _build_planetary_command_context(
+        request=request,
+        role=role,
+        mode=mode,
+        refresh=refresh,
+        country_limit=country_limit,
+        corridor_limit=10,
+        hazard_limit=hazard_limit,
+        replay_limit=replay_limit,
+        run_backtests=run_backtests,
+    )
+    payload = context["command_layer"]
+    if refresh or run_backtests:
+        _dashboard_cache_clear("planetary_command_layer", "planetary_disaster_command", "planetary_disaster_backtests")
+        return payload
+    return _dashboard_cache_set("planetary_command_layer", cache_key, payload)
+
+
+@app.get("/api/planetary-intelligence/replay/map-frames")
+@limiter.limit("20/minute")
+def planetary_map_replay_frames(
+    request: Request,
+    role: str = Depends(check_role),
+    limit: int = Query(24, ge=6, le=120),
+    refresh: bool = Query(False, description="Materialize a fresh planetary runtime frame before loading replay history"),
+):
+    cache_key = f"limit={limit}"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_runtime_status", f"replay:{cache_key}")
+        if isinstance(cached, dict):
+            return cached
+    if refresh:
+        _materialize_planetary_runtime_snapshot(
+            mode="online",
+            refresh_sources=False,
+            run_backtests=False,
+            reason="replay_refresh",
+        )
+    payload = {
+        "contract_version": "phase-0.8",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "replay_frames": load_recent_planetary_map_replay_frames(limit=limit),
+        "latest_frame": load_latest_planetary_map_replay_frame(),
+    }
+    if refresh:
+        _dashboard_cache_clear("planetary_runtime_status")
+        return payload
+    return _dashboard_cache_set("planetary_runtime_status", f"replay:{cache_key}", payload)
+
+
+@app.get("/api/planetary-intelligence/runtime/status")
+@limiter.limit("20/minute")
+def planetary_runtime_status(
+    request: Request,
+    role: str = Depends(check_role),
+    refresh: bool = Query(False, description="Bypass cache and reload the latest persisted planetary runtime manifest"),
+):
+    cache_key = "default"
+    if not refresh:
+        cached = _dashboard_cache_get("planetary_runtime_status", cache_key)
+        if isinstance(cached, dict):
+            return cached
+    payload = {
+        "contract_version": "phase-0.8",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        **_planetary_runtime_status_payload(),
+    }
+    if refresh:
+        _dashboard_cache_clear("planetary_runtime_status")
+        return payload
+    return _dashboard_cache_set("planetary_runtime_status", cache_key, payload)
+
+
+@app.post("/api/planetary-intelligence/runtime/materialize")
+@limiter.limit("10/minute")
+def planetary_runtime_materialize(
+    request: Request,
+    role: str = Depends(require_admin),
+    refresh_sources: bool = Query(False),
+    run_backtests: bool = Query(False),
+):
+    started_at = datetime.now(timezone.utc).isoformat()
+    _update_planetary_runtime_status(
+        status="running",
+        last_started_at=started_at,
+        last_reason="manual",
+        last_refresh_sources=refresh_sources,
+        last_run_backtests=run_backtests,
+        last_error=None,
+    )
+    snapshot = _materialize_planetary_runtime_snapshot(
+        mode="online",
+        refresh_sources=refresh_sources,
+        run_backtests=run_backtests,
+        reason="manual",
+    )
+    _update_planetary_runtime_status(
+        status="idle",
+        last_completed_at=datetime.now(timezone.utc).isoformat(),
+        last_run_id=snapshot.get("run_id"),
+        cycle_count=int(PLANETARY_RUNTIME_STATUS.get("cycle_count") or 0) + 1,
+    )
+    _dashboard_cache_clear("planetary_runtime_status")
+    return {
+        "ok": True,
+        "run_id": snapshot.get("run_id"),
+        "captured_at": snapshot.get("captured_at"),
+        "runtime_manifest": snapshot.get("runtime_manifest"),
+    }
+
+
+@app.post("/api/planetary-intelligence/alerts/action")
+@limiter.limit("30/minute")
+def planetary_alert_action(
+    request: Request,
+    payload: PlanetaryAlertActionRequest,
+    role: str = Depends(check_role),
+):
+    allowed_actions = {"acknowledge", "assign", "snooze", "false_positive"}
+    action = str(payload.action or "").strip().lower()
+    if action not in allowed_actions:
+        raise HTTPException(status_code=400, detail={"message": "Unsupported planetary alert action"})
+    doc = build_planetary_alert_operation_doc(payload.model_dump(), actor=payload.owner or role)
+    if not str(doc.get("alert_type") or "").strip():
+        raise HTTPException(status_code=400, detail={"message": "Alert type is required"})
+    if not (str(doc.get("alert_id") or "").strip() or str(doc.get("dedupe_key") or "").strip()):
+        raise HTTPException(status_code=400, detail={"message": "Alert id or dedupe key is required"})
+    operator_events_collection.insert_one(doc)
+    _dashboard_cache_clear(
+        "planetary_overview",
+        "planetary_graph_entities",
+        "planetary_graph_relationships",
+        "planetary_fusion_countries",
+        "planetary_fusion_timeline",
+        "planetary_fusion_correlations",
+        "planetary_fusion_country_detail",
+        "planetary_fusion_correlation_detail",
+        "planetary_alert_detail",
+        "planetary_entity_profile",
+        "planetary_graph_neighborhood",
+        "planetary_calibration",
+        "planetary_alert_ops",
+        "planetary_behavior_surface",
+        "planetary_behavior_replay",
+        "planetary_graph_summary",
+        "planetary_graph_search",
+        "planetary_disaster_command",
+        "planetary_disaster_backtests",
+        "planetary_command_layer",
+    )
+    return {
+        "ok": True,
+        "action": doc.get("action"),
+        "dedupe_key": doc.get("dedupe_key"),
+        "assignee": doc.get("assignee"),
+        "team_queue": doc.get("team_queue"),
+        "snoozed_until": doc.get("snoozed_until"),
+        "sla_due_at": doc.get("sla_due_at"),
+    }
 
 
 @app.get("/dashboard/global-intelligence-feed")
@@ -3868,6 +6073,186 @@ def _fetch_met_no_weather(lat: float, lon: float) -> dict[str, Any]:
 def _weather_cache_key(country: Optional[str], lat: float, lon: float) -> str:
     country_key = (country or "").upper().strip()
     return f"{country_key}:{round(lat, 3)}:{round(lon, 3)}"
+
+
+def _build_hotspot_history_health() -> dict[str, Any]:
+    latest = hotspot_history_collection.find_one({}, {"captured_at": 1}, sort=[("captured_at", DESCENDING)])
+    latest_ts = _coerce_utc_datetime(latest.get("captured_at")) if latest else None
+    now_dt = datetime.now(timezone.utc)
+    age_minutes = round((now_dt - latest_ts).total_seconds() / 60.0, 2) if latest_ts else None
+    status = "healthy"
+    if latest_ts is None:
+        status = "degraded"
+    elif age_minutes is not None and age_minutes > 45:
+        status = "stale"
+    elif age_minutes is not None and age_minutes > 20:
+        status = "degraded"
+    return {
+        "status": status,
+        "latest_captured_at": latest_ts.isoformat() if latest_ts else None,
+        "age_minutes": age_minutes,
+        "advisory": "Hotspot history is live" if status == "healthy" else "Hotspot history is limited or stale",
+    }
+
+
+def _hydrate_hotspot_history_views(payload: dict[str, Any]) -> dict[str, Any]:
+    hotspot_groups = ((payload or {}).get("regional_hotspots") or {})
+    captured_at = str(payload.get("generated_at") or iso_now())
+    hazard_keys = ["earthquake", "wildfire", "flood", "cyclone"]
+    for hazard, hotspots in hotspot_groups.items():
+        if hotspots:
+            persist_hotspot_snapshots(hotspot_history_collection, hotspots, captured_at=captured_at, hazard=hazard)
+    payload["hotspot_history_health"] = _build_hotspot_history_health()
+    payload["trend_comparison"] = {hazard: build_top_movers(hotspot_history_collection, hours=24, limit=5, hazard=hazard) for hazard in hazard_keys}
+    payload["alert_queue"] = {hazard: build_alert_queue(hotspot_history_collection, hours=24, limit=8, hazard=hazard) for hazard in hazard_keys}
+    payload["legend"] = {
+        "bands": [
+            {"key": "critical", "label": "Critical", "color": "#f87171"},
+            {"key": "active", "label": "Active", "color": "#fbbf24"},
+            {"key": "monitor", "label": "Monitor", "color": "#38bdf8"},
+            {"key": "guarded", "label": "Guarded", "color": "#94a3b8"},
+        ],
+        "trend_windows": [{"key": key, "hours": hours} for key, hours in HOTSPOT_TREND_WINDOWS.items()],
+        "hazards": [
+            {"key": "earthquake", "label": "Earthquake"},
+            {"key": "wildfire", "label": "Wildfire"},
+            {"key": "flood", "label": "Flood"},
+            {"key": "cyclone", "label": "Cyclone"},
+        ],
+    }
+    payload["named_region_metadata_version"] = "multi-hazard-v2"
+    return payload
+
+
+def _build_disaster_warning_payload(country: str | None = None, limit: int = 6) -> dict[str, Any]:
+    history_lookup = load_recent_history_lookup(hotspot_history_collection, hours=72, points_per_region=12)
+    payload = compute_disaster_early_warning(country=country, limit=limit, history_lookup=history_lookup)
+    payload = _hydrate_hotspot_history_views(payload)
+    return enrich_disaster_payload_with_ops(payload, source_health_collection=source_health_collection, operator_events_collection=operator_events_collection)
+
+
+def _disaster_forecast_cached(country: str | None = None, limit: int = 6) -> dict[str, Any]:
+    cache_key = f"country={country or 'all'}|limit={limit}"
+    cached = _dashboard_cache_get("disaster_warning", cache_key)
+    if isinstance(cached, dict):
+        return cached
+    payload = _build_disaster_warning_payload(country=country, limit=limit)
+    return _dashboard_cache_set("disaster_warning", cache_key, payload)
+
+
+def _internet_map_secret_posture() -> dict[str, Any]:
+    state = runtime_secret_sources()
+    secret_file = state.get("secret_file")
+    return {
+        "dotenv_fallback_loaded": bool(state.get("dotenv_loaded")),
+        "secret_file_loaded": bool(state.get("secret_file_loaded")),
+        "secret_file_configured": bool(secret_file),
+    }
+
+
+def _internet_map_periodic_backtest(*, reason: str = "scheduled_backtest") -> dict[str, Any]:
+    return run_internet_map_backtest(days=30, persist=True)
+
+
+def _internet_map_periodic_maintenance(*, reason: str = "scheduled_maintenance") -> dict[str, Any]:
+    return run_internet_map_maintenance(retention_days=30, stream_retention_days=30, backtest_retention_days=90)
+
+
+def _ensure_internet_map_runtime_started() -> None:
+    INTERNET_MAP_RUNTIME.configure(
+        cycle_builder=_build_internet_map_cycle,
+        backtest_runner=_internet_map_periodic_backtest,
+        maintenance_runner=_internet_map_periodic_maintenance,
+    )
+    INTERNET_MAP_RUNTIME.start()
+
+
+def _build_internet_map_cycle(*, mode: str = "online", refresh_sources: bool = True, reason: str = "manual") -> dict[str, Any]:
+    runtime_request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/internal/internet-map/runtime-cycle",
+        "headers": [],
+        "query_string": b"",
+        "client": ("127.0.0.1", 0),
+        "server": ("127.0.0.1", 8000),
+        "scheme": "http",
+    })
+    country_snapshot = dashboard_risk_map(request=runtime_request, role=ROLE_ADMIN, mode=mode, verified_only=False)
+    global_snapshot = get_latest_global_doc(mode)
+    snapshot = run_internet_map_stream_cycle(country_snapshot, global_snapshot, mode=mode, refresh_sources=refresh_sources)
+    payload = dict(snapshot.get("payload") or {})
+    governance = payload.get("governance") if isinstance(payload.get("governance"), dict) else {}
+    governance["secret_loading"] = _internet_map_secret_posture()
+    payload["governance"] = governance
+    payload["runtime_status"] = INTERNET_MAP_RUNTIME.status()
+    snapshot["payload"] = payload
+    return snapshot
+
+
+def _run_internet_map_cycle(request: Request | None, role: str, mode: str, *, refresh_sources: bool = True, reason: str = "manual") -> dict[str, Any]:
+    _ensure_internet_map_runtime_started()
+    snapshot = _build_internet_map_cycle(mode=mode, refresh_sources=refresh_sources, reason=reason)
+    return snapshot
+
+
+def _internet_map_payload(
+    request: Request,
+    role: str,
+    *,
+    mode: str = "online",
+    refresh: bool = False,
+    refresh_sources: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    _ensure_internet_map_runtime_started()
+    if refresh:
+        INTERNET_MAP_RUNTIME.request_cycle(mode=mode, refresh_sources=refresh_sources, reason="dashboard_refresh", block=False)
+    snapshot = INTERNET_MAP_RUNTIME.latest_snapshot() or load_internet_map_stream_snapshot()
+    if not snapshot:
+        snapshot = _run_internet_map_cycle(request, role, mode, refresh_sources=refresh_sources, reason="cold_boot")
+    payload = dict(snapshot.get("payload") or {})
+    payload["stream_status"] = snapshot.get("stream_status") or build_internet_map_stream_status(snapshot)
+    payload["collector_summary"] = snapshot.get("collector_summary") or {}
+    payload["history"] = payload.get("history") or load_internet_map_history_payload(limit=12)
+    payload["replay_available"] = bool(payload.get("history"))
+    payload.setdefault("backtest_summary", latest_internet_map_backtest())
+    payload.setdefault("retention_policy", build_internet_retention_policy())
+    payload.setdefault("ops_reporting", build_internet_alert_audit_report(operator_events_collection))
+    payload["runtime_status"] = INTERNET_MAP_RUNTIME.status()
+    governance = payload.get("governance") if isinstance(payload.get("governance"), dict) else {}
+    governance["secret_loading"] = _internet_map_secret_posture()
+    payload["governance"] = governance
+    return snapshot, payload
+
+
+def _internet_map_history_response(limit: int = 24) -> dict[str, Any]:
+    snapshot = load_internet_map_stream_snapshot()
+    items = load_internet_map_history_payload(limit=limit)
+    return {
+        "items": items,
+        "replay_available": bool(items),
+        "latest_captured_at": snapshot.get("captured_at") if snapshot else None,
+        "stream_status": build_internet_map_stream_status(snapshot),
+    }
+
+
+def _internet_map_playback_response(limit: int = 36) -> dict[str, Any]:
+    snapshot = load_internet_map_stream_snapshot()
+    frames = load_internet_map_playback_frames(limit=limit)
+    return {
+        "frames": frames,
+        "replay_available": bool(frames),
+        "latest_captured_at": snapshot.get("captured_at") if snapshot else None,
+        "stream_status": build_internet_map_stream_status(snapshot),
+    }
+
+def _summarize_hotspot_monitoring() -> dict[str, Any]:
+    hazard_keys = ["earthquake", "wildfire", "flood", "cyclone"]
+    return {
+        "history_health": _build_hotspot_history_health(),
+        "trend_comparison": {hazard: build_top_movers(hotspot_history_collection, hours=24, limit=5, hazard=hazard) for hazard in hazard_keys},
+        "recent_alert_transitions": {hazard: build_alert_transitions(hotspot_history_collection, hours=72, limit=12, hazard=hazard) for hazard in hazard_keys},
+    }
 # ISO 3166-1 alpha-3 to alpha-2 reverse mapping (for drilldown lookups)
 ISO3_TO_ISO2 = {v: k for k, v in ISO2_TO_ISO3.items()}
 
@@ -4886,6 +7271,8 @@ def dashboard_disaster_monitor(
 
     broadened_in_selected = sum(1 for item in selected if bool(item.get("is_broadened_context")))
 
+    forecast_summary = _build_disaster_warning_payload(limit=max(4, min(limit, 8)))
+
     return {
         "items": selected,
         "last_updated": last_updated,
@@ -4893,6 +7280,255 @@ def dashboard_disaster_monitor(
         "context_mode": "broadened" if broadened_in_selected > 0 else "live_only",
         "broadened_context_added": broadened_in_selected,
         "broaden_context_enabled": bool(broaden_context),
+        "forecast_summary": forecast_summary,
+    }
+
+
+@app.get("/dashboard/disaster-early-warning")
+@app.get("/api/disasters/forecast")
+@limiter.limit("30/minute")
+def disaster_early_warning_forecast(
+    request: Request,
+    role: str = Depends(check_role),
+    country: str | None = Query(None, description="Optional ISO country code filter"),
+    limit: int = Query(6, ge=1, le=12),
+):
+    return _disaster_forecast_cached(country=country, limit=limit)
+
+
+@app.get("/api/disasters/{country}")
+@limiter.limit("30/minute")
+def disaster_early_warning_forecast_by_country(
+    request: Request,
+    country: str,
+    role: str = Depends(check_role),
+    limit: int = Query(6, ge=1, le=12),
+):
+    return _disaster_forecast_cached(country=country, limit=limit)
+
+
+@app.get("/api/disasters/stream/status")
+@limiter.limit("20/minute")
+def disaster_stream_status(
+    request: Request,
+    role: str = Depends(check_role),
+    country: str | None = Query(None, description="Optional ISO country code filter"),
+    limit: int = Query(6, ge=1, le=12),
+    refresh: bool = Query(False, description="Refresh a new stream cycle before returning status"),
+    run_backtest: bool = Query(False, description="Refresh the disaster backtest summary during the stream cycle"),
+):
+    snapshot = run_disaster_stream_cycle(country=country, limit=limit, refresh_sources=refresh, run_backtest=run_backtest) if refresh else load_disaster_stream_snapshot()
+    if not snapshot:
+        snapshot = run_disaster_stream_cycle(country=country, limit=limit, refresh_sources=False, run_backtest=run_backtest)
+    return {
+        **snapshot,
+        "stream_status": build_disaster_stream_status(snapshot),
+    }
+
+
+@app.post("/api/disasters/stream/run-cycle")
+@limiter.limit("10/minute")
+def disaster_stream_run_cycle(
+    request: Request,
+    role: str = Depends(require_admin),
+    country: str | None = Query(None, description="Optional ISO country code filter"),
+    limit: int = Query(6, ge=1, le=12),
+    refresh_sources: bool = Query(True),
+    run_backtest: bool = Query(False),
+):
+    snapshot = run_disaster_stream_cycle(country=country, limit=limit, refresh_sources=refresh_sources, run_backtest=run_backtest)
+    _dashboard_cache_clear("disaster_warning", "hotspot_history", "hotspot_movers", "hotspot_alerts")
+    return snapshot
+
+
+@app.get("/api/disasters/thermal-map")
+@app.get("/dashboard/disaster-thermal-map")
+@limiter.limit("30/minute")
+def disaster_thermal_map(
+    request: Request,
+    role: str = Depends(check_role),
+    country: str | None = Query(None, description="Optional ISO country code drilldown"),
+    hazard: str | None = Query(None, description="Optional hazard filter for thermal overlay"),
+    focus_lat: float | None = Query(None),
+    focus_lon: float | None = Query(None),
+):
+    cache_key = f"country={country or 'all'}|hazard={hazard or 'all'}|focus={focus_lat if focus_lat is not None else 'na'}:{focus_lon if focus_lon is not None else 'na'}"
+    cached = _dashboard_cache_get("disaster_thermal", cache_key)
+    if isinstance(cached, dict):
+        return cached
+    payload = _disaster_forecast_cached(country=country, limit=6)
+    thermal = build_disaster_thermal_map(payload, country=country, hazard=hazard, focus_lat=focus_lat, focus_lon=focus_lon)
+    return _dashboard_cache_set("disaster_thermal", cache_key, thermal)
+
+
+@app.get("/api/disasters/alerts/stream")
+@limiter.limit("20/minute")
+async def disaster_alerts_stream(
+    request: Request,
+    country: str | None = Query(None, description="Optional ISO country code filter"),
+    limit: int = Query(6, ge=1, le=12),
+    poll_seconds: float = Query(8.0, ge=2.0, le=60.0),
+    mode: str = Query("batch", description="Use batch or live persisted disaster stream mode"),
+    run_collectors: bool = Query(False, description="Refresh collectors during each live stream poll"),
+    x_api_key: str | None = Header(None),
+    authorization: str | None = Header(None),
+    api_key: str | None = Query(None),
+    token: str | None = Query(None),
+):
+    identity = _identity_from_ws_credentials(x_api_key=x_api_key, api_key=api_key, authorization=authorization, token=token)
+    if not identity:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key / bearer token")
+
+    async def event_generator():
+        last_version = None
+        live_mode = str(mode or "batch").strip().lower() == "live"
+        while True:
+            if await request.is_disconnected():
+                break
+            if live_mode:
+                snapshot = run_disaster_stream_cycle(country=country, limit=limit, refresh_sources=True, run_backtest=False) if run_collectors else load_disaster_stream_snapshot()
+                if not snapshot:
+                    snapshot = run_disaster_stream_cycle(country=country, limit=limit, refresh_sources=False, run_backtest=False)
+                payload = dict(snapshot.get("payload") or {})
+                payload["stream_status"] = snapshot.get("stream_status") or build_disaster_stream_status(snapshot)
+                payload["backtest_summary"] = snapshot.get("backtest") or latest_disaster_backtest()
+                version = str(((payload.get("stream_status") or {}).get("run_id")) or payload.get("last_updated") or snapshot.get("captured_at") or iso_now())
+                if version != last_version:
+                    yield f"event: disaster_alerts\ndata: {json.dumps(payload, default=str)}\n\n"
+                    last_version = version
+                else:
+                    yield f"event: heartbeat\ndata: {json.dumps({'scope': 'disaster_alerts', 'timestamp': iso_now()}, default=str)}\n\n"
+            else:
+                payload = _disaster_forecast_cached(country=country, limit=limit)
+                yield f"event: disaster_alerts\ndata: {json.dumps(payload, default=str)}\n\n"
+            await asyncio.sleep(float(poll_seconds))
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/api/disasters/alerts/action")
+@limiter.limit("30/minute")
+def disaster_alert_action(
+    request: Request,
+    payload: DisasterAlertActionRequest,
+    role: str = Depends(check_role),
+):
+    allowed_actions = {"acknowledge", "assign", "snooze", "escalate", "false_positive"}
+    action = str(payload.action or "").strip().lower()
+    if action not in allowed_actions:
+        raise HTTPException(status_code=400, detail={"message": "Unsupported disaster alert action"})
+    doc = build_disaster_alert_operation_doc(payload.model_dump(), actor=payload.owner or role)
+    if not str(doc.get("hazard") or "").strip() or not str(doc.get("region") or "").strip():
+        raise HTTPException(status_code=400, detail={"message": "Hazard and region are required"})
+    operator_events_collection.insert_one(doc)
+    _dashboard_cache_clear("disaster_warning", "hotspot_history", "hotspot_movers", "hotspot_alerts")
+    return {
+        "ok": True,
+        "action": doc.get("action"),
+        "dedupe_key": doc.get("dedupe_key"),
+        "assignee": doc.get("assignee"),
+        "snoozed_until": doc.get("snoozed_until"),
+    }
+
+
+@app.get("/api/disasters/hotspots/history")
+@app.get("/dashboard/disaster-hotspots/history")
+@limiter.limit("30/minute")
+def disaster_hotspot_history(
+    request: Request,
+    role: str = Depends(check_role),
+    region: str = Query(..., description="Hotspot region key"),
+    hours: int = Query(72, ge=6, le=168),
+    hazard: str | None = Query(None, description="Optional hotspot hazard filter"),
+):
+    cache_key = f"region={region}|hours={hours}|hazard={hazard or 'all'}"
+    cached = _dashboard_cache_get("hotspot_history", cache_key)
+    if isinstance(cached, dict):
+        return cached
+    payload = build_region_history_payload(hotspot_history_collection, region=region, hours=hours, hazard=hazard)
+    return _dashboard_cache_set("hotspot_history", cache_key, payload)
+
+
+@app.get("/api/disasters/hotspots/top-movers")
+@app.get("/dashboard/disaster-hotspots/top-movers")
+@limiter.limit("30/minute")
+def disaster_hotspot_top_movers(
+    request: Request,
+    role: str = Depends(check_role),
+    hours: int = Query(24, ge=6, le=168),
+    limit: int = Query(6, ge=1, le=20),
+    hazard: str | None = Query(None, description="Optional hotspot hazard filter"),
+):
+    cache_key = f"hours={hours}|limit={limit}|hazard={hazard or 'all'}"
+    cached = _dashboard_cache_get("hotspot_movers", cache_key)
+    if isinstance(cached, dict):
+        return cached
+    payload = build_top_movers(hotspot_history_collection, hours=hours, limit=limit, hazard=hazard)
+    return _dashboard_cache_set("hotspot_movers", cache_key, payload)
+
+
+@app.get("/api/disasters/hotspots/alert-transitions")
+@app.get("/dashboard/disaster-hotspots/alert-transitions")
+@limiter.limit("30/minute")
+def disaster_hotspot_alert_transitions(
+    request: Request,
+    role: str = Depends(check_role),
+    hours: int = Query(72, ge=6, le=336),
+    limit: int = Query(20, ge=1, le=100),
+    hazard: str | None = Query(None, description="Optional hotspot hazard filter"),
+):
+    cache_key = f"hours={hours}|limit={limit}|hazard={hazard or 'all'}"
+    cached = _dashboard_cache_get("hotspot_alerts", cache_key)
+    if isinstance(cached, list):
+        return {"items": cached, "history_health": _build_hotspot_history_health()}
+    items = build_alert_transitions(hotspot_history_collection, hours=hours, limit=limit, hazard=hazard)
+    _dashboard_cache_set("hotspot_alerts", cache_key, items)
+    return {"items": items, "history_health": _build_hotspot_history_health()}
+
+
+@app.post("/api/disasters/hotspots/history/maintenance")
+@limiter.limit("10/minute")
+def disaster_hotspot_history_maintenance(request: Request, role: str = Depends(require_admin)):
+    summary_hourly = summarize_history(hotspot_summary_collection, hotspot_history_collection, hours=24)
+    summary_daily = summarize_history(hotspot_summary_collection, hotspot_history_collection, hours=168)
+    deleted = prune_history(hotspot_history_collection, retention_days=30)
+    return {
+        "status": "ok",
+        "hourly": summary_hourly,
+        "daily": summary_daily,
+        "deleted": deleted,
+        "history_health": _build_hotspot_history_health(),
+    }
+
+@app.get("/observability/disaster-backtest")
+@limiter.limit("20/minute")
+def observability_disaster_backtest(request: Request, role: str = Depends(require_admin)):
+    return latest_disaster_backtest()
+
+
+@app.post("/observability/disaster-backtests/run")
+@limiter.limit("10/minute")
+def observability_disaster_backtests_run(
+    request: Request,
+    role: str = Depends(require_admin),
+    days: int = Query(30, ge=7, le=365),
+):
+    return run_disaster_backtests(days=days)
+
+
+@app.get("/health/hotspots")
+@limiter.limit("20/minute")
+def health_hotspots(request: Request, role: str = Depends(check_role)):
+    latest_payload = _build_disaster_warning_payload(limit=5)
+    alert_queue = latest_payload.get("alert_queue") or {}
+    return {
+        "status": "ok",
+        "history_health": _build_hotspot_history_health(),
+        "top_region": ((latest_payload.get("regional_hotspots") or {}).get("earthquake") or [{}])[0].get("region_name"),
+        "top_wildfire_region": ((latest_payload.get("regional_hotspots") or {}).get("wildfire") or [{}])[0].get("region_name"),
+        "top_flood_region": ((latest_payload.get("regional_hotspots") or {}).get("flood") or [{}])[0].get("region_name"),
+        "top_cyclone_region": ((latest_payload.get("regional_hotspots") or {}).get("cyclone") or [{}])[0].get("region_name"),
+        "alert_queue_count": sum(len(items) for items in alert_queue.values()) if isinstance(alert_queue, dict) else len(alert_queue or []),
+        "trend_comparison": latest_payload.get("trend_comparison") or {},
     }
 
 @app.get("/dashboard/economic-indicators")
@@ -7161,6 +9797,7 @@ def trust_reliability(request: Request, role: str = Depends(check_role), mode: s
         "mobility": mobility_snapshot,
         "economic": economic_snapshot,
         "alerts": alerts,
+        "disaster_hotspots": _summarize_hotspot_monitoring(),
         "validation": {
             "country_latest": {
                 "status": country_validation.get("status"),
@@ -8296,6 +10933,14 @@ def bootstrap_and_migrate_users():
             "user_profiles_migrated",
             extra={"event": {"count": migrated}},
         )
+    _ensure_internet_map_runtime_started()
+    INTERNET_MAP_RUNTIME.request_cycle(mode="online", refresh_sources=True, reason="startup_warm", block=False)
+    _ensure_planetary_runtime_started()
+
+
+@app.on_event("shutdown")
+def shutdown_planetary_runtime():
+    _stop_planetary_runtime()
 
 
 
@@ -8323,6 +10968,12 @@ SOURCE_LABELS = {
     "fred_behavior_energy": "FRED energy proxy",
     "telegram_public": "Telegram public channels",
     "youtube_public": "YouTube public trends",
+    "youtube_trends": "YouTube public trends",
+    "reddit": "Reddit discussions",
+    "usgs": "USGS seismic feed",
+    "firms": "NASA FIRMS fire detections",
+    "eonet": "NASA EONET events",
+    "noaa_cdo": "NOAA climate and ocean data",
     "logistics": "Logistics stress",
     "worldbank_behavior_SL.UEM.TOTL.ZS": "World Bank unemployment",
     "worldbank_behavior_FP.CPI.TOTL.ZG": "World Bank inflation",
@@ -8493,5 +11144,3 @@ def observability_world_state(request: Request, role: str = Depends(require_admi
         "feature_drift": drift,
         "region_coverage": region_coverage,
     }
-
-

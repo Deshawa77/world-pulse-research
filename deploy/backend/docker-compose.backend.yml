@@ -1,15 +1,35 @@
-services:
-  backend:
-    image: ${BACKEND_IMAGE_REPO}:${IMAGE_TAG}
-    container_name: world-pulse-backend
-    restart: unless-stopped
-    env_file:
-      - .env
-    ports:
-      - "8000:8000"
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+services:
+  backend:
+    image: ${BACKEND_IMAGE_REPO}:${IMAGE_TAG}
+    container_name: world-pulse-backend
+    restart: unless-stopped
+    environment:
+      WORLD_PULSE_ENVIRONMENT: production
+      WORLD_PULSE_ENABLE_DOTENV_FALLBACK: "false"
+      WORLD_PULSE_SECRETS_FILE: /run/secrets/world-pulse-runtime.json
+      INTERNET_MAP_RUNTIME_ENABLED: "false"
+      INTERNET_MAP_RUNTIME_STARTUP_WARM: "false"
+    volumes:
+      - ./secrets/world-pulse-runtime.json:/run/secrets/world-pulse-runtime.json:ro
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  internet-map-runtime:
+    image: ${BACKEND_IMAGE_REPO}:${IMAGE_TAG}
+    container_name: world-pulse-internet-map-runtime
+    restart: unless-stopped
+    command: ["python", "scripts/run_internet_map_runtime.py"]
+    environment:
+      WORLD_PULSE_ENVIRONMENT: production
+      WORLD_PULSE_ENABLE_DOTENV_FALLBACK: "false"
+      WORLD_PULSE_SECRETS_FILE: /run/secrets/world-pulse-runtime.json
+      INTERNET_MAP_RUNTIME_ENABLED: "true"
+      INTERNET_MAP_RUNTIME_STARTUP_WARM: "true"
+    volumes:
+      - ./secrets/world-pulse-runtime.json:/run/secrets/world-pulse-runtime.json:ro
